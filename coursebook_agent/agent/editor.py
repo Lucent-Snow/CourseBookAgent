@@ -292,7 +292,7 @@ def heuristic_book_plan(course: Course, digests: list[LectureDigest]) -> BookPla
             chapter_role=role,
             narrative_purpose=digest.teacher_flow[:180],
             learning_goals=[f"能复述本章核心问题", f"能辨认：{'、'.join(kp_names[:3])}"],
-            must_cover=digest.knowledge_points[:6].__class__.__name__,  # placeholder
+            must_cover=[kp.name for kp in digest.knowledge_points[:6]],
             de_emphasize=["签到与行政通知", "闲聊"],
             prerequisite_concepts=[kp.name for kp in (prev.knowledge_points[:3] if prev else [])],
             bridge_from_prev=bridge_from,
@@ -332,7 +332,7 @@ def heuristic_book_plan(course: Course, digests: list[LectureDigest]) -> BookPla
             "嘉宾专题章按兴趣选读",
         ],
         modules=[{"name": name, "lecture_indices": sorted(indices), "purpose": purpose}
-                 for name, indices, purpose, _ in [
+                 for name, indices, purpose in [
                      ("课程入口与统计复习", [1], "建立共同语言"),
                      ("假设检验主线", [2, 3], "单组到两组推断"),
                      ("方差分析主线", [4, 5, 6, 7], "多组比较与实验设计"),
