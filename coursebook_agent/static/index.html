@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>智课成书</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root { --ink:#16232e; --muted:#687680; --line:#d8e0e3; --paper:#f7f8f5; --panel:#ffffff; --accent:#147d86; --accent-soft:#dff1ee; --warm:#c46943; --danger:#b74848; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font-family: ui-sans-serif,system-ui,-apple-system,"PingFang SC","Microsoft Yahei",sans-serif; line-height:1.65; }
+    header { border-bottom:1px solid var(--line); background:var(--panel); }
+    .topbar { max-width:1180px; margin:auto; padding:22px 28px; display:flex; align-items:center; justify-content:space-between; gap:24px; }
+    .brand { display:flex; align-items:center; gap:12px; }
+    .mark { width:34px; height:34px; display:grid; place-items:center; color:white; background:var(--accent); font-weight:800; letter-spacing:0; }
+    h1,h2,h3,p { margin-top:0; } h1 { font-size:20px; margin-bottom:0; letter-spacing:0; } h2 { font-size:28px; line-height:1.25; margin-bottom:10px; } h3 { font-size:18px; margin-bottom:8px; }
+    .eyebrow { color:var(--muted); font-size:12px; letter-spacing:1px; text-transform:uppercase; }
+    main { max-width:1180px; margin:auto; padding:36px 28px 72px; }
+    .workspace { display:grid; grid-template-columns:340px minmax(0,1fr); gap:42px; align-items:start; }
+    .control { position:sticky; top:18px; border-top:3px solid var(--accent); padding-top:18px; }
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:7px; }
+    select,button { width:100%; min-height:44px; border:1px solid var(--line); background:white; color:var(--ink); font:inherit; padding:9px 12px; border-radius:3px; }
+    select { margin-bottom:12px; }
+    button { color:white; border-color:var(--accent); background:var(--accent); cursor:pointer; font-weight:700; }
+    button:hover { background:#0e646c; } button:disabled { opacity:.55; cursor:wait; }
+    .status { min-height:50px; margin-top:18px; padding:12px 14px; background:var(--accent-soft); border-left:3px solid var(--accent); font-size:13px; }
+    .status.error { border-left-color:var(--danger); background:#fae9e7; color:#7d2929; }
+    .progress { height:5px; background:#e4e9e8; margin-top:10px; overflow:hidden; } .progress > i { display:block; height:100%; background:var(--accent); width:0; transition:width .25s ease; }
+    .intro { padding-bottom:28px; border-bottom:1px solid var(--line); margin-bottom:28px; }
+    .intro p { max-width:720px; color:var(--muted); margin-bottom:0; }
+    .book { background:var(--panel); padding:32px 40px; min-height:560px; border:1px solid var(--line); }
+    .book-head { border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:24px; }
+    .book-head .meta { color:var(--muted); font-size:13px; }
+    .toc { border-left:3px solid var(--accent-soft); padding:5px 0 5px 16px; margin:22px 0 32px; }
+    .toc button { width:auto; min-height:0; border:0; padding:3px 0; background:none; color:var(--muted); text-align:left; font-weight:500; }
+    .toc button.active { color:var(--accent); font-weight:800; }
+    article { padding-top:20px; margin-top:28px; border-top:1px solid var(--line); }
+    article h3 { color:var(--accent); } article p { white-space:pre-wrap; } article ul { padding-left:20px; }
+    .source { color:var(--muted); font-size:13px; border-top:1px solid var(--line); margin-top:20px; padding-top:12px; }
+    .download { margin-top:20px; background:var(--warm); border-color:var(--warm); }
+    .empty { color:var(--muted); padding:80px 0; text-align:center; }
+    @media (max-width:760px) { .topbar, main { padding-left:18px; padding-right:18px; } .workspace { display:block; } .control { position:static; margin-bottom:34px; } .book { padding:24px 20px; } h2 { font-size:24px; } }
+  </style>
+</head>
+<body>
+  <header><div class="topbar"><div class="brand"><div class="mark">课</div><div><div class="eyebrow">CourseBookAgent</div><h1>智课成书</h1></div></div><div class="eyebrow">字幕 · 结构 · 讲义</div></div></header>
+  <main>
+    <section class="intro"><div class="eyebrow">COURSE WORKSPACE</div><h2>课程讲义工作台</h2></section>
+    <div class="workspace">
+      <aside class="control">
+        <label for="course">选择课程</label><select id="course"><option value="82493">实验设计与心理统计Ⅱ</option></select>
+        <button id="generate">生成全课讲义</button>
+        <div id="status" class="status">等待开始</div><div class="progress"><i id="progress"></i></div>
+        <button id="download" class="download" hidden>下载 Markdown</button>
+      </aside>
+      <section id="book" class="book"><div class="empty">生成完成后，讲义会在这里展开。</div></section>
+    </div>
+  </main>
+  <script>
+    const course = document.querySelector('#course');
+    const generate = document.querySelector('#generate');
+    const statusBox = document.querySelector('#status');
+    const progress = document.querySelector('#progress');
+    const book = document.querySelector('#book');
+    const download = document.querySelector('#download');
+    let currentJob = null;
+    const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    function setStatus(text, error=false) { statusBox.textContent = text; statusBox.classList.toggle('error', error); }
+    function renderBook(data, activeChapter=0) {
+      const chapters = data.chapters || [];
+      const c = chapters[activeChapter];
+      let html = `<div class="book-head"><div class="eyebrow">GENERATED COURSEBOOK</div><h2>${esc(data.title)}</h2><div class="meta">${esc(data.course.name)} · ${esc(data.course.teacher || '教师信息未提供')} · ${esc(data.course.term || '')}</div></div>`;
+      html += '<nav class="toc"><div class="eyebrow">目录</div>' + chapters.map((item,i)=>`<button data-index="${i}" class="${i===activeChapter?'active':''}">${esc(item.title)}</button>`).join('<br>') + '</nav>';
+      if (c) {
+        const role = ({core:'核心方法',review:'复习整合',guest:'专题/嘉宾',mixed:'综合',admin:'课程说明'}[c.chapter_role] || c.chapter_role || '');
+        const meta = [c.module_name ? `模块：${c.module_name}` : '', role ? `角色：${role}` : ''].filter(Boolean).join(' · ');
+        html += `<article><h3>${esc(c.title)}</h3>${meta ? `<div class="meta">${esc(meta)}</div>` : ''}`;
+        if (c.bridge_from_prev) html += `<h4>承上</h4><p>${esc(c.bridge_from_prev)}</p>`;
+        if (c.learning_goals?.length) html += `<h4>学习目标</h4><ul>${c.learning_goals.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        html += `<h4>本章导读</h4><p>${esc(c.overview)}</p>`;
+        if (c.key_points?.length) html += `<h4>本章重点</h4><ul>${c.key_points.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        if (c.concepts?.length) html += `<h4>核心概念</h4><ul>${c.concepts.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        html += (c.sections||[]).map((s,j)=>`<section><h4>${activeChapter+1}.${j+1} ${esc(s.heading)}${s.emphasis==='key'?'（重点）':s.emphasis==='review'?'（回顾）':''}</h4><p>${esc(s.content)}</p></section>`).join('');
+        if (c.examples?.length) html += `<h4>课堂例子与补充</h4><ul>${c.examples.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        if (c.common_mistakes?.length) html += `<h4>易错点</h4><ul>${c.common_mistakes.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        html += `<h4>本章小结</h4><ul>${(c.summary||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        if (c.bridge_to_next) html += `<h4>启下</h4><p>${esc(c.bridge_to_next)}</p>`;
+        html += `<div class="source"><strong>来源</strong><br>${(c.source_ranges||[]).map(x=>esc(x)).join('<br>')}${c.warnings?.length ? '<br><br><strong>整理说明</strong><br>'+c.warnings.map(x=>esc(x)).join('<br>') : ''}</div></article>`;
+      }
+      if (activeChapter === 0 && (data.preface || data.knowledge_map?.length || data.how_to_use?.length)) {
+        let front = '<div class="book-head" style="margin-top:18px"><div class="eyebrow">BOOK FRONT MATTER</div>';
+        if (data.preface) front += `<h3>前言</h3><p>${esc(data.preface)}</p>`;
+        if (data.how_to_use?.length) front += `<h3>如何使用</h3><ul>${data.how_to_use.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        if (data.knowledge_map?.length) front += `<h3>知识地图</h3><ul>${data.knowledge_map.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        if (data.learning_path?.length) front += `<h3>学习路径</h3><ul>${data.learning_path.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+        front += '</div>';
+        html = html.replace('</div><nav class="toc">', `</div>${front}<nav class="toc">`);
+      }
+      book.innerHTML = html;
+      book.querySelectorAll('[data-index]').forEach(el=>el.addEventListener('click',()=>{ renderBook(data,Number(el.dataset.index)); book.scrollIntoView({behavior:'smooth',block:'start'}); }));
+    }
+    async function poll() {
+      if (!currentJob) return;
+      const response = await fetch(`/api/jobs/${currentJob}`); const state = await response.json();
+      progress.style.width = `${state.progress || 0}%`; setStatus(state.status === 'failed' ? (state.error || '生成失败') : state.message || state.step, state.status === 'failed');
+      if (state.status === 'completed' || state.status === 'partial') { const result = await fetch(`/api/jobs/${currentJob}/book`); renderBook(await result.json()); generate.disabled = false; download.hidden = false; download.onclick = () => location.href = `/api/jobs/${currentJob}/download.md`; return; }
+      if (state.status === 'failed') { generate.disabled = false; return; }
+      setTimeout(poll, 1200);
+    }
+    async function loadPersisted() { try { const response = await fetch(`/api/books/${course.value}`); if (!response.ok) return; renderBook(await response.json()); setStatus('已载入本地成书'); download.hidden = false; download.onclick = () => location.href = `/api/books/${course.value}/download.md`; } catch (_) {} }
+    generate.addEventListener('click', async () => { generate.disabled = true; download.hidden = true; book.innerHTML = '<div class="empty">正在整理字幕并生成章节，请稍候。</div>'; progress.style.width='0%'; setStatus('正在创建任务'); const response = await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({course_id:course.value})}); const state = await response.json(); currentJob = state.job_id; poll(); });
+    loadPersisted();
+  </script>
+</body>
+</html>
