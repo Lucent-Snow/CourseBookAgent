@@ -74,8 +74,6 @@ async def generate_chapter(
     instruction: ChapterInstruction | None = None,
     plan: BookPlan | None = None,
     previous_draft: LectureDraft | None = None,
-    # Legacy compat
-    blueprint=None,
 ) -> LectureDraft:
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
@@ -84,8 +82,8 @@ async def generate_chapter(
     source = _chunks_to_source(chunks)
     context = _instruction_context(instruction, plan, previous_draft)
 
-    target_title = instruction.book_title if instruction else (blueprint.book_title if blueprint else f"第 {lecture.index} 讲：{lecture.title}")
-    role = instruction.chapter_role if instruction else (blueprint.chapter_role if blueprint else "core")
+    target_title = instruction.book_title if instruction else f"第 {lecture.index} 讲：{lecture.title}"
+    role = instruction.chapter_role if instruction else "core"
     valid_ids = {c.chunk_id for c in chunks}
     chunk_id_list = json.dumps(list(valid_ids))
 
@@ -161,8 +159,8 @@ async def generate_chapter(
         data = await _review_pass(llm, data, instruction, chunks)
 
     # Normalize and validate
-    data = _normalize(data, lecture, instruction, blueprint, role, target_title)
-    draft = _validate_and_fix(data, chunks, instruction, blueprint, previous_draft)
+    data = _normalize(data, lecture, instruction, role, target_title)
+    draft = _validate_and_fix(data, chunks, instruction, previous_draft)
     return draft
 
 
@@ -187,7 +185,7 @@ async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstructi
     return data
 
 
-def _normalize(data: dict, lecture, instruction, blueprint, role, target_title) -> dict:
+def _normalize(data: dict, lecture, instruction, role, target_title) -> dict:
     if not isinstance(data, dict):
         raise LLMError("章节结果不是对象")
     data.setdefault("lecture_id", lecture.lecture_id)
@@ -199,13 +197,13 @@ def _normalize(data: dict, lecture, instruction, blueprint, role, target_title) 
     data.setdefault("concepts", [])
     data.setdefault("examples", [])
     data.setdefault("warnings", [])
-    data.setdefault("learning_goals", instruction.learning_goals if instruction else (blueprint.learning_goals if blueprint else []))
+    data.setdefault("learning_goals", instruction.learning_goals if instruction else [])
     data.setdefault("key_points", [])
     data.setdefault("common_mistakes", instruction.common_mistakes if instruction else [])
-    data.setdefault("bridge_from_prev", instruction.bridge_from_prev if instruction else (blueprint.bridge_from_prev if blueprint else ""))
-    data.setdefault("bridge_to_next", instruction.bridge_to_next if instruction else (blueprint.bridge_to_next if blueprint else ""))
-    data.setdefault("prerequisite_concepts", instruction.prerequisite_concepts if instruction else (blueprint.prerequisite_concepts if blueprint else []))
-    data.setdefault("module_name", instruction.module_name if instruction else (blueprint.module_name if blueprint else ""))
+    data.setdefault("bridge_from_prev", instruction.bridge_from_prev if instruction else "")
+    data.setdefault("bridge_to_next", instruction.bridge_to_next if instruction else "")
+    data.setdefault("prerequisite_concepts", instruction.prerequisite_concepts if instruction else [])
+    data.setdefault("module_name", instruction.module_name if instruction else "")
     data.setdefault("transcript_links", [])
 
     sections = []
@@ -234,7 +232,7 @@ def _normalize(data: dict, lecture, instruction, blueprint, role, target_title) 
     return data
 
 
-def _validate_and_fix(data: dict, chunks: list[TimedChunk], instruction, blueprint, previous_draft) -> LectureDraft:
+def _validate_and_fix(data: dict, chunks: list[TimedChunk], instruction, previous_draft) -> LectureDraft:
     valid_ids = {c.chunk_id for c in chunks}
 
     try:
@@ -261,8 +259,6 @@ def _validate_and_fix(data: dict, chunks: list[TimedChunk], instruction, bluepri
         draft.key_points = draft.summary[:5]
     if not draft.learning_goals and instruction:
         draft.learning_goals = instruction.learning_goals
-    if not draft.learning_goals and blueprint:
-        draft.learning_goals = blueprint.learning_goals
     if not draft.bridge_from_prev and previous_draft and previous_draft.bridge_to_next:
         draft.bridge_from_prev = previous_draft.bridge_to_next
     if not draft.bridge_from_prev and instruction:

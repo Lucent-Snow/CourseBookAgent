@@ -146,10 +146,14 @@ course_id
 
 ## 当前状态
 
-| 层 | 状态 |
-|---|---|
-| Layer 1 压缩 | 代码已写，待集成到 pipeline |
-| Layer 2 主编 | 旧版 editor 已工作，需升级到新数据模型 |
-| Layer 3 写作 | 旧版 chapter 已工作，需升级到新数据模型 |
-| Layer 4 合成 | 确定性回填已工作，LLM 终审不稳定 |
-| 渲染 | Markdown 已实现，Web 组件待升级 |
+四层工作流已完整实现并集成到 `pipeline.py`。
+
+| 层 | 状态 | 验证方式 |
+|---|---|---|
+| Layer 1 压缩 | 已实现，接入 pipeline | 单讲压缩 e2e 通过 |
+| Layer 2 主编 | 已实现（含启发式回退） | 蓝图生成通过 |
+| Layer 3 撰写 | 已实现 | 单章生成 + 组件渲染 e2e 通过 |
+| Layer 4 合成 | 已实现（LLM + 确定性回退） | 全书合成通过 |
+| 渲染 | Markdown 完整，Web 组件化已实现 | 组件渲染测试通过 |
+
+测试：`uv run python -m unittest discover -s tests -v`（当前 14 个用例全通过）

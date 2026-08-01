@@ -21,7 +21,6 @@ def main() -> None:
     parser.add_argument("--refresh-plan", action="store_true")
     parser.add_argument("--review", action="store_true", help="Enable per-chapter review pass")
     parser.add_argument("--no-book-plan", action="store_true")
-    parser.add_argument("--synthesize", action="store_true", help="Run full-course synthesis")
     parser.add_argument("--only", type=str, default="", help="Comma-separated lecture indices for partial course regen")
     parser.add_argument("--out", type=str, default="", help="Optional markdown output path")
     args = parser.parse_args()
@@ -32,7 +31,7 @@ def main() -> None:
         if args.plan_only:
             plan = await pipeline.ensure_book_plan(
                 args.course_id,
-                refresh=args.refresh_plan or args.regenerate or True,
+                refresh=args.refresh_plan or args.regenerate,
             )
             print(plan.model_dump_json(indent=2))
             return
@@ -43,7 +42,7 @@ def main() -> None:
                 args.course_id,
                 args.lecture,
                 regenerate=args.regenerate,
-                review=True if args.review or args.regenerate else True,
+                review=args.review,
                 use_book_plan=not args.no_book_plan,
             )
             text = render_chapter(draft)

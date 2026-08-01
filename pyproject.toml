@@ -1,7 +1,7 @@
 [project]
 name = "coursebook-agent"
 version = "0.1.0"
-description = "基于智云课堂字幕的课程讲义生成智能体"
+description = "基于智云课堂字幕的四层教辅书生成智能体"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi",

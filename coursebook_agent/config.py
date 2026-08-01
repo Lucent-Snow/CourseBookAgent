@@ -21,7 +21,7 @@ class LLMConfig(BaseModel):
     """LLM API 配置。"""
 
     api_key: str = os.getenv("LLM_API_KEY", "")
-    base_url: str = os.getenv("LLM_BASE_URL", "http://143.198.25.239:8090/v1")
+    base_url: str = os.getenv("LLM_BASE_URL", "https://axonhub.lucentsnow.me/v1")
     model: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "120"))
 

@@ -6,3 +6,4 @@ __pycache__/
 data/
 output/
 .DS_Store
+.pi-subagents/
