@@ -2,30 +2,30 @@
 
 ## 1. 技术定位
 
-CourseBookAgent 的核心是**四层教辅书生成工作流**，不是简单的字幕拼接。
+CourseBookAgent 的核心是**字幕 → 教辅书的生成工作流**，不是简单的字幕拼接。
 
 | 层 | 技术 | 说明 |
 |---|---|---|
 | 数据获取 | zju-scholar / 智云课堂接口 | 获取课程、讲次、带时间戳字幕 |
 | 后端 | Python + FastAPI | 编排长任务与 API |
-| AI | 通用大模型 API | 四层工作流的核心 |
+| AI | 通用大模型 API | 生成工作流的核心 |
 | 存储 | 本地文件 | 中间产物全缓存 |
 | 前端 | 简单 Web | 课程选择、进度、教辅阅读 |
 | 输出 | Markdown / HTML / PDF | 组件化渲染 |
 
 ---
 
-## 2. 四层工作流
+## 2. 生成工作流
 
 ```text
 字幕（原始）
     │
-    ▼  Layer 1: 字幕压缩（每讲独立，面向聪明主编）
+    ▼  字幕压缩（每讲独立，面向聪明主编）
     │  输入：完整字幕 TimedChunk[]
     │  输出：LectureDigest（知识点地图 + 教师流向 + 时间锚点）
     │  原则：主编知道假设检验是什么，只需知道"老师怎么讲的"
     │
-    ▼  Layer 2: 主编统筹（全局）
+    ▼  全书规划（主编统筹，全局）
     │  输入：14 份 LectureDigest
     │  输出：BookPlan
     │    ├─ 书的结构（模块/章节/角色/主线）
@@ -34,12 +34,12 @@ CourseBookAgent 的核心是**四层教辅书生成工作流**，不是简单的
     │    ├─ 每章写作指令（ChapterInstruction）
     │    └─ 渲染配置（render_config）
     │
-    ▼  Layer 3: 分章撰写（每章独立）
+    ▼  分章撰写（每章独立）
     │  输入：writer_system_prompt + ChapterInstruction + 完整字幕
     │  输出：LectureDraft（带时间戳链接、组件实例、来源引用）
     │  原则：读者"比较蠢"，要讲详细；关键处链接到字幕时间段
     │
-    ▼  Layer 4: 终审合成（全局）
+    ▼  全书合成（终审，全局）
     │  输入：14 章 LectureDraft + BookPlan
     │  输出：CourseBook（前言/知识地图/术语表/要点索引 + 组件统一）
     │
@@ -57,17 +57,17 @@ CourseBookAgent 的核心是**四层教辅书生成工作流**，不是简单的
 coursebook_agent/
 ├── app.py                  # FastAPI 入口
 ├── config.py               # 配置
-├── models.py               # 数据模型（全部四层）
-├── pipeline.py             # 四层编排
+├── models.py               # 数据模型
+├── pipeline.py             # 工作流编排
 ├── sources/
 │   └── zhiyun.py           # 智云课堂数据获取
 ├── preprocess/
 │   └── transcript.py       # 字幕清洗 + 分块
 ├── agent/
-│   ├── digest.py           # Layer 1: 字幕压缩
-│   ├── editor.py           # Layer 2: 主编统筹
-│   ├── chapter.py          # Layer 3: 分章撰写
-│   ├── synthesize.py       # Layer 4: 终审合成
+│   ├── digest.py           # 字幕压缩
+│   ├── editor.py           # 全书规划（主编）
+│   ├── chapter.py          # 分章撰写
+│   ├── synthesize.py       # 全书合成（终审）
 │   └── llm.py              # LLM 客户端
 ├── renderer/
 │   └── markdown.py         # Markdown 渲染（含组件）
@@ -105,12 +105,12 @@ coursebook_agent/
 data/
 ├── cache/zhiyun/           # 原始字幕缓存
 ├── intermediate/
-│   ├── digest-*.json       # Layer 1 产物
+│   ├── digest-*.json       # 字幕压缩产物
 │   ├── chunks-*.json       # 清洗分块
-│   ├── chapter-*.json      # Layer 3 产物
-│   └── coursebook-*.json   # Layer 4 产物
+│   ├── chapter-*.json      # 分章产物
+│   └── coursebook-*.json   # 全书产物
 ├── plans/
-│   └── bookplan-*.json     # Layer 2 产物
+│   └── bookplan-*.json     # 全书蓝图
 └── output/
     ├── coursebook-*.md     # 最终 Markdown
     └── lecture-*.md        # 单章 Markdown

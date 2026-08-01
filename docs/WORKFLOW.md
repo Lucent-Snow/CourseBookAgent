@@ -1,21 +1,21 @@
 # CourseBookAgent Workflow 设计
 
-## 总流程（四层）
+## 总流程
 
 ```text
 course_id
   → fetch_transcripts          # 获取原始字幕
   → clean_and_chunk            # 清洗 + 分块
-  → compress_lectures          # Layer 1: 每讲压缩为知识点地图
-  → plan_book                  # Layer 2: 主编统筹全书
-  → generate_chapters          # Layer 3: 带上下文的分章撰写
-  → synthesize_book            # Layer 4: 终审合成
+  → compress_lectures          # 每讲压缩为知识点地图
+  → plan_book                  # 主编统筹全书
+  → generate_chapters          # 带上下文的分章撰写
+  → synthesize_book            # 全书合成
   → render_outputs             # 渲染为 Markdown / Web / PDF
 ```
 
 ---
 
-## Layer 1: 字幕压缩
+## 字幕压缩
 
 **输入**：一讲的 TimedChunk[]（完整字幕）
 **输出**：LectureDigest（知识点地图）
@@ -35,7 +35,7 @@ course_id
 
 ---
 
-## Layer 2: 主编统筹
+## 全书规划（主编统筹）
 
 **输入**：14 份 LectureDigest
 **输出**：BookPlan
@@ -78,7 +78,7 @@ course_id
 
 ---
 
-## Layer 3: 分章撰写
+## 分章撰写
 
 **输入**：
 - writer_system_prompt（主编写的共享 prompt）
@@ -102,7 +102,7 @@ course_id
 
 ---
 
-## Layer 4: 终审合成
+## 全书合成（终审）
 
 **输入**：14 章 LectureDraft + BookPlan
 **输出**：CourseBook
@@ -136,7 +136,7 @@ course_id
 ## 缓存与断点续跑
 
 每层产物独立缓存。命令行支持：
-- `--plan-only`：只跑 Layer 2
+- `--plan-only`：只跑全书规划
 - `--lecture N --regenerate`：只重跑某一章
 - `--only 2,3,4`：只重跑指定章节
 - `--force`：忽略缓存，强制重跑
@@ -146,14 +146,14 @@ course_id
 
 ## 当前状态
 
-四层工作流已完整实现并集成到 `pipeline.py`。
+生成工作流已完整实现并集成到 `pipeline.py`。
 
 | 层 | 状态 | 验证方式 |
 |---|---|---|
-| Layer 1 压缩 | 已实现，接入 pipeline | 单讲压缩 e2e 通过 |
-| Layer 2 主编 | 已实现（含启发式回退） | 蓝图生成通过 |
-| Layer 3 撰写 | 已实现 | 单章生成 + 组件渲染 e2e 通过 |
-| Layer 4 合成 | 已实现（LLM + 确定性回退） | 全书合成通过 |
+| 字幕压缩 | 已实现，接入 pipeline | 单讲压缩 e2e 通过 |
+| 全书规划 | 已实现（含启发式回退） | 蓝图生成通过 |
+| 分章撰写 | 已实现 | 单章生成 + 组件渲染 e2e 通过 |
+| 全书合成 | 已实现（LLM + 确定性回退） | 全书合成通过 |
 | 渲染 | Markdown 完整，Web 组件化已实现 | 组件渲染测试通过 |
 
 测试：`uv run python -m unittest discover -s tests -v`（当前 14 个用例全通过）
