@@ -18,11 +18,11 @@ logger.setLevel(logging.DEBUG if os.getenv("DEBUG", "false").lower() == "true" e
 
 
 class LLMConfig(BaseModel):
-    """LLM API 配置。"""
+    """LLM API 配置。端点和 key 必须由使用者通过环境变量提供。"""
 
     api_key: str = os.getenv("LLM_API_KEY", "")
-    base_url: str = os.getenv("LLM_BASE_URL", "https://axonhub.lucentsnow.me/v1")
-    model: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
+    base_url: str = os.getenv("LLM_BASE_URL", "")
+    model: str = os.getenv("LLM_MODEL", "")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "120"))
 
 
@@ -63,6 +63,10 @@ class AppConfig(BaseModel):
         """验证必要配置。"""
         if not self.llm.api_key:
             raise ValueError("LLM_API_KEY 未设置，请在 .env 中配置")
+        if not self.llm.base_url:
+            raise ValueError("LLM_BASE_URL 未设置，请在 .env 中配置（OpenAI 兼容端点，如 https://your-host/v1）")
+        if not self.llm.model:
+            raise ValueError("LLM_MODEL 未设置，请在 .env 中配置")
         if not self.zhiyun.zhiyun_script.exists():
             raise FileNotFoundError(
                 f"zju-scholar 脚本不存在: {self.zhiyun.zhiyun_script}\n"
