@@ -48,8 +48,9 @@ def _render_component(comp: ChapterComponent) -> str:
             lines.append(f"> *来源：{source_ref}*")
         return "\n".join(lines) + "\n"
 
-    # Fallback
-    lines = [f"> [{comp.component_type}]"]
+    # Unknown components are a validation failure upstream. Render their usable
+    # content without exposing implementation labels to students as a last resort.
+    lines = ["> 📝 **补充说明**"]
     if title:
         lines.append(f"> **{title}**")
     if body:

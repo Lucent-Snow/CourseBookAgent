@@ -74,6 +74,7 @@ async def generate_chapter(
     instruction: ChapterInstruction | None = None,
     plan: BookPlan | None = None,
     previous_draft: LectureDraft | None = None,
+    revision_feedback: list[str] | None = None,
 ) -> LectureDraft:
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
@@ -94,7 +95,13 @@ async def generate_chapter(
             f"- {c.name}：{c.description}（字段：{', '.join(c.fields)}）" for c in plan.components
         )
 
+    revision_context = ""
+    if revision_feedback:
+        revision_context = "【上一稿必须修复的问题】\n" + "\n".join(f"- {item}" for item in revision_feedback) + "\n必须逐项修复；若字幕无法支持，明确标入 warnings，不得编造。"
+
     prompt = f"""{context}
+
+{revision_context}
 
 字幕材料（共 {len(chunks)} 段，约 {sum(len(c.text) for c in chunks)} 字）：
 {source}
@@ -130,7 +137,7 @@ async def generate_chapter(
       ]
     }}
   ],
-  "examples": ["课堂例子及其说明"],
+  "examples": ["课堂例子：说明（来源：c005）"],
   "summary": ["3-6条小结"],
   "warnings": ["仅列影响理解且无法确认的ASR问题"],
   "transcript_links": [{{"label": "c005", "start_sec": 330, "end_sec": 760}}]
@@ -145,7 +152,9 @@ async def generate_chapter(
 3. sections 里每个 section 都要有有效 source_chunk_ids。
 4. 每个 section 至少有 1 个 time_link。
 5. 核心方法章必须有 procedure 组件。
-6. 每章至少 1 个 worked_example 组件。"""
+6. 每章至少 1 个 worked_example 组件。
+7. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
+8. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
 
     data = await llm.complete_json(SYSTEM, prompt, max_tokens=20000)
 
@@ -220,7 +229,7 @@ def _normalize(data: dict, lecture, instruction, role, target_title) -> dict:
         })
     data["sections"] = sections
 
-    for key in ("learning_goals", "key_points", "common_mistakes", "concepts", "examples", "summary", "warnings", "prerequisite_concepts"):
+    for key in ("learning_goals", "key_points", "common_mistakes", "concepts", "summary", "warnings", "prerequisite_concepts"):
         value = data.get(key)
         if isinstance(value, str):
             data[key] = [value]
@@ -228,6 +237,24 @@ def _normalize(data: dict, lecture, instruction, role, target_title) -> dict:
             data[key] = []
         else:
             data[key] = [str(x) for x in value if str(x).strip()]
+
+    examples = data.get("examples")
+    if isinstance(examples, str):
+        data["examples"] = [examples]
+    elif isinstance(examples, list):
+        normalized_examples = []
+        for item in examples:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("example") or "课堂例子").strip()
+                body = str(item.get("description") or item.get("body") or item.get("problem") or "").strip()
+                refs = item.get("source_chunk_ids") or []
+                source = f"（来源：{', '.join(str(x) for x in refs)}）" if refs else ""
+                normalized_examples.append("：".join(x for x in (title, body) if x) + source)
+            elif str(item).strip():
+                normalized_examples.append(str(item))
+        data["examples"] = normalized_examples
+    else:
+        data["examples"] = []
 
     return data
 
@@ -302,6 +329,11 @@ def _apply_statistical_guardrails(draft: LectureDraft) -> LectureDraft:
     for s in draft.sections:
         s.heading = clean(s.heading)
         s.content = clean(s.content)
+        for component in s.components:
+            component.data = {
+                key: clean(value) if isinstance(value, str) else value
+                for key, value in component.data.items()
+            }
     return draft
 
 

@@ -37,6 +37,8 @@ async def plan_book(
     course: Course,
     digests: list[LectureDigest],
     client: LLMClient | None = None,
+    *,
+    profile_context: str = "",
 ) -> BookPlan:
     if not digests:
         raise ValueError("没有可用于规划的讲次摘要")
@@ -50,6 +52,10 @@ async def plan_book(
     prompt = f"""请为下列课程设计一本教辅书。
 
 输入是各讲的知识点地图。你知道统计学概念，但你需要关注老师具体怎么教的。
+
+{profile_context}
+
+V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、每章 component_usage、depth_guidance 和 common_mistakes。章节类型（core / guest / review / mixed）必须按课程编辑配置中的模板区分，不得用同一套模板套所有讲次。
 
 返回严格 JSON：
 {{

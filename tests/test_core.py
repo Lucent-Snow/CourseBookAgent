@@ -15,6 +15,14 @@ from coursebook_agent.models import (
 from coursebook_agent.preprocess.transcript import chunk_segments, clean_segments
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook, _render_component
 from coursebook_agent.agent.synthesize import synthesize_book_fallback
+from coursebook_agent.v2 import (
+    CourseProfile,
+    TermEntry,
+    deterministic_quality_gate,
+    enforce_component_contract,
+    normalize_chunks,
+    sanitize_examples,
+)
 
 
 class TranscriptTests(unittest.TestCase):
@@ -45,7 +53,10 @@ class GenerationSafetyTests(unittest.TestCase):
     def test_guardrails_soften_claims(self):
         draft = LectureDraft(
             lecture_id="l1", title="标题", overview="不能拒绝时研究假设不成立",
-            sections=[ChapterSection(heading="案例", content="这证明隐性歧视存在，判断标准（β）移动，样本落在α对应的临界区域之外。", source_chunk_ids=["c001"])],
+            sections=[ChapterSection(
+                heading="案例", content="这证明隐性歧视存在，判断标准（β）移动，样本落在α对应的临界区域之外。", source_chunk_ids=["c001"],
+                components=[ChapterComponent(component_type="warning", data={"body": "接受虚无假设时结论成立"})],
+            )],
             summary=["接受错误H0", "np或nq≥5"],
         )
         revised = _apply_statistical_guardrails(draft)
@@ -55,6 +66,7 @@ class GenerationSafetyTests(unittest.TestCase):
         self.assertIn("临界区域内", revised.sections[0].content)
         self.assertIn("未能拒绝", revised.summary[0])
         self.assertIn("np和nq均", revised.summary[1])
+        self.assertIn("未拒绝虚无假设", revised.sections[0].components[0].data["body"])
 
     def test_source_ranges_are_well_formed(self):
         chunks = [
@@ -82,6 +94,64 @@ class GenerationSafetyTests(unittest.TestCase):
         text = render_chapter(draft)
         for heading in ["承上", "学习目标", "本章导读", "本章重点", "易错点", "本章小结", "启下", "来源", "（重点）"]:
             self.assertIn(heading, text)
+
+
+class V2WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = CourseProfile(
+            course_id="test", subject="统计学", course_theme="测试主题", audience="学生", teaching_goal="可复习",
+            canonical_terms=[TermEntry(term="随机区组设计", aliases=["随机机组设计"])],
+            chapter_templates={"core": {"section_range": [2, 3], "body_chars": [20, 500], "required_components": ["procedure", "worked_example", "warning"]}},
+        )
+
+    def test_normalization_is_traceable_and_keeps_raw_chunk(self):
+        raw = TimedChunk(chunk_id="c001", lecture_id="l1", start_sec=0, end_sec=10, text="随机机组设计。")
+        normalized, corrections = normalize_chunks([raw], self.profile)
+        self.assertEqual(raw.text, "随机机组设计。")
+        self.assertEqual(normalized[0].text, "随机区组设计。")
+        self.assertEqual(corrections[0].raw, "随机机组设计")
+
+    def test_component_and_example_contract_repairs_machine_residue(self):
+        draft = LectureDraft(
+            lecture_id="l1", title="标题", overview="导读" * 30,
+            learning_goals=["目标"], common_mistakes=["错误"],
+            examples=["{'example': '例子', 'source_chunk_ids': ['c001']}"],
+            sections=[
+                ChapterSection(heading="一", content="正文" * 30, source_chunk_ids=["c001"], time_links=["00:00-00:10"], components=[
+                    ChapterComponent(component_type="tipped_box", data={"title": "提示", "body": "内容"}),
+                    ChapterComponent(component_type="procedure", data={"title": "步骤", "steps": "1. 做"}),
+                    ChapterComponent(component_type="worked_example", data={"title": "例题", "problem": "题目", "conclusion": "结论"}),
+                    ChapterComponent(component_type="warning", data={"title": "警告", "body": "注意"}),
+                ]),
+                ChapterSection(heading="二", content="正文" * 30, source_chunk_ids=["c002"], time_links=["00:10-00:20"]),
+            ], summary=["小结"],
+        )
+        draft = sanitize_examples(enforce_component_contract(draft))
+        self.assertEqual(draft.sections[0].components[0].component_type, "tip_box")
+        self.assertIn("例子", draft.examples[0])
+        self.assertNotIn("{'example'", draft.examples[0])
+        self.assertIn("1. 做", draft.sections[0].components[1].data["body"])
+        instruction = type("Instruction", (), {"chapter_role": "core"})()
+        self.assertTrue(deterministic_quality_gate(draft, instruction, self.profile).accepted)
+
+    def test_quality_gate_rejects_source_time_beyond_video(self):
+        draft = LectureDraft(
+            lecture_id="l1", title="标题", overview="导读" * 30,
+            learning_goals=["目标"], common_mistakes=["错误"],
+            sections=[
+                ChapterSection(heading="一", content="正文" * 30, source_chunk_ids=["c001"], time_links=["00:00-00:10"], components=[
+                    ChapterComponent(component_type="procedure", data={"body": "步骤"}),
+                    ChapterComponent(component_type="worked_example", data={"body": "例题"}),
+                    ChapterComponent(component_type="warning", data={"body": "警告"}),
+                ]),
+                ChapterSection(heading="二", content="正文" * 30, source_chunk_ids=["c001"], time_links=["00:00-00:10"]),
+            ], summary=["小结"], source_ranges=["一：字幕 00:00–01:00"],
+        )
+        instruction = type("Instruction", (), {"chapter_role": "core"})()
+        chunks = [TimedChunk(chunk_id="c001", lecture_id="l1", start_sec=0, end_sec=20, text="证据")]
+        result = deterministic_quality_gate(draft, instruction, self.profile, chunks)
+        self.assertFalse(result.accepted)
+        self.assertIn("超出视频范围", result.issues[0])
 
 
 class ComponentTests(unittest.TestCase):

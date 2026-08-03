@@ -1,0 +1,51 @@
+{
+  "course_id": "82493",
+  "profile_version": "v2",
+  "subject": "心理学实验设计与统计推断",
+  "course_theme": "以心理学研究问题为起点，学习如何选择、实施和解释假设检验、方差分析、回归分析、卡方检验与非参数检验，并能读懂课堂中的研究案例。",
+  "audience": "正在修读《实验设计与心理统计Ⅱ》、需要理解课堂并准备期末复习的本科生。",
+  "teaching_goal": "把课堂口语转化为可复习的教辅。核心方法章必须帮助学生回答“何时用、如何做、怎样解释、容易错什么”；专题章必须说清研究问题、范式、证据和方法启发；综合复习章必须是方法选择工具而非逐讲摘要。",
+  "canonical_terms": [
+    {"term": "虚无假设", "aliases": ["原假设", "虚无假说"], "category": "统计推断"},
+    {"term": "研究假设", "aliases": ["备择假设", "研究假说"], "category": "统计推断"},
+    {"term": "第一类错误", "aliases": ["α错误", "阿尔法错误"], "category": "统计推断"},
+    {"term": "第二类错误", "aliases": ["β错误", "贝塔错误"], "category": "统计推断"},
+    {"term": "随机区组设计", "aliases": ["随机机组设计", "随机7组设计"], "category": "方差分析"},
+    {"term": "拉丁方设计", "aliases": ["拉丁方", "拉丁方实验设计"], "category": "方差分析"},
+    {"term": "方差齐性", "aliases": ["方差齐性检验", "方差同质性"], "category": "统计前提"},
+    {"term": "变异的可加性", "aliases": ["变异可佳", "方差可加"], "category": "方差分析"},
+    {"term": "邓肯检验", "aliases": ["邓科检验", "邓铿检验"], "category": "事后检验"},
+    {"term": "生字密度", "aliases": ["深思密度", "升值密度", "深层面度"], "category": "课堂案例"},
+    {"term": "最小二乘法", "aliases": ["最小二乘"], "category": "回归分析"},
+    {"term": "决定系数", "aliases": ["R平方", "R²"], "category": "回归分析"},
+    {"term": "秩和检验", "aliases": ["曼惠特尼检验", "Mann-Whitney U检验"], "category": "非参数检验"},
+    {"term": "符号秩检验", "aliases": ["符号等级检验", "Wilcoxon检验"], "category": "非参数检验"}
+  ],
+  "asr_policy": "保守可追溯：只有标准术语表中的别名命中时才允许自动标准化，并记录替换。术语表不能支持的可疑词、无法可靠确认的数值、公式、人名和实验结果必须保留不确定性，写入 warnings，不得按学科常识补造。",
+  "chapter_templates": {
+    "core": {
+      "section_range": [5, 8],
+      "body_chars": [2200, 5200],
+      "required_components": ["procedure", "worked_example", "warning"],
+      "structure": ["研究问题与适用条件", "方法步骤", "课堂例题", "结果解释", "易错点"]
+    },
+    "guest": {
+      "section_range": [5, 7],
+      "body_chars": [1800, 4200],
+      "required_components": ["procedure", "worked_example", "tip_box"],
+      "structure": ["真实问题", "研究范式", "变量与证据", "结果解释", "与课程方法的联系"]
+    },
+    "review": {
+      "section_range": [5, 8],
+      "body_chars": [2200, 4800],
+      "required_components": ["procedure", "worked_example", "warning"],
+      "structure": ["方法选择框架", "关键方法对比", "典型课堂案例", "跨方法易错点", "考前路径"]
+    },
+    "mixed": {
+      "section_range": [6, 9],
+      "body_chars": [2400, 5000],
+      "required_components": ["procedure", "worked_example", "warning"],
+      "structure": ["第一部分：方法复习", "第二部分：研究案例", "案例中的设计与证据", "两部分的联系"]
+    }
+  }
+}
