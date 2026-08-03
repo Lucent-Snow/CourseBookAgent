@@ -14,6 +14,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
         self.assertTrue(response.json()["llm_configured"])
+        self.assertIn("zhiyun_live_configured", response.json())
 
     def test_unknown_job_is_404(self):
         response = self.client.get("/api/jobs/does-not-exist")

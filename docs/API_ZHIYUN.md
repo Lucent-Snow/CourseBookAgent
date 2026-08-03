@@ -1,8 +1,8 @@
 # 智云课堂 API 接口文档
 
-> 本文档记录 CourseBookAgent 所依赖的 zju-scholar 脚本接口。
-> 所有接口通过 CLI 子命令调用，输出统一 JSON 格式。
-> 测试日期：2026-07-23。测试课程：实验设计与心理统计Ⅱ（course_id=82493）。
+> CourseBookAgent 的智云集成现已内置于 `coursebook_agent/vendor/zhiyun/`，不依赖 pi skill、`zju-scholar` 安装目录或外部可执行脚本。
+> 本文其余部分保留平台端点与数据字段的调研记录；CLI 用法已由项目内的 `ZhiyunSource` 替代。
+> 测试课程：实验设计与心理统计Ⅱ（course_id=82493）。
 
 ---
 
@@ -11,12 +11,16 @@
 ### 运行环境
 
 ```bash
-PYTHON=/opt/homebrew/bin/python3          # macOS 需 Homebrew Python（系统 Python 缺 pycryptodome）
-SKILL=$HOME/.cielagent/skills/zju-scholar
+uv sync
 
-$PYTHON $SKILL/scripts/zju_zhiyun.py <command> [args]
-$PYTHON $SKILL/scripts/zju_login.py      [args]
+# 推荐：在 .env 中设置；不把 JWT 提交进仓库
+ZHIYUN_JWT=<智云课堂 JWT>
+
+# 可选：只导入已有会话数据；项目不会执行该位置的任何外部脚本
+ZHIYUN_SESSION_FILE=/absolute/path/to/session.json
 ```
+
+运行时通过项目内的 `coursebook_agent.sources.zhiyun.ZhiyunSource` 调用 API。首次获取后，课程、讲次和字幕缓存在 `data/cache/zhiyun/`，离线读取缓存不需要 JWT。
 
 ### 统一 JSON 输出格式
 
