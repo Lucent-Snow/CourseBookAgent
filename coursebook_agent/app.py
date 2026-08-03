@@ -29,6 +29,12 @@ class GenerateRequest(BaseModel):
     regenerate: bool = False
 
 
+class ZhiyunLoginRequest(BaseModel):
+    username: str
+    password: str
+    webvpn: bool = False
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> FileResponse:
     return FileResponse(Path(__file__).parent / "static" / "index.html")
@@ -42,6 +48,19 @@ async def health():
         "zhiyun_live_configured": config.zhiyun.has_credentials,
         "demo_course_id": "82493",
     }
+
+
+@app.get("/api/zhiyun/auth")
+async def zhiyun_auth_status():
+    return ZhiyunSource().auth_status()
+
+
+@app.post("/api/zhiyun/login")
+async def zhiyun_login(request: ZhiyunLoginRequest):
+    try:
+        return await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
+    except ZhiyunError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 @app.get("/api/courses")

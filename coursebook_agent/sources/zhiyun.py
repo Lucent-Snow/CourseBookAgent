@@ -160,12 +160,51 @@ class ZhiyunSource:
             for index, row in enumerate(rows) if isinstance(row, dict)
         ]
 
-    async def login(self, username: str, password: str, *, webvpn: bool = False) -> None:
-        """Log in directly and persist only the Zhiyun session inside this project."""
-        auth = ZjuAuth()
-        if webvpn:
-            raise ZhiyunError("V2 暂未提供交互式 WebVPN 登录；请设置 ZHIYUN_JWT。")
-        await auth.sso_login(username, password)
-        jwt = await auth.login_zhiyun()
+    def auth_status(self) -> dict[str, Any]:
+        """Return non-sensitive local session metadata for the UI."""
+        session = self._load_session()
+        return {
+            "authenticated": bool(session.get("zhiyun_jwt") or config.zhiyun.jwt),
+            "username": str(session.get("username") or ""),
+            "webvpn": bool(session.get("webvpn_enabled")),
+        }
+
+    async def login(self, username: str, password: str, *, webvpn: bool = False) -> dict[str, Any]:
+        """Authenticate with university credentials and persist only this app's session.
+
+        The password is used for this request only. It is never written to disk;
+        the resulting Zhiyun JWT and, when needed, WebVPN cookies are stored in
+        the gitignored project data directory.
+        """
+        username, password = username.strip(), password.strip()
+        if not username or not password:
+            raise ZhiyunError("请输入学号和密码")
+        try:
+            if webvpn:
+                from coursebook_agent.vendor.zhiyun.webvpn import WebVpnSession
+
+                vpn = WebVpnSession()
+                if not await vpn.login(username, password):
+                    raise ZhiyunError("WebVPN 登录失败，请检查学号和密码")
+                await vpn.sso_login_via_vpn(username, password)
+                auth = ZjuAuth(webvpn=vpn)
+                jwt = await auth.login_zhiyun()
+                session = {
+                    "username": username,
+                    "zhiyun_jwt": jwt,
+                    "webvpn_enabled": True,
+                    "webvpn_cookies": vpn.cookies,
+                }
+            else:
+                auth = ZjuAuth()
+                await auth.sso_login(username, password)
+                jwt = await auth.login_zhiyun()
+                session = {"username": username, "zhiyun_jwt": jwt, "webvpn_enabled": False}
+        except ZhiyunError:
+            raise
+        except Exception as exc:
+            raise ZhiyunError(f"智云认证失败：{exc}") from exc
+
         self._session_path().parent.mkdir(parents=True, exist_ok=True)
-        self._session_path().write_text(json.dumps({"username": username, "zhiyun_jwt": jwt}, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._session_path().write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        return self.auth_status()

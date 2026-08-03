@@ -19,9 +19,12 @@
     .workspace { display:grid; grid-template-columns:340px minmax(0,1fr); gap:42px; align-items:start; }
     .control { position:sticky; top:18px; border-top:3px solid var(--accent); padding-top:18px; }
     label { display:block; font-size:12px; color:var(--muted); margin-bottom:7px; }
-    select,button { width:100%; min-height:44px; border:1px solid var(--line); background:white; color:var(--ink); font:inherit; padding:9px 12px; border-radius:3px; }
-    select { margin-bottom:12px; }
+    input,select,button { width:100%; min-height:44px; border:1px solid var(--line); background:white; color:var(--ink); font:inherit; padding:9px 12px; border-radius:3px; }
+    input,select { margin-bottom:10px; }
     button { color:white; border-color:var(--accent); background:var(--accent); cursor:pointer; font-weight:700; }
+    .auth { margin:0 0 22px; padding:14px; border:1px solid var(--line); background:#fbfcfb; }
+    .auth h3 { font-size:14px; margin-bottom:10px; } .auth label.inline { display:flex; align-items:center; gap:8px; margin:2px 0 10px; color:var(--ink); } .auth input[type="checkbox"] { width:auto; min-height:auto; margin:0; }
+    .auth-note { margin:8px 0 0; color:var(--muted); font-size:12px; }
     button:hover { background:#0e646c; } button:disabled { opacity:.55; cursor:wait; }
     .status { min-height:50px; margin-top:18px; padding:12px 14px; background:var(--accent-soft); border-left:3px solid var(--accent); font-size:13px; }
     .status.error { border-left-color:var(--danger); background:#fae9e7; color:#7d2929; }
@@ -48,6 +51,14 @@
     <section class="intro"><div class="eyebrow">COURSE WORKSPACE</div><h2>课程讲义工作台</h2></section>
     <div class="workspace">
       <aside class="control">
+        <form id="auth-form" class="auth" aria-labelledby="auth-title">
+          <div class="eyebrow">ZHIYUN AUTH</div><h3 id="auth-title">登录智云课堂</h3>
+          <label for="username">学号</label><input id="username" autocomplete="username" inputmode="numeric" placeholder="学号" required>
+          <label for="password">密码</label><input id="password" type="password" autocomplete="current-password" placeholder="密码" required>
+          <label class="inline" for="webvpn"><input id="webvpn" type="checkbox"> 校外网络，使用 WebVPN</label>
+          <button id="login" type="submit">登录并加载课程</button>
+          <p id="auth-note" class="auth-note">密码仅用于本次认证，不写入本项目。</p>
+        </form>
         <label for="course">选择课程</label><select id="course"><option value="82493">实验设计与心理统计Ⅱ</option></select>
         <button id="generate">生成全课讲义</button>
         <div id="status" class="status">等待开始</div><div class="progress"><i id="progress"></i></div>
@@ -58,6 +69,12 @@
   </main>
   <script>
     const course = document.querySelector('#course');
+    const authForm = document.querySelector('#auth-form');
+    const username = document.querySelector('#username');
+    const password = document.querySelector('#password');
+    const webvpn = document.querySelector('#webvpn');
+    const login = document.querySelector('#login');
+    const authNote = document.querySelector('#auth-note');
     const generate = document.querySelector('#generate');
     const statusBox = document.querySelector('#status');
     const progress = document.querySelector('#progress');
@@ -107,9 +124,29 @@
       if (state.status === 'failed') { generate.disabled = false; return; }
       setTimeout(poll, 1200);
     }
+    async function loadCourses() {
+      const response = await fetch('/api/courses');
+      if (!response.ok) throw new Error((await response.json()).detail || '无法加载课程');
+      const data = (await response.json()).data || [];
+      course.innerHTML = data.map(x => `<option value="${esc(x.course_id)}">${esc(x.name)}</option>`).join('');
+      if (!data.length) throw new Error('智云课堂未返回可用课程');
+    }
+    async function refreshAuthStatus() {
+      try { const auth = await (await fetch('/api/zhiyun/auth')).json(); authNote.textContent = auth.authenticated ? `已登录${auth.username ? '：' + auth.username : ''}${auth.webvpn ? '（WebVPN）' : ''}` : '未登录：可浏览本地缓存；刷新课程前请登录。'; } catch (_) {}
+    }
     async function loadPersisted() { try { const response = await fetch(`/api/books/${course.value}`); if (!response.ok) return; renderBook(await response.json()); setStatus('已载入本地成书'); download.hidden = false; download.onclick = () => location.href = `/api/books/${course.value}/download.md`; } catch (_) {} }
+    authForm.addEventListener('submit', async event => {
+      event.preventDefault(); login.disabled = true; setStatus('正在进行统一认证并登录智云课堂');
+      try {
+        const response = await fetch('/api/zhiyun/login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:username.value, password:password.value, webvpn:webvpn.checked})});
+        const data = await response.json(); if (!response.ok) throw new Error(data.detail || '登录失败');
+        password.value = ''; authNote.textContent = `已登录：${data.username}${data.webvpn ? '（WebVPN）' : ''}`;
+        await loadCourses(); await loadPersisted(); setStatus('登录成功，已加载课程');
+      } catch (error) { setStatus(error.message || '登录失败', true); }
+      finally { login.disabled = false; }
+    });
     generate.addEventListener('click', async () => { generate.disabled = true; download.hidden = true; book.innerHTML = '<div class="empty">正在整理字幕并生成章节，请稍候。</div>'; progress.style.width='0%'; setStatus('正在创建任务'); const response = await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({course_id:course.value})}); const state = await response.json(); currentJob = state.job_id; poll(); });
-    loadPersisted();
+    refreshAuthStatus(); loadPersisted();
   </script>
 </body>
 </html>
