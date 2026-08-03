@@ -9,6 +9,7 @@ dependencies = [
     "httpx",
     "python-dotenv",
     "pydantic",
+    "pycryptodome>=3.20.0",
 ]
 
 [build-system]

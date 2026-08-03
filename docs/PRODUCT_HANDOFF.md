@@ -244,7 +244,7 @@ coursebook_agent/
 
 ### 9.1 数据获取
 
-- zju-scholar（`~/.cielagent/skills/zju-scholar`）：智云课堂课程列表、讲次、字幕。
+- 项目内置智云适配器（`coursebook_agent/vendor/zhiyun/`）：智云课堂课程列表、讲次、字幕；登录信息由 `ZHIYUN_JWT` 或 `ZHIYUN_SESSION_FILE` 提供。
 
 ### 9.2 大模型
 

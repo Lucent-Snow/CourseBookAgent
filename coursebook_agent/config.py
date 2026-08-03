@@ -35,18 +35,21 @@ class ServerConfig(BaseModel):
 
 
 class ZhiyunConfig(BaseModel):
-    """zju-scholar 脚本路径配置。"""
+    """In-repository Zhiyun authentication configuration.
 
-    skill_dir: Path = Path(os.getenv("ZJU_SKILL_DIR", "~/.cielagent/skills/zju-scholar")).expanduser()
-    python_bin: str = os.getenv("PYTHON_BIN", "python3")
+    JWT should normally be supplied through ``ZHIYUN_JWT``. A legacy external
+    session file can be imported by explicitly setting ``ZHIYUN_SESSION_FILE``;
+    no code or executable is loaded from that external location.
+    """
+
+    jwt: str = os.getenv("ZHIYUN_JWT", "")
+    session_file: Path = Path(
+        os.getenv("ZHIYUN_SESSION_FILE", "./data/zhiyun/session.json")
+    ).expanduser()
 
     @property
-    def zhiyun_script(self) -> Path:
-        return self.skill_dir / "scripts" / "zju_zhiyun.py"
-
-    @property
-    def login_script(self) -> Path:
-        return self.skill_dir / "scripts" / "zju_login.py"
+    def has_credentials(self) -> bool:
+        return bool(self.jwt) or self.session_file.exists()
 
 
 class AppConfig(BaseModel):
@@ -67,11 +70,8 @@ class AppConfig(BaseModel):
             raise ValueError("LLM_BASE_URL 未设置，请在 .env 中配置（OpenAI 兼容端点，如 https://your-host/v1）")
         if not self.llm.model:
             raise ValueError("LLM_MODEL 未设置，请在 .env 中配置")
-        if not self.zhiyun.zhiyun_script.exists():
-            raise FileNotFoundError(
-                f"zju-scholar 脚本不存在: {self.zhiyun.zhiyun_script}\n"
-                f"请设置 ZJU_SKILL_DIR 指向 zju-scholar 安装目录"
-            )
+        # ZhiyunSource is cache-first: a project can run offline with existing
+        # subtitle cache and only needs credentials for a live refresh.
 
     def ensure_dirs(self) -> None:
         """确保必要目录存在。"""

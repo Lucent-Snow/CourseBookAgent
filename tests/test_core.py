@@ -7,12 +7,14 @@ from coursebook_agent.models import (
     ChapterSection,
     Course,
     KnowledgePoint,
+    Lecture,
     LectureDigest,
     LectureDraft,
     TimedChunk,
     TranscriptSegment,
 )
 from coursebook_agent.preprocess.transcript import chunk_segments, clean_segments
+from coursebook_agent.sources.zhiyun import ZhiyunSource
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook, _render_component
 from coursebook_agent.agent.synthesize import synthesize_book_fallback
 from coursebook_agent.v2 import (
@@ -94,6 +96,25 @@ class GenerationSafetyTests(unittest.TestCase):
         text = render_chapter(draft)
         for heading in ["承上", "学习目标", "本章导读", "本章重点", "易错点", "本章小结", "启下", "来源", "（重点）"]:
             self.assertIn(heading, text)
+
+
+class ZhiyunSourceTests(unittest.TestCase):
+    def test_reads_legacy_cached_transcript_without_external_script(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            (cache_dir / "transcript-l1.json").write_text(json.dumps({
+                "ok": True, "data": {"sub_id": "l1", "segments": [
+                    {"start_sec": 2, "end_sec": 5, "text": "字幕内容"}
+                ]},
+            }), encoding="utf-8")
+            source = ZhiyunSource(cache_dir=cache_dir)
+            lecture = Lecture(lecture_id="l1", course_id="c1", title="测试", index=1)
+            segments = source.get_transcript(lecture)
+            self.assertEqual([(x.start_sec, x.end_sec, x.text) for x in segments], [(2, 5, "字幕内容")])
 
 
 class V2WorkflowTests(unittest.TestCase):
