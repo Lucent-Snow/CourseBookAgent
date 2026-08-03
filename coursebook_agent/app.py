@@ -36,7 +36,12 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "llm_configured": bool(config.llm.api_key), "demo_course_id": "82493"}
+    return {
+        "ok": True,
+        "llm_configured": bool(config.llm.api_key),
+        "zhiyun_live_configured": config.zhiyun.has_credentials,
+        "demo_course_id": "82493",
+    }
 
 
 @app.get("/api/courses")
