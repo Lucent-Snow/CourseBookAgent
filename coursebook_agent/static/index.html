@@ -132,7 +132,11 @@
       if (!data.length) throw new Error('智云课堂未返回可用课程');
     }
     async function refreshAuthStatus() {
-      try { const auth = await (await fetch('/api/zhiyun/auth')).json(); authNote.textContent = auth.authenticated ? `已登录${auth.username ? '：' + auth.username : ''}${auth.webvpn ? '（WebVPN）' : ''}` : '未登录：可浏览本地缓存；刷新课程前请登录。'; } catch (_) {}
+      try {
+        const auth = await (await fetch('/api/zhiyun/auth')).json();
+        authNote.textContent = auth.authenticated ? `已登录${auth.username ? '：' + auth.username : ''}${auth.webvpn ? '（WebVPN）' : ''}` : '未登录：可浏览本地缓存；刷新课程前请登录。';
+        if (auth.authenticated) await loadCourses();
+      } catch (_) {}
     }
     async function loadPersisted() { try { const response = await fetch(`/api/books/${course.value}`); if (!response.ok) return; renderBook(await response.json()); setStatus('已载入本地成书'); download.hidden = false; download.onclick = () => location.href = `/api/books/${course.value}/download.md`; } catch (_) {} }
     authForm.addEventListener('submit', async event => {
