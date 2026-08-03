@@ -28,6 +28,11 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/runs/not-a-run/report")
         self.assertEqual(response.status_code, 404)
 
+    def test_zhiyun_login_rejects_blank_credentials(self):
+        response = self.client.post("/api/zhiyun/login", json={"username": "", "password": ""})
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("请输入学号和密码", response.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
