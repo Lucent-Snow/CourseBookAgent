@@ -23,6 +23,10 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/books/not-a-course")
         self.assertEqual(response.status_code, 404)
 
+    def test_missing_v2_run_is_404(self):
+        response = self.client.get("/api/runs/not-a-run/report")
+        self.assertEqual(response.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

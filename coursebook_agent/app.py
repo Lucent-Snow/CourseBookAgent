@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from coursebook_agent.config import config
-from coursebook_agent.models import CourseBook, JobState
+from coursebook_agent.models import CourseBook, JobState, LectureDraft
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
@@ -104,6 +104,24 @@ async def download_markdown(job_id: str):
     path = config.output_dir / f"coursebook-{state.book.course.course_id}.md"
     path.write_text(render_coursebook(state.book), encoding="utf-8")
     return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=f"coursebook-{state.book.course.course_id}.md")
+
+
+@app.get("/api/runs/{run_id}/report")
+async def v2_run_report(run_id: str):
+    path = config.data_dir / "runs" / run_id / "report" / "pilot-quality-report.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="V2 运行报告不存在")
+    import json
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/runs/{run_id}/chapters/{lecture_index}")
+async def v2_run_chapter(run_id: str, lecture_index: int):
+    base = config.data_dir / "runs" / run_id / "chapters"
+    matches = sorted(base.glob(f"chapter-{lecture_index:02d}-*.json"))
+    if not matches:
+        raise HTTPException(status_code=404, detail="V2 试点章节不存在")
+    return LectureDraft.model_validate_json(matches[0].read_text(encoding="utf-8")).model_dump()
 
 
 @app.get("/api/books/{course_id}")

@@ -23,7 +23,23 @@ def main() -> None:
     parser.add_argument("--no-book-plan", action="store_true")
     parser.add_argument("--only", type=str, default="", help="Comma-separated lecture indices for partial course regen")
     parser.add_argument("--out", type=str, default="", help="Optional markdown output path")
+    parser.add_argument("--v2-profile", type=str, default="", help="Run the versioned v2 workflow using this course profile JSON")
+    parser.add_argument("--v2-pilot", type=str, default="", help="Comma-separated v2 pilot lecture indices (for example: 2,7,10,14)")
     args = parser.parse_args()
+
+    if args.v2_profile:
+        if not args.v2_pilot:
+            parser.error("--v2-profile requires --v2-pilot; v2 currently runs an explicit pilot only")
+        from coursebook_agent.v2 import V2Pipeline, load_profile
+        profile = load_profile(args.v2_profile)
+        indices = [int(value) for value in args.v2_pilot.split(",") if value.strip()]
+
+        async def run_v2():
+            report = await V2Pipeline(profile).generate_pilot(indices)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+
+        asyncio.run(run_v2())
+        return
 
     pipeline = CourseBookPipeline()
 
