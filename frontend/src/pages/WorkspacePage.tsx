@@ -5,7 +5,24 @@ import { Progress } from '@/components/ui/progress'
 import { api } from '@/api/client'
 import type { CourseListItem } from '@/types'
 
-const STEPS = ['选课', '生成', '完成']
+type Phase = 'idle' | '规划' | '生成' | '合成' | '完成'
+
+interface ProgressInfo {
+  phase: Phase
+  current: number | null
+  total: number | null
+}
+
+function parseMessage(message: string): ProgressInfo {
+  const m = message.match(/生成第 (\d+)\/(\d+) 章/)
+  if (m) return { phase: '生成', current: Number(m[1]), total: Number(m[2]) }
+  if (message.includes('规划')) return { phase: '规划', current: null, total: null }
+  if (message.includes('合成')) return { phase: '合成', current: null, total: null }
+  if (message.includes('完成')) return { phase: '完成', current: null, total: null }
+  return { phase: 'idle', current: null, total: null }
+}
+
+const PHASES: Phase[] = ['规划', '生成', '合成', '完成']
 
 export function WorkspacePage() {
   const [searchParams] = useSearchParams()
@@ -16,6 +33,7 @@ export function WorkspacePage() {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [info, setInfo] = useState<ProgressInfo>({ phase: 'idle', current: null, total: null })
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -32,7 +50,10 @@ export function WorkspacePage() {
         setProgress(job.progress ?? 0)
         setStatus(job.message || job.step)
         setError(job.status === 'failed' ? (job.error || '生成失败') : '')
+        setInfo(parseMessage(job.message || ''))
         if (job.status === 'completed' || job.status === 'partial') {
+          setInfo({ phase: '完成', current: null, total: null })
+          setProgress(100)
           setBusy(false)
           navigate(`/read/${genCourseId}`)
           return
@@ -41,7 +62,7 @@ export function WorkspacePage() {
           setBusy(false)
           return
         }
-        timer.current = window.setTimeout(() => poll(jobId, genCourseId), 1200)
+        timer.current = window.setTimeout(() => poll(jobId, genCourseId), 1000)
       } catch (err) {
         setBusy(false)
         setError((err as Error).message)
@@ -54,6 +75,7 @@ export function WorkspacePage() {
     setProgress(0)
     setError('')
     setStatus('正在创建任务')
+    setInfo({ phase: 'idle', current: null, total: null })
     try {
       const job = await api.generate(courseId)
       poll(job.job_id, courseId)
@@ -63,7 +85,8 @@ export function WorkspacePage() {
     }
   }
 
-  const activeStep = busy ? 1 : progress >= 100 ? 2 : 0
+  const phaseIndex = PHASES.indexOf(info.phase === 'idle' ? '规划' : info.phase)
+  const chapters = info.total ? Array.from({ length: info.total }, (_, i) => i + 1) : []
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -77,23 +100,23 @@ export function WorkspacePage() {
 
       {/* 步骤条 */}
       <div className="mt-8 flex items-center gap-2">
-        {STEPS.map((label, i) => (
+        {PHASES.map((label, i) => (
           <div key={label} className="flex items-center gap-2">
             <div
               className={`grid size-7 place-items-center rounded-full text-xs font-semibold ${
-                i < activeStep
+                i < phaseIndex
                   ? 'bg-emerald-500 text-white'
-                  : i === activeStep
+                  : i === phaseIndex
                     ? 'bg-primary text-primary-foreground'
                     : 'bg-muted text-muted-foreground'
               }`}
             >
-              {i < activeStep ? '✓' : i + 1}
+              {i < phaseIndex ? '✓' : i + 1}
             </div>
-            <span className={`text-sm ${i === activeStep ? 'font-medium' : 'text-muted-foreground'}`}>
+            <span className={`text-sm ${i === phaseIndex ? 'font-medium' : 'text-muted-foreground'}`}>
               {label}
             </span>
-            {i < STEPS.length - 1 && <div className="mx-2 h-px w-10 bg-border" />}
+            {i < PHASES.length - 1 && <div className="mx-2 h-px w-8 bg-border" />}
           </div>
         ))}
       </div>
@@ -120,18 +143,55 @@ export function WorkspacePage() {
           {busy ? '生成中…' : '生成全课讲义'}
         </Button>
 
-        <div className="mt-4 space-y-2">
-          {error ? (
-            <div className="rounded-md border-l-4 border-red-500 bg-red-50 p-2.5 text-xs text-red-800 dark:bg-red-950/40 dark:text-red-200">
-              {error}
+        {busy && (
+          <div className="mt-5 space-y-3">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>{status}</span>
+              <span>{progress}%</span>
             </div>
-          ) : (
-            <div className="rounded-md border-l-4 border-primary bg-muted/50 p-2.5 text-xs">
-              {status}
-            </div>
-          )}
-          {busy && <Progress value={progress} />}
-        </div>
+            <Progress value={progress} />
+
+            {/* 章节级生成进度 */}
+            {info.phase === '生成' && chapters.length > 0 && (
+              <div className="max-h-64 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2">
+                {chapters.map((n) => {
+                  const state =
+                    info.current != null && n < info.current
+                      ? 'done'
+                      : n === info.current
+                        ? 'active'
+                        : 'pending'
+                  return (
+                    <div
+                      key={n}
+                      className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
+                        state === 'active' ? 'bg-accent font-medium' : state === 'done' ? 'text-muted-foreground' : 'text-muted-foreground/60'
+                      }`}
+                    >
+                      <span className="w-4 text-center">
+                        {state === 'done' ? '✓' : state === 'active' ? '⟳' : '○'}
+                      </span>
+                      <span>第 {n} 讲</span>
+                      {state === 'active' && <span className="text-muted-foreground">生成中…</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-4 rounded-md border-l-4 border-red-500 bg-red-50 p-2.5 text-xs text-red-800 dark:bg-red-950/40 dark:text-red-200">
+            {error}
+          </div>
+        )}
+
+        {!busy && !error && (
+          <div className="mt-4 rounded-md border-l-4 border-primary bg-muted/50 p-2.5 text-xs">
+            {status}
+          </div>
+        )}
 
         <p className="mt-4 text-xs text-muted-foreground">
           生成约需数分钟，可关闭页面稍后回来；已生成的部分会缓存。

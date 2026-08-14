@@ -192,6 +192,7 @@ class CourseBookPipeline:
         synthesize: bool = True,
         progress=None,
         only_indices: list[int] | None = None,
+        concurrency: int = 3,
     ) -> CourseBook:
         course = await asyncio.to_thread(self.source.get_course, course_id, refresh_source)
         lectures = await asyncio.to_thread(self.source.list_lectures, course_id, refresh_source)
@@ -212,50 +213,61 @@ class CourseBookPipeline:
                     progress(0, max(len(lectures), 1), f"全书规划失败：{exc}")
                 plan = None
 
-        # Layer 3: Generate chapters
-        chapters: list[LectureDraft] = []
-        failures: list[str] = []
-        previous: LectureDraft | None = None
+        # Layer 3: Generate chapters（并发，信号量限流）
         selected = set(only_indices or [])
+        total = len(lectures)
+        chapters_by_pos: dict[int, LectureDraft] = {}
+        failures: list[str] = []
+        done = 0
+        sem = asyncio.Semaphore(max(1, concurrency))
 
+        async def gen_one(position: int, lecture) -> None:
+            nonlocal done
+            async with sem:
+                try:
+                    chapter = await self.generate_lecture(
+                        course_id, position,
+                        refresh_source=refresh_source, regenerate=regenerate,
+                        review=review, use_book_plan=use_book_plan,
+                        previous_draft=None, plan=plan,
+                    )
+                    chapters_by_pos[position] = chapter
+                except Exception as exc:
+                    failed = LectureDraft(
+                        lecture_id=lecture.lecture_id,
+                        title=f"第 {position} 讲：{lecture.title}",
+                        overview="本讲生成失败。",
+                        warnings=[str(exc)],
+                    )
+                    chapters_by_pos[position] = failed
+                    failures.append(f"第 {position} 讲失败：{exc}")
+                finally:
+                    done += 1
+                    if progress:
+                        progress(done, total, f"生成第 {min(done + 1, total)}/{total} 章")
+
+        tasks = []
         for position, lecture in enumerate(lectures, start=1):
             if selected and position not in selected:
                 draft_path = self.intermediate_dir / f"chapter-{lecture.lecture_id}.json"
                 if draft_path.exists():
-                    chapter = LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
-                    chapters.append(chapter)
-                    previous = chapter
+                    chapters_by_pos[position] = LectureDraft.model_validate_json(
+                        draft_path.read_text(encoding="utf-8")
+                    )
                 else:
-                    chapters.append(LectureDraft(
+                    chapters_by_pos[position] = LectureDraft(
                         lecture_id=lecture.lecture_id,
                         title=f"第 {position} 讲：{lecture.title}",
                         overview="本章尚未生成。",
-                    ))
+                    )
+                done += 1
                 continue
+            tasks.append(gen_one(position, lecture))
 
-            if progress:
-                progress(position - 1, len(lectures), f"生成第 {position}/{len(lectures)} 章")
-            try:
-                chapter = await self.generate_lecture(
-                    course_id, position,
-                    refresh_source=refresh_source, regenerate=regenerate,
-                    review=review, use_book_plan=use_book_plan,
-                    previous_draft=previous, plan=plan,
-                )
-                chapters.append(chapter)
-                previous = chapter
-            except Exception as exc:
-                if progress:
-                    progress(position, len(lectures), f"第 {position} 章失败")
-                failed = LectureDraft(
-                    lecture_id=lecture.lecture_id,
-                    title=f"第 {position} 讲：{lecture.title}",
-                    overview="本讲生成失败。",
-                    warnings=[str(exc)],
-                )
-                chapters.append(failed)
-                failures.append(f"第 {position} 讲失败：{exc}")
-                previous = failed
+        if tasks:
+            await asyncio.gather(*tasks)
+
+        chapters = [chapters_by_pos[p] for p in sorted(chapters_by_pos)]
 
         # Layer 4: Synthesize
         if progress:
