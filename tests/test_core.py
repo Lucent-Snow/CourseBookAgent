@@ -17,7 +17,7 @@ from coursebook_agent.preprocess.transcript import chunk_segments, clean_segment
 from coursebook_agent.sources.zhiyun import ZhiyunSource
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook, _render_component
 from coursebook_agent.agent.synthesize import synthesize_book_fallback
-from coursebook_agent.v2 import (
+from coursebook_agent.agent.quality import (
     CourseProfile,
     TermEntry,
     deterministic_quality_gate,

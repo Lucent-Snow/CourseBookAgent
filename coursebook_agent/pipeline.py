@@ -10,6 +10,7 @@ from coursebook_agent.agent.chapter import _apply_statistical_guardrails, genera
 from coursebook_agent.agent.digest import compress_lecture, compress_lecture_from_cache
 from coursebook_agent.agent.editor import load_plan, plan_book, save_plan, heuristic_book_plan
 from coursebook_agent.agent.llm import LLMClient
+from coursebook_agent.agent.quality import enforce_component_contract, sanitize_examples
 from coursebook_agent.agent.synthesize import synthesize_book, synthesize_book_fallback
 from coursebook_agent.config import config
 from coursebook_agent.models import BookPlan, CourseBook, LectureDraft
@@ -171,6 +172,8 @@ class CourseBookPipeline:
             plan=active_plan,
             previous_draft=previous_draft,
         )
+        # 清理机器残留：未知组件归并、Python dict 例子转文本
+        draft = sanitize_examples(enforce_component_contract(draft))
         draft_path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
         output_path = config.output_dir / f"lecture-{lecture.index:02d}-{lecture.lecture_id}.md"
         output_path.write_text(render_chapter(draft), encoding="utf-8")
