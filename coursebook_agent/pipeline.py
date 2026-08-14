@@ -10,7 +10,14 @@ from coursebook_agent.agent.chapter import _apply_statistical_guardrails, genera
 from coursebook_agent.agent.digest import compress_lecture, compress_lecture_from_cache
 from coursebook_agent.agent.editor import load_plan, plan_book, save_plan, heuristic_book_plan
 from coursebook_agent.agent.llm import LLMClient
-from coursebook_agent.agent.quality import enforce_component_contract, sanitize_examples
+from coursebook_agent.agent.quality import (
+    CourseProfile,
+    deterministic_quality_gate,
+    enforce_component_contract,
+    llm_quality_gate,
+    load_profile,
+    sanitize_examples,
+)
 from coursebook_agent.agent.synthesize import synthesize_book, synthesize_book_fallback
 from coursebook_agent.config import config
 from coursebook_agent.models import BookPlan, CourseBook, LectureDraft
@@ -136,7 +143,7 @@ class CourseBookPipeline:
             except Exception:
                 active_plan = None
 
-        # Find chapter instruction from plan
+        # Find chapter instruction from plan（提前提取，质量门禁需要）
         instruction = None
         if active_plan:
             for ch in active_plan.chapters:
@@ -144,13 +151,16 @@ class CourseBookPipeline:
                     instruction = ch
                     break
 
-        # Use cache if available and not regenerating
-        if draft_path.exists() and not regenerate:
-            draft = _apply_statistical_guardrails(LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8")))
-            draft_path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
-            return draft
+        # 加载课程 profile（质量门禁需要）
+        profile: CourseProfile | None = None
+        profile_path = Path(__file__).resolve().parent.parent / "profiles" / f"{course_id}-v2.json"
+        if profile_path.exists():
+            try:
+                profile = load_profile(profile_path)
+            except Exception:
+                pass
 
-        # Get transcript chunks
+        # 获取字幕 chunks（无论缓存命中还是重新生成都需要，用于质量门禁）
         segments = await asyncio.to_thread(self.source.get_transcript, lecture, refresh_source)
         chunks = chunk_segments(clean_segments(segments))
         chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
@@ -159,24 +169,51 @@ class CourseBookPipeline:
             encoding="utf-8",
         )
 
-        # Get previous draft for bridge context
-        if previous_draft is None and lecture_index > 1:
-            prev = lectures[lecture_index - 2]
-            prev_path = self.intermediate_dir / f"chapter-{prev.lecture_id}.json"
-            if prev_path.exists():
-                previous_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+        # ── 获取草稿：缓存或重新生成 ──────────────────────────────────────────
+        if draft_path.exists() and not regenerate:
+            draft = _apply_statistical_guardrails(
+                LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
+            )
+        else:
+            # Get previous draft for bridge context
+            if previous_draft is None and lecture_index > 1:
+                prev = lectures[lecture_index - 2]
+                prev_path = self.intermediate_dir / f"chapter-{prev.lecture_id}.json"
+                if prev_path.exists():
+                    previous_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
 
-        draft = await generate_chapter(
-            lecture,
-            chunks,
-            client=LLMClient(max_retries=3, timeout=180),
-            review=review,
-            instruction=instruction,
-            plan=active_plan,
-            previous_draft=previous_draft,
-        )
-        # 清理机器残留：未知组件归并、Python dict 例子转文本
+            draft = await generate_chapter(
+                lecture,
+                chunks,
+                client=LLMClient(max_retries=3, timeout=180),
+                review=review,
+                instruction=instruction,
+                plan=active_plan,
+                previous_draft=previous_draft,
+                template_skeleton=_get_template_skeleton(profile, instruction),
+            )
+
+        # ── 质量门禁 ──────────────────────────────────────────────────────
+        # 第一层：组件契约 + 例子清理（始终执行）
         draft = sanitize_examples(enforce_component_contract(draft))
+
+        # 第二层：确定性质量检查（始终执行）
+        if profile and instruction:
+            det_result = deterministic_quality_gate(draft, instruction, profile, chunks)
+            if not det_result.accepted:
+                draft.warnings.extend(f"[质量] {issue}" for issue in det_result.issues)
+
+        # 第三层：LLM 审校（review 模式下执行）
+        if review and profile and instruction:
+            try:
+                llm_result = await llm_quality_gate(draft, instruction, profile, chunks)
+                if not llm_result.accepted:
+                    draft.warnings.extend(f"[审校] {issue}" for issue in llm_result.issues)
+            except Exception as exc:
+                draft.warnings.append(f"[审校] LLM 审校失败：{exc}")
+
+        # 写盘前应用统计护栏
+        draft = _apply_statistical_guardrails(draft)
         draft_path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
         output_path = config.output_dir / f"lecture-{lecture.index:02d}-{lecture.lecture_id}.md"
         output_path.write_text(render_chapter(draft), encoding="utf-8")
@@ -305,6 +342,15 @@ class CourseBookPipeline:
         if progress:
             progress(len(lectures), max(len(lectures), 1), "课程教辅生成完成")
         return book
+
+
+def _get_template_skeleton(profile: "CourseProfile | None", instruction) -> str:
+    """从 profile 中提取当前章节类型的骨架模板。"""
+    if not profile or not instruction:
+        return ""
+    role = instruction.chapter_role or "core"
+    template = profile.chapter_templates.get(role) or profile.chapter_templates.get("core") or {}
+    return str(template.get("skeleton", ""))
 
 
 def _chapter_summary(index: int, chapter: LectureDraft) -> dict:

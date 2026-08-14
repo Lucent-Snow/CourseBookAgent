@@ -75,6 +75,7 @@ async def generate_chapter(
     plan: BookPlan | None = None,
     previous_draft: LectureDraft | None = None,
     revision_feedback: list[str] | None = None,
+    template_skeleton: str = "",
 ) -> LectureDraft:
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
@@ -98,6 +99,15 @@ async def generate_chapter(
     revision_context = ""
     if revision_feedback:
         revision_context = "【上一稿必须修复的问题】\n" + "\n".join(f"- {item}" for item in revision_feedback) + "\n必须逐项修复；若字幕无法支持，明确标入 warnings，不得编造。"
+
+    template_context = ""
+    if template_skeleton:
+        template_context = f"""【本章结构模板（必须严格遵守）】
+以下是本章的骨架。按这个结构写，小节标题可以调整但整体顺序不得改变。
+每个部分的内容必须充实，不得以一两行话敷衍。
+
+{template_skeleton}
+"""
 
     prompt = f"""{context}
 
