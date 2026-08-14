@@ -12,6 +12,7 @@
 | B4 | `DELETE /api/cache` 会删 `data/runs`（质量报告记录） | 清除缓存后质量报告页为空 | 待议删除范围 |
 | B5 | V2 只有 4 讲 pilot run，无全量 14 讲 run | 质量报告页只有试点数据 | 需跑全量 V2 |
 | B6 | LLM 配置从 `.env` 读，`save_llm_settings` 后内存 config 已刷新但 `LLM_TIMEOUT` 等未联动 | 设置页改动不完整 | 待完善 |
+| B7 | `synthesize_book` 单次大调用（14 章摘要喂给 LLM），JSON 返回不稳触发 repair 重试 | 合成阶段慢（约 2-3 分钟） | 待拆分或确定性回退 |
 
 ## 前端
 

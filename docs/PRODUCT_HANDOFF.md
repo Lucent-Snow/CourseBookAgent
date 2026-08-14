@@ -151,13 +151,16 @@ MVP 输出优先级：
     - 每章写作指令（ChapterInstruction）
     - 共享写作系统 prompt
     ↓
-分章撰写
+分章撰写（并发）
     - 主编 prompt + 完整字幕 → 带时间戳链接和组件的章节
+    ↓
+质量门禁
+    - 组件契约 / 例子清理（写盘前统一应用）
     ↓
 全书合成
     - 前言 / 知识地图 / 术语统一 / 要点索引
     ↓
-渲染输出（Markdown / Web / PDF）
+渲染输出（Web / Markdown）
 ```
 
 详细设计见 `docs/WORKFLOW.md`。
@@ -169,7 +172,7 @@ MVP 输出优先级：
 ```text
 coursebook_agent/
 ├── app.py                  # FastAPI 入口
-├── config.py               # 配置（LLM / 存储 / zju-scholar）
+├── config.py               # 配置（LLM / 存储 / 智云会话）
 ├── models.py               # 数据模型
 ├── pipeline.py             # 工作流编排
 ├── sources/
@@ -181,11 +184,12 @@ coursebook_agent/
 │   ├── editor.py           # 全书规划（主编）
 │   ├── chapter.py          # 分章撰写
 │   ├── synthesize.py       # 全书合成（终审）
+│   ├── quality.py          # 质量门禁（组件契约 / 例子清理 / 确定性门禁 / LLM 审校）
 │   └── llm.py              # LLM 客户端（重试 / JSON 修复）
 ├── renderer/
 │   └── markdown.py         # 教辅 Markdown 渲染（含组件）
-├── static/
-│   └── index.html          # Web 前端
+├── frontend/               # React 前端（书架 / 工作台 / 阅读器 / 设置 / 质量报告）
+├── profiles/               # 课程 Profile（术语表 / 章节模板）
 └── scripts/
     └── overnight_book_quality.py  # 全量批处理
 ```
@@ -214,19 +218,20 @@ coursebook_agent/
 | 字幕清洗分块 | 确定性逻辑，去口头语、按时间和长度分块 |
 | 字幕压缩 | 每讲 → 知识点地图 |
 | 全书规划 | 结构 + 组件规范 + 每章指令 + 系统 prompt |
-| 分章撰写 | 教辅章节，带时间戳链接和组件 |
+| 分章撰写 | 教辅章节，带时间戳链接和组件，**并发执行** |
+| 质量门禁 | 组件契约 + 例子清理（写盘前统一应用） |
 | 全书合成 | 前言 / 知识地图 / 术语表 / 要点索引 |
-| 网页展示 | 组件化渲染，目录 + 正文 |
+| 前端 5 页 | 书架 / 工作台 / 阅读器 / 设置 / 质量报告，全部连接后端 |
 | 导出 | Markdown |
 
 ### 8.2 待做 / 可增强
 
 | 功能 | 说明 |
 |---|---|
-| 全课端到端验证 | 14 讲全量重跑 + 质量验收 |
+| 时间戳跳转 | 前端时间戳接智云播放器（可追溯卖点） |
+| 合成加速 | synthesize 单次大调用 JSON 不稳且慢，拆步骤或确定性回退 |
+| 全量质量门禁 | 确定性 + LLM 审校 + 修订循环接回 pipeline |
 | PDF 导出 | 省略时间戳链接，静态排版 |
-| 前端组件化 | Tips / 例题 / 侧边栏的 HTML 形态 |
-| 单讲重生成 | CLI 已支持，前端待接入 |
 
 ### 8.3 不做
 

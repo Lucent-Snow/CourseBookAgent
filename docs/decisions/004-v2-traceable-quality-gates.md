@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — v2 pilot implemented; all-course rollout awaits pilot review and Profile refinement.
+Superseded — 门禁核心已并入主流程（见 ADR-006），v2.py 试点已删除。
 
 ## Context
 

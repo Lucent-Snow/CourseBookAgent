@@ -121,16 +121,20 @@ data/
 
 ## 6. API
 
+完整契约见 `docs/API.md`。核心路由：
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 健康检查 |
-| GET | `/api/courses` | 可用课程列表 |
-| POST | `/api/generate` | 创建生成任务（全书） |
-| GET | `/api/jobs/{job_id}` | 任务状态 |
-| GET | `/api/jobs/{job_id}/book` | 获取生成后的教辅数据 |
-| GET | `/api/jobs/{job_id}/download.md` | 下载 Markdown |
-| GET | `/api/books/{course_id}` | 获取已缓存的教辅 |
-| GET | `/api/books/{course_id}/download.md` | 下载已缓存 Markdown |
+| GET | `/api/health` | 健康 + 配置状态 |
+| GET/POST | `/api/zhiyun/auth` `/api/zhiyun/login` | 智云登录 |
+| GET | `/api/courses` `/api/books` | 课程列表 / 已生成成书列表 |
+| POST | `/api/generate` | 全课生成任务 |
+| GET | `/api/jobs/{id}` `/api/jobs/{id}/book` | 任务状态 / 生成结果 |
+| POST | `/api/courses/{id}/lectures/{i}/regenerate` | 单讲重生成 |
+| GET/PUT | `/api/settings` `/api/settings/llm` | 设置读取 / LLM 配置保存 |
+| GET | `/api/runs` `/api/runs/{id}/report` | V2 run 列表 / 质量报告 |
+| POST | `/api/runs/{id}/chapters/{i}/confirm` | 人工确认 |
+| DELETE | `/api/cache` | 清派生产物 |
 
 ---
 
@@ -148,6 +152,14 @@ data/
 
 Web 版的关键内容链接到字幕时间段，读者可跳转。PDF 版省略链接，保留文本引用。
 
-### 7.4 当前不处理 PPT
+### 7.4 并行章节生成
+
+分章撰写是全书生成的主要耗时环节。`pipeline.generate_course` 用 `asyncio.Semaphore` 限流并发执行各章，默认并发 3；承上启下依赖 `ChapterInstruction` 的桥接字段兜底，不依赖上一章的生成结果。
+
+### 7.5 质量门禁
+
+`agent/quality.py` 提供统一的写盘前清理：组件契约（未知组件归并、steps 数组展开）、例子清理（Python dict 残留转文本）、确定性门禁、LLM 审校。主流程默认应用前两者，全量门禁循环是下一迭代目标。
+
+### 7.6 当前不处理 PPT
 
 PPT 获取、OCR 和字幕-PPT 对齐留作后续增强。

@@ -8,9 +8,10 @@ course_id
   → clean_and_chunk            # 清洗 + 分块
   → compress_lectures          # 每讲压缩为知识点地图
   → plan_book                  # 主编统筹全书
-  → generate_chapters          # 带上下文的分章撰写
+  → generate_chapters          # 分章撰写（并发，信号量限流）
+  → quality_gate               # 质量门禁（组件契约 / 例子清理）
   → synthesize_book            # 全书合成
-  → render_outputs             # 渲染为 Markdown / Web / PDF
+  → render_outputs             # 渲染为 Web / Markdown
 ```
 
 ---
@@ -146,14 +147,17 @@ course_id
 
 ## 当前状态
 
-生成工作流已完整实现并集成到 `pipeline.py`。
+生成工作流已完整实现并集成到 `pipeline.py`。章节撰写并发执行（`asyncio.Semaphore` 限流），写盘前统一经过质量门禁（组件契约 + 例子清理）。
 
 | 层 | 状态 | 验证方式 |
 |---|---|---|
 | 字幕压缩 | 已实现，接入 pipeline | 单讲压缩 e2e 通过 |
 | 全书规划 | 已实现（含启发式回退） | 蓝图生成通过 |
-| 分章撰写 | 已实现 | 单章生成 + 组件渲染 e2e 通过 |
+| 分章撰写 | 已实现，**并发执行** | 单章生成 + 组件渲染 e2e 通过 |
+| 质量门禁 | 已实现（`agent/quality.py`，组件契约 + 例子清理） | 机器残留测试通过 |
 | 全书合成 | 已实现（LLM + 确定性回退） | 全书合成通过 |
-| 渲染 | Markdown 完整，Web 组件化已实现 | 组件渲染测试通过 |
+| 渲染 | Markdown 完整，前端 React 5 页已实现 | 组件渲染测试 + 浏览器 e2e 通过 |
 
-测试：`uv run python -m unittest discover -s tests -v`（当前 14 个用例全通过）
+测试：`uv run python -m unittest discover -s tests -v`（当前 24 个用例全通过）
+
+前端 5 页：书架 / 工作台 / 阅读器 / 设置 / 质量报告，全部连接后端真实接口。
