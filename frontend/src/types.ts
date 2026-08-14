@@ -97,3 +97,54 @@ export interface JobState {
   error: string | null
   book: CourseBook | null
 }
+
+export interface LLMSettings {
+  base_url: string
+  model: string
+  api_key_set: boolean
+  configured: boolean
+}
+
+export interface DataStats {
+  cache_bytes: number
+  course_count: number
+}
+
+export interface Settings {
+  llm: LLMSettings
+  zhiyun: AuthStatus
+  data: DataStats
+}
+
+export interface RunSummary {
+  run_id: string
+  course_id: string
+  accepted: number
+  rejected: number
+  indices: number[]
+}
+
+export interface RunChapterResult {
+  index: number
+  lecture_id: string
+  accepted: boolean
+  corrections: number
+  attempt?: number
+  deterministic?: { accepted: boolean; issues: string[] }
+  semantic?: { accepted: boolean; issues: string[]; metrics?: { review_status: string } }
+}
+
+export interface RunReport {
+  run_id: string
+  profile_version: string
+  indices: number[]
+  accepted: number
+  rejected: number
+  results: RunChapterResult[]
+}
+
+export interface BookSummary {
+  course_id: string
+  title: string
+  chapters: number
+}

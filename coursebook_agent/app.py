@@ -163,6 +163,24 @@ async def v2_run_chapter(run_id: str, lecture_index: int):
     return LectureDraft.model_validate_json(matches[0].read_text(encoding="utf-8")).model_dump()
 
 
+@app.get("/api/books")
+async def list_books():
+    intermediate = config.data_dir / "intermediate"
+    items = []
+    if intermediate.exists():
+        for p in sorted(intermediate.glob("coursebook-*.json")):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            items.append({
+                "course_id": str(data.get("course", {}).get("course_id", p.stem.replace("coursebook-", ""))),
+                "title": data.get("title", ""),
+                "chapters": len(data.get("chapters", [])),
+            })
+    return {"data": items}
+
+
 @app.get("/api/books/{course_id}")
 async def persisted_book(course_id: str):
     path = config.data_dir / "intermediate" / f"coursebook-{course_id}.json"
