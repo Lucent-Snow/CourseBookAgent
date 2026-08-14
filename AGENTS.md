@@ -23,20 +23,21 @@ CourseBookAgent — 把智云课堂字幕整理成课程教辅的教学智能体
 ```bash
 uv sync                          # 安装依赖
 uv run python -m unittest discover -s tests -v   # 跑测试
-uv run uvicorn coursebook_agent.app:app --host 127.0.0.1 --port 8000  # 起服务
+uv run uvicorn coursebook_agent.app:app --host 127.0.0.1 --port 8000  # 起服务（后端）
+cd frontend && npm install && npm run dev   # 起前端 dev server（/api 代理到 8000）
 uv run python -m coursebook_agent.cli --course-id 82493 --plan-only  # 生成全书蓝图
 uv run python -m coursebook_agent.cli --course-id 82493 --only 2,3,4 --regenerate --review  # 重生成指定讲次
-uv run python scripts/overnight_book_quality.py --course-id 82493 --review  # V1 全量重跑
-uv run python -m coursebook_agent.cli --v2-profile coursebook_agent/profiles/82493-v2.json --v2-pilot 2,7,10,14  # V2 试点
+uv run python scripts/overnight_book_quality.py --course-id 82493 --review  # 全量重跑
 ```
 
 ## 模块边界
 
 - `sources/`：通过项目内置 `vendor/zhiyun/` 从智云课堂拉取课程、讲次、字幕，不碰生成逻辑；实时刷新依赖 `.env` 的 `ZHIYUN_JWT` 或 `ZHIYUN_SESSION_FILE`
-- `agent/`：生成核心——`digest.py`（字幕压缩）、`editor.py`（全书规划）、`chapter.py`（分章撰写）、`synthesize.py`（全书合成）
-- `renderer/`：只负责渲染 Markdown / 前端数据，不做生成
+- `agent/`：生成核心——`digest.py`（字幕压缩）、`editor.py`（全书规划）、`chapter.py`（分章撰写）、`synthesize.py`（全书合成）、`quality.py`（质量门禁：组件契约、例子清理、确定性门禁、LLM 审校）
+- `renderer/`：只负责渲染 Markdown，不做生成
 - `preprocess/`：字幕清洗分块，纯确定性逻辑，不调 LLM
-- 生成结果缓存在 `data/`。不要删 `data/cache/`（原始字幕）和 `data/plans/`（蓝图）
+- `frontend/`：React 前端（书架 / 工作台 / 阅读器 / 设置 / 质量报告 5 页），只展示，不碰生成逻辑
+- 生成结果缓存在 `data/`。不要删 `data/cache/`（原始字幕）。`data/` 里的旧产物作为反面案例保留，用于对照 prompt 与生成结果迭代
 
 ## 工作规则
 

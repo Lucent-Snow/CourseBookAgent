@@ -68,11 +68,12 @@ coursebook_agent/
 │   ├── editor.py           # 全书规划（主编）
 │   ├── chapter.py          # 分章撰写
 │   ├── synthesize.py       # 全书合成（终审）
+│   ├── quality.py          # 质量门禁（组件契约/例子清理/确定性门禁/LLM 审校）
 │   └── llm.py              # LLM 客户端
 ├── renderer/
 │   └── markdown.py         # Markdown 渲染（含组件）
-├── static/
-│   └── index.html          # Web 前端（含组件渲染）
+├── frontend/               # React 前端（书架/工作台/阅读器/设置/质量报告 5 页）
+├── profiles/               # 课程 Profile（术语表/章节模板）
 └── scripts/
     └── overnight_book_quality.py  # 通宵批处理脚本
 ```
