@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 import { api } from '@/api/client'
-import type { CourseListItem } from '@/types'
+import type { ChapterSummary, CourseListItem } from '@/types'
 
 type Phase = 'idle' | '规划' | '生成' | '合成' | '完成'
 
@@ -11,6 +10,11 @@ interface ProgressInfo {
   phase: Phase
   current: number | null
   total: number | null
+}
+
+interface ChapterTiming {
+  start: number
+  end?: number
 }
 
 function parseMessage(message: string): ProgressInfo {
@@ -24,24 +28,60 @@ function parseMessage(message: string): ProgressInfo {
 
 const PHASES: Phase[] = ['规划', '生成', '合成', '完成']
 
+function fmt(sec: number): string {
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
 export function WorkspacePage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [courses, setCourses] = useState<CourseListItem[]>([])
   const [courseId, setCourseId] = useState(searchParams.get('courseId') ?? '82493')
+  const [forceRegen, setForceRegen] = useState(false)
   const [status, setStatus] = useState('选择课程后开始生成')
   const [error, setError] = useState('')
   const [progress, setProgress] = useState(0)
   const [busy, setBusy] = useState(false)
   const [info, setInfo] = useState<ProgressInfo>({ phase: 'idle', current: null, total: null })
-  const timer = useRef<number | null>(null)
+  const [chapters, setChapters] = useState<ChapterSummary[]>([])
+  const [expanded, setExpanded] = useState<number | null>(null)
+  const [startTime, setStartTime] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const [chapterTimes, setChapterTimes] = useState<Record<number, ChapterTiming>>({})
+  const pollTimer = useRef<number | null>(null)
+  const tickRef = useRef<number | null>(null)
+  const lastCurrentRef = useRef<number | null>(null)
 
   useEffect(() => {
     void api.listCourses().then(setCourses).catch(() => {})
     return () => {
-      if (timer.current) window.clearTimeout(timer.current)
+      if (pollTimer.current) window.clearTimeout(pollTimer.current)
+      if (tickRef.current) window.clearInterval(tickRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (!busy) return
+    tickRef.current = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => {
+      if (tickRef.current) window.clearInterval(tickRef.current)
+    }
+  }, [busy])
+
+  function recordTiming(current: number) {
+    const prev = lastCurrentRef.current
+    setChapterTimes((prevTimes) => {
+      const next = { ...prevTimes }
+      if (prev !== null && prev !== current && next[prev] && !next[prev].end) {
+        next[prev] = { ...next[prev], end: Date.now() }
+      }
+      if (!next[current]) next[current] = { start: Date.now() }
+      return next
+    })
+    lastCurrentRef.current = current
+  }
 
   function poll(jobId: string, genCourseId: string) {
     void (async () => {
@@ -50,7 +90,11 @@ export function WorkspacePage() {
         setProgress(job.progress ?? 0)
         setStatus(job.message || job.step)
         setError(job.status === 'failed' ? (job.error || '生成失败') : '')
-        setInfo(parseMessage(job.message || ''))
+        setChapters(job.chapters ?? [])
+        const parsed = parseMessage(job.message || '')
+        setInfo(parsed)
+        if (parsed.phase === '生成' && parsed.current) recordTiming(parsed.current)
+
         if (job.status === 'completed' || job.status === 'partial') {
           setInfo({ phase: '完成', current: null, total: null })
           setProgress(100)
@@ -62,7 +106,7 @@ export function WorkspacePage() {
           setBusy(false)
           return
         }
-        timer.current = window.setTimeout(() => poll(jobId, genCourseId), 1000)
+        pollTimer.current = window.setTimeout(() => poll(jobId, genCourseId), 800)
       } catch (err) {
         setBusy(false)
         setError((err as Error).message)
@@ -76,8 +120,14 @@ export function WorkspacePage() {
     setError('')
     setStatus('正在创建任务')
     setInfo({ phase: 'idle', current: null, total: null })
+    setChapters([])
+    setExpanded(null)
+    setStartTime(Date.now())
+    setNow(Date.now())
+    setChapterTimes({})
+    lastCurrentRef.current = null
     try {
-      const job = await api.generate(courseId)
+      const job = await api.generate(courseId, forceRegen)
       poll(job.job_id, courseId)
     } catch (err) {
       setBusy(false)
@@ -85,8 +135,17 @@ export function WorkspacePage() {
     }
   }
 
+  const elapsedSec = startTime ? Math.floor((now - startTime) / 1000) : 0
+  const doneTimings = Object.values(chapterTimes).filter((t) => t.end)
+  const doneCount = doneTimings.length
+  const totalDoneSec = doneTimings.reduce((s, t) => s + ((t.end! - t.start) / 1000), 0)
+  const avgSec = doneCount > 0 ? totalDoneSec / doneCount : 0
+  const remainCount = Math.max(0, (info.total ?? 0) - chapters.length)
+  const etaSec = avgSec > 0 ? avgSec * remainCount : 0
+
   const phaseIndex = PHASES.indexOf(info.phase === 'idle' ? '规划' : info.phase)
-  const chapters = info.total ? Array.from({ length: info.total }, (_, i) => i + 1) : []
+  const totalSlots = info.total ?? 0
+  const slots = totalSlots > 0 ? Array.from({ length: totalSlots }, (_, i) => i + 1) : []
 
   return (
     <div className="mx-auto max-w-2xl">
@@ -103,7 +162,7 @@ export function WorkspacePage() {
         {PHASES.map((label, i) => (
           <div key={label} className="flex items-center gap-2">
             <div
-              className={`grid size-7 place-items-center rounded-full text-xs font-semibold ${
+              className={`grid size-7 place-items-center rounded-full text-xs font-semibold transition-colors ${
                 i < phaseIndex
                   ? 'bg-emerald-500 text-white'
                   : i === phaseIndex
@@ -139,45 +198,126 @@ export function WorkspacePage() {
           ))}
         </select>
 
-        <Button onClick={generate} disabled={busy} className="mt-4 w-full">
+        <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={forceRegen}
+            onChange={(e) => setForceRegen(e.target.checked)}
+            className="size-3.5"
+          />
+          强制重新生成（忽略缓存，可观察完整生成过程）
+        </label>
+
+        <Button onClick={generate} disabled={busy} className="mt-3 w-full">
           {busy ? '生成中…' : '生成全课讲义'}
         </Button>
 
         {busy && (
-          <div className="mt-5 space-y-3">
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>{status}</span>
-              <span>{progress}%</span>
+          <div className="mt-6 space-y-4">
+            {/* 进度 */}
+            <div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="font-medium">{status}</span>
+                <span className="font-semibold tabular-nums">{progress}%</span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="flow-progress h-full rounded-full transition-all duration-700"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
             </div>
-            <Progress value={progress} />
 
-            {/* 章节级生成进度 */}
-            {info.phase === '生成' && chapters.length > 0 && (
-              <div className="max-h-64 space-y-1 overflow-auto rounded-md border bg-muted/30 p-2">
-                {chapters.map((n) => {
-                  const state =
-                    info.current != null && n < info.current
-                      ? 'done'
-                      : n === info.current
-                        ? 'active'
-                        : 'pending'
-                  return (
-                    <div
-                      key={n}
-                      className={`flex items-center gap-2 rounded px-2 py-1 text-xs ${
-                        state === 'active' ? 'bg-accent font-medium' : state === 'done' ? 'text-muted-foreground' : 'text-muted-foreground/60'
+            {/* 时间统计 */}
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="rounded-lg border bg-card py-3">
+                <div className="text-xl font-bold tabular-nums">{fmt(elapsedSec)}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">已用时间</div>
+              </div>
+              <div className="rounded-lg border bg-card py-3">
+                <div className="text-xl font-bold tabular-nums">{etaSec > 0 ? `~${fmt(etaSec)}` : '—'}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">预计剩余</div>
+              </div>
+              <div className="rounded-lg border bg-card py-3">
+                <div className="text-xl font-bold tabular-nums">{avgSec > 0 ? `${Math.round(avgSec)}s` : '—'}</div>
+                <div className="mt-0.5 text-xs text-muted-foreground">平均每讲</div>
+              </div>
+            </div>
+
+            {/* 章节真实数据 */}
+            <div className="max-h-96 space-y-1 overflow-auto rounded-lg border bg-muted/30 p-2">
+              {slots.map((n) => {
+                const chapter = chapters.find((c) => c.index === n)
+                const isActive = info.current === n
+                const isExpanded = expanded === n
+                const timing = chapterTimes[n]
+                const durSec = chapter && timing?.end ? (timing.end - timing.start) / 1000 : isActive && timing ? (now - timing.start) / 1000 : 0
+                return (
+                  <div key={n}>
+                    <button
+                      type="button"
+                      onClick={() => setExpanded(isExpanded ? null : n)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors ${
+                        isActive ? 'bg-accent font-medium' : chapter ? 'hover:bg-muted' : 'text-muted-foreground/60'
                       }`}
                     >
-                      <span className="w-4 text-center">
-                        {state === 'done' ? '✓' : state === 'active' ? '⟳' : '○'}
+                      <span className={`w-4 shrink-0 text-center ${isActive ? 'soft-pulse' : ''}`}>
+                        {chapter?.status === 'failed' ? '✗' : chapter ? '✓' : isActive ? '⟳' : '○'}
                       </span>
-                      <span>第 {n} 讲</span>
-                      {state === 'active' && <span className="text-muted-foreground">生成中…</span>}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+                      <span className="truncate">{chapter ? chapter.title : isActive ? `第 ${n} 讲 · 生成中` : `第 ${n} 讲`}</span>
+                      <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+                        {chapter?.status === 'failed'
+                          ? '失败'
+                          : chapter
+                            ? `${chapter.total_chars ?? 0}字 · ${chapter.components ?? 0}组件 · ${durSec > 0 ? Math.round(durSec) + 's' : ''}`
+                            : isActive && durSec > 0
+                              ? `${Math.round(durSec)}s`
+                              : ''}
+                      </span>
+                    </button>
+
+                    {/* 展开详情 */}
+                    {isExpanded && chapter && (
+                      <div className="ml-6 space-y-1 rounded bg-background/60 p-2">
+                        {chapter.status === 'failed' ? (
+                          <p className="text-xs text-red-600 dark:text-red-400">{chapter.error}</p>
+                        ) : (
+                          <>
+                            {chapter.module_name && (
+                              <p className="text-xs text-muted-foreground">
+                                模块：{chapter.module_name} · 角色：{chapter.chapter_role}
+                              </p>
+                            )}
+                            <div className="mt-1 space-y-0.5">
+                              {chapter.sections?.map((s, i) => (
+                                <div key={i} className="flex items-center justify-between text-xs text-muted-foreground">
+                                  <span className="truncate">
+                                    {i + 1}. {s.heading}
+                                  </span>
+                                  <span className="ml-2 shrink-0 tabular-nums">
+                                    {s.chars}字 · {s.components}组件 · {s.time_links}来源
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              目标 {chapter.learning_goals} · 重点 {chapter.key_points} · 易错 {chapter.common_mistakes}
+                            </p>
+                            {chapter.warnings && chapter.warnings.length > 0 && (
+                              <div className="mt-1 space-y-0.5">
+                                {chapter.warnings.map((w, i) => (
+                                  <p key={i} className="text-xs text-amber-600 dark:text-amber-400">⚠ {w}</p>
+                                ))}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
 

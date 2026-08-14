@@ -223,6 +223,7 @@ class CourseBookPipeline:
 
         async def gen_one(position: int, lecture) -> None:
             nonlocal done
+            summary: dict | None = None
             async with sem:
                 try:
                     chapter = await self.generate_lecture(
@@ -232,6 +233,7 @@ class CourseBookPipeline:
                         previous_draft=None, plan=plan,
                     )
                     chapters_by_pos[position] = chapter
+                    summary = _chapter_summary(position, chapter)
                 except Exception as exc:
                     failed = LectureDraft(
                         lecture_id=lecture.lecture_id,
@@ -241,10 +243,16 @@ class CourseBookPipeline:
                     )
                     chapters_by_pos[position] = failed
                     failures.append(f"第 {position} 讲失败：{exc}")
+                    summary = {
+                        "index": position,
+                        "title": f"第 {position} 讲：{lecture.title}",
+                        "status": "failed",
+                        "error": str(exc),
+                    }
                 finally:
                     done += 1
                     if progress:
-                        progress(done, total, f"生成第 {min(done + 1, total)}/{total} 章")
+                        progress(done, total, f"生成第 {min(done + 1, total)}/{total} 章", summary)
 
         tasks = []
         for position, lecture in enumerate(lectures, start=1):
@@ -293,3 +301,30 @@ class CourseBookPipeline:
         if progress:
             progress(len(lectures), max(len(lectures), 1), "课程教辅生成完成")
         return book
+
+
+def _chapter_summary(index: int, chapter: LectureDraft) -> dict:
+    """一讲生成结果的真实摘要，用于前端实时展示。"""
+    sections = [
+        {
+            "heading": s.heading,
+            "chars": len(s.content),
+            "components": len(s.components),
+            "time_links": len(s.time_links),
+        }
+        for s in chapter.sections
+    ]
+    return {
+        "index": index,
+        "title": chapter.title,
+        "status": "done",
+        "module_name": chapter.module_name,
+        "chapter_role": chapter.chapter_role,
+        "sections": sections,
+        "total_chars": sum(x["chars"] for x in sections),
+        "components": sum(x["components"] for x in sections),
+        "learning_goals": len(chapter.learning_goals),
+        "key_points": len(chapter.key_points),
+        "common_mistakes": len(chapter.common_mistakes),
+        "warnings": chapter.warnings[:5],
+    }

@@ -41,11 +41,11 @@ export const api = {
     return res.data ?? []
   },
 
-  generate: (courseId: string) =>
+  generate: (courseId: string, regenerate = false) =>
     request<JobState>('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ course_id: courseId }),
+      body: JSON.stringify({ course_id: courseId, regenerate }),
     }),
 
   job: (jobId: string) => request<JobState>(`/api/jobs/${jobId}`),

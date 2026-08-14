@@ -88,6 +88,29 @@ export interface AuthStatus {
   webvpn: boolean
 }
 
+export interface ChapterSummarySection {
+  heading: string
+  chars: number
+  components: number
+  time_links: number
+}
+
+export interface ChapterSummary {
+  index: number
+  title: string
+  status: 'done' | 'failed'
+  module_name?: string
+  chapter_role?: string
+  sections?: ChapterSummarySection[]
+  total_chars?: number
+  components?: number
+  learning_goals?: number
+  key_points?: number
+  common_mistakes?: number
+  warnings?: string[]
+  error?: string
+}
+
 export interface JobState {
   job_id: string
   status: string
@@ -96,6 +119,7 @@ export interface JobState {
   message: string
   error: string | null
   book: CourseBook | null
+  chapters: ChapterSummary[]
 }
 
 export interface LLMSettings {

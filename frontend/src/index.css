@@ -128,3 +128,24 @@
     @apply font-sans;
     }
 }
+
+/* 生成进度流动感 */
+@keyframes progress-flow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+.flow-progress {
+  background-image: linear-gradient(90deg, #147d86, #2bb8c4, #4fd1c5, #147d86);
+  background-size: 200% 100%;
+  animation: progress-flow 2.5s linear infinite;
+}
+
+@keyframes soft-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.soft-pulse {
+  animation: soft-pulse 1.6s ease-in-out infinite;
+}

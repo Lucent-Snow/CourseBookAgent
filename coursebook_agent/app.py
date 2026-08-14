@@ -107,10 +107,16 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
 async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
     pipeline = CourseBookPipeline()
 
-    def progress(done: int, total: int, message: str) -> None:
+    def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
         state.progress = int(done / total * 100) if total else 0
         state.step = message.split(" ", 1)[0]
         state.message = message
+        if chapter:
+            idx = chapter.get("index")
+            state.chapters = sorted(
+                [c for c in state.chapters if c.get("index") != idx] + [chapter],
+                key=lambda c: c.get("index", 0),
+            )
 
     try:
         book = await pipeline.generate_course(request.course_id, refresh_source=request.refresh_source, regenerate=request.regenerate, review=False, progress=progress)

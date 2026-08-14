@@ -210,6 +210,7 @@ class JobState(BaseModel):
     message: str = ""
     error: str | None = None
     book: CourseBook | None = None
+    chapters: list[dict] = Field(default_factory=list)  # 每讲生成摘要，实时更新
 
 
 def format_timestamp(seconds: int | float) -> str:
