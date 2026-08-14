@@ -81,7 +81,7 @@ class CourseBookPipeline:
     # ── Layer 2: Book planning ───────────────────────────────────────────────
 
     async def ensure_book_plan(
-        self, course_id: str, *, refresh: bool = False, refresh_source: bool = False
+        self, course_id: str, *, refresh: bool = False, refresh_source: bool = False, concurrency: int = 3
     ) -> BookPlan:
         path = self.plan_path(course_id)
         if path.exists() and not refresh:
@@ -90,11 +90,14 @@ class CourseBookPipeline:
         course = await asyncio.to_thread(self.source.get_course, course_id, refresh_source)
         lectures = await asyncio.to_thread(self.source.list_lectures, course_id, refresh_source)
 
-        # Build digests for all lectures
-        digests = []
-        for i, lecture in enumerate(lectures, 1):
-            digest = await self.get_digest(course_id, i, refresh_source=refresh_source, refresh=False)
-            digests.append(digest)
+        # Build digests for all lectures（并发，信号量限流）
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def digest_one(index: int):
+            async with sem:
+                return await self.get_digest(course_id, index, refresh_source=refresh_source, refresh=False)
+
+        digests = await asyncio.gather(*[digest_one(i) for i in range(1, len(lectures) + 1)])
 
         try:
             plan = await plan_book(course, digests, client=LLMClient(max_retries=3, timeout=180))
@@ -207,6 +210,7 @@ class CourseBookPipeline:
                     course_id,
                     refresh=regenerate or not self.plan_path(course_id).exists(),
                     refresh_source=refresh_source,
+                    concurrency=concurrency,
                 )
             except Exception as exc:
                 if progress:
