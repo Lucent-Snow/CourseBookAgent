@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { ComponentBlock } from './ComponentBlock'
+import { sanitizeList } from '@/lib/sanitize'
 import type { LectureDraft } from '@/types'
 
 const ROLE_LABELS: Record<string, string> = {
@@ -100,7 +101,7 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       {chapter.examples.length > 0 && (
         <>
           <SectionHeading>课堂例子与补充</SectionHeading>
-          <List items={chapter.examples} />
+          <List items={sanitizeList(chapter.examples)} />
         </>
       )}
 
