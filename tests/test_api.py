@@ -33,6 +33,28 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertIn("请输入学号和密码", response.json()["detail"])
 
+    def test_settings_returns_config(self):
+        response = self.client.get("/api/settings")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("llm", body)
+        self.assertIn("zhiyun", body)
+        self.assertIn("data", body)
+        self.assertIn("api_key_set", body["llm"])
+
+    def test_list_runs(self):
+        response = self.client.get("/api/runs")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("data", response.json())
+
+    def test_llm_settings_rejects_blank(self):
+        response = self.client.put("/api/settings/llm", json={"base_url": "", "model": ""})
+        self.assertEqual(response.status_code, 400)
+
+    def test_confirm_missing_run_is_404(self):
+        response = self.client.post("/api/runs/does-not-exist/chapters/1/confirm", json={"note": ""})
+        self.assertEqual(response.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

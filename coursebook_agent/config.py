@@ -87,3 +87,42 @@ except (ValueError, FileNotFoundError) as e:
     logger.warning(f"配置警告: {e}")
 
 config.ensure_dirs()
+
+
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _env_value(value: str) -> str:
+    """Quote values that dotenv would otherwise mangle."""
+    if any(c in value for c in ' #"'):
+        return '"' + value.replace('"', '\\"') + '"'
+    return value
+
+
+def save_llm_settings(base_url: str, model: str, api_key: str) -> None:
+    """Persist LLM settings to .env and refresh the in-memory config.
+
+    The existing .env is rewritten line-by-line so unrelated settings survive.
+    """
+    updates = {
+        "LLM_BASE_URL": base_url,
+        "LLM_MODEL": model,
+        "LLM_API_KEY": api_key,
+    }
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        key = line.split("=", 1)[0].strip() if "=" in line else ""
+        if key in updates:
+            out.append(f"{key}={_env_value(updates[key])}")
+            seen.add(key)
+        else:
+            out.append(line)
+    for key in updates:
+        if key not in seen:
+            out.append(f"{key}={_env_value(updates[key])}")
+    ENV_PATH.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+    config.llm.base_url = base_url
+    config.llm.model = model
+    config.llm.api_key = api_key
