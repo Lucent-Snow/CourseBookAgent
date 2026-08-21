@@ -60,6 +60,9 @@ def _instruction_context(
         parts.append(f"【总编辑写作规范】\n{plan.writer_system_prompt}")
     if instruction:
         parts.append(f"【本章指令】\n{json.dumps(instruction.model_dump(), ensure_ascii=False)}")
+        if instruction.must_verify:
+            verify_items = "\n".join(f"- {item}" for item in instruction.must_verify)
+            parts.append(f"【字幕支撑不足，须谨慎处理】\n以下知识点在字幕中的支撑不充分，写作时须格外注意：只能依据字幕实际内容撰写，不得按学科常识补造。如字幕无法支持细节，应在 warnings 中标注。\n{verify_items}")
     if prev_draft:
         parts.append(f"【上一章摘要】\ntitle={prev_draft.title}\nbridge_to_next={prev_draft.bridge_to_next}\nkey_points={prev_draft.key_points[:5]}")
     return "\n\n".join(parts) if parts else "（无额外上下文）"
@@ -76,6 +79,7 @@ async def generate_chapter(
     previous_draft: LectureDraft | None = None,
     revision_feedback: list[str] | None = None,
     template_skeleton: str = "",
+    exemplar_sections: list[dict] | None = None,
 ) -> LectureDraft:
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
@@ -109,10 +113,23 @@ async def generate_chapter(
 {template_skeleton}
 """
 
+    exemplar_context = ""
+    if exemplar_sections:
+        exemplar_parts = []
+        for ex in exemplar_sections[:2]:
+            heading = ex.get("heading", "示例小节")
+            content = ex.get("content", "")
+            if content:
+                exemplar_parts.append(f"【范例小节：{heading}】\n{content}")
+        if exemplar_parts:
+            exemplar_context = "【高质量小节范例（写作质量必须达到这个水平）】\n以下是优秀小节的真实样例。你的每个小节都应该像这样：有具体的知识内容、完整的步骤演示、清晰的逻辑递进，而不是空洞的过渡句或笼统的概述。\n\n" + "\n\n".join(exemplar_parts) + "\n"
+
     prompt = f"""{context}
 
 {revision_context}
 
+{exemplar_context}
+{template_context}
 字幕材料（共 {len(chunks)} 段，约 {sum(len(c.text) for c in chunks)} 字）：
 {source}
 
@@ -157,14 +174,18 @@ async def generate_chapter(
 {component_specs or '(无组件规范)'}
 
 质量要求：
-1. 读起来像教辅书的一章，让不懂的学生也能读懂。
-2. 核心方法章：步骤、判定规则、适用条件必须写清楚。
-3. sections 里每个 section 都要有有效 source_chunk_ids。
-4. 每个 section 至少有 1 个 time_link。
-5. 核心方法章必须有 procedure 组件。
-6. 每章至少 1 个 worked_example 组件。
-7. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
-8. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
+【内容质量（最重要）】
+1. 每个 section 的 content 必须包含具体的知识内容，禁止只写"本节将介绍..."或"接下来我们讨论..."等空洞过渡句。
+2. 方法步骤必须完整到"一个没上过课的同学照着做能完成计算"的程度。
+3. 例题必须展示完整解题过程，不能只说"老师用XX例子说明了YY"。
+4. 如果字幕中某个知识点讲得模糊，用 [不确定：...] 标注，而不是按常识补全它。
+5. 段落之间要有逻辑递进（为什么需要→原理→步骤→例子→注意什么），不能是孤立的知识点罗列。
+【结构要求】
+6. sections 里每个 section 都要有有效 source_chunk_ids。
+7. 每个 section 至少有 1 个 time_link。
+8. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。
+9. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
+10. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
 
     data = await llm.complete_json(SYSTEM, prompt, max_tokens=20000)
 

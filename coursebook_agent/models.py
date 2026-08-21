@@ -57,6 +57,8 @@ class KnowledgePoint(BaseModel):
     category: str = ""  # concept | formula | example | procedure | fact
     chunk_refs: list[str] = Field(default_factory=list)  # which chunks contain this
     time_refs: list[str] = Field(default_factory=list)  # e.g. ["05:30-12:40"]
+    sufficiency: str = "sufficient"  # sufficient | partial | insufficient — 字幕对该知识点的支撑程度
+    sufficiency_note: str = ""  # 充分性评估说明，如"只有口头描述，缺少具体数值"
 
 
 class LectureDigest(BaseModel):
@@ -112,6 +114,7 @@ class ChapterInstruction(BaseModel):
     section_plan: list[str] = Field(default_factory=list)
     component_usage: list[str] = Field(default_factory=list)  # which components to use and how
     depth_guidance: str = ""  # "this chapter needs step-by-step" vs "high-level overview"
+    must_verify: list[str] = Field(default_factory=list)  # 字幕支撑不足的知识点，写作者须谨慎处理
 
 
 class BookPlan(BaseModel):

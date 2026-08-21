@@ -169,48 +169,71 @@ class CourseBookPipeline:
             encoding="utf-8",
         )
 
-        # ── 获取草稿：缓存或重新生成 ──────────────────────────────────────────
-        if draft_path.exists() and not regenerate:
-            draft = _apply_statistical_guardrails(
-                LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
-            )
-        else:
-            # Get previous draft for bridge context
-            if previous_draft is None and lecture_index > 1:
-                prev = lectures[lecture_index - 2]
-                prev_path = self.intermediate_dir / f"chapter-{prev.lecture_id}.json"
-                if prev_path.exists():
-                    previous_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+        # ── 提取模板骨架与范例 ──────────────────────────────────────────────
+        template_skeleton = _get_template_skeleton(profile, instruction)
+        exemplar_sections = _get_exemplar_sections(profile, instruction)
 
-            draft = await generate_chapter(
-                lecture,
-                chunks,
-                client=LLMClient(max_retries=3, timeout=180),
-                review=review,
-                instruction=instruction,
-                plan=active_plan,
-                previous_draft=previous_draft,
-                template_skeleton=_get_template_skeleton(profile, instruction),
-            )
+        # ── 获取上一章草稿用于衔接上下文 ────────────────────────────────────────
+        if previous_draft is None and lecture_index > 1:
+            prev = lectures[lecture_index - 2]
+            prev_path = self.intermediate_dir / f"chapter-{prev.lecture_id}.json"
+            if prev_path.exists():
+                previous_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
 
-        # ── 质量门禁 ──────────────────────────────────────────────────────
-        # 第一层：组件契约 + 例子清理（始终执行）
-        draft = sanitize_examples(enforce_component_contract(draft))
+        # ── 生成 + 质量门禁重试循环 ──────────────────────────────────────────
+        max_attempts = 2
+        revision_feedback: list[str] = []
 
-        # 第二层：确定性质量检查（始终执行）
-        if profile and instruction:
-            det_result = deterministic_quality_gate(draft, instruction, profile, chunks)
-            if not det_result.accepted:
-                draft.warnings.extend(f"[质量] {issue}" for issue in det_result.issues)
+        for attempt in range(max_attempts):
+            # ── 获取草稿：缓存或重新生成 ──────────────────────────────────────
+            if draft_path.exists() and not regenerate and attempt == 0:
+                draft = _apply_statistical_guardrails(
+                    LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
+                )
+            else:
+                draft = await generate_chapter(
+                    lecture,
+                    chunks,
+                    client=LLMClient(max_retries=3, timeout=180),
+                    review=review,
+                    instruction=instruction,
+                    plan=active_plan,
+                    previous_draft=previous_draft,
+                    template_skeleton=template_skeleton,
+                    exemplar_sections=exemplar_sections,
+                    revision_feedback=revision_feedback if revision_feedback else None,
+                )
 
-        # 第三层：LLM 审校（review 模式下执行）
-        if review and profile and instruction:
-            try:
-                llm_result = await llm_quality_gate(draft, instruction, profile, chunks)
-                if not llm_result.accepted:
-                    draft.warnings.extend(f"[审校] {issue}" for issue in llm_result.issues)
-            except Exception as exc:
-                draft.warnings.append(f"[审校] LLM 审校失败：{exc}")
+            # ── 质量门禁 ──────────────────────────────────────────────────────
+            # 第一层：组件契约 + 例子清理（始终执行）
+            draft = sanitize_examples(enforce_component_contract(draft))
+
+            quality_issues: list[str] = []
+
+            # 第二层：确定性质量检查（始终执行）
+            if profile and instruction:
+                det_result = deterministic_quality_gate(draft, instruction, profile, chunks)
+                if not det_result.accepted:
+                    quality_issues.extend(det_result.issues)
+
+            # 第三层：LLM 审校（review 模式下执行）
+            if review and profile and instruction:
+                try:
+                    llm_result = await llm_quality_gate(draft, instruction, profile, chunks)
+                    if not llm_result.accepted:
+                        quality_issues.extend(llm_result.issues)
+                except Exception as exc:
+                    draft.warnings.append(f"[审校] LLM 审校失败：{exc}")
+
+            # ── 重试判定 ──────────────────────────────────────────────────────
+            if not quality_issues:
+                break  # 质量通过，退出循环
+
+            if attempt < max_attempts - 1:
+                revision_feedback = quality_issues  # 反馈给下一轮生成
+            else:
+                # 最后一次尝试仍未通过，记录 warnings 并输出
+                draft.warnings.extend(f"[质量] {issue}" for issue in quality_issues)
 
         # 写盘前应用统计护栏
         draft = _apply_statistical_guardrails(draft)
@@ -351,6 +374,18 @@ def _get_template_skeleton(profile: "CourseProfile | None", instruction) -> str:
     role = instruction.chapter_role or "core"
     template = profile.chapter_templates.get(role) or profile.chapter_templates.get("core") or {}
     return str(template.get("skeleton", ""))
+
+
+def _get_exemplar_sections(profile: "CourseProfile | None", instruction) -> list[dict]:
+    """从 profile 中提取当前章节类型的 few-shot 范例小节。"""
+    if not profile or not instruction:
+        return []
+    role = instruction.chapter_role or "core"
+    template = profile.chapter_templates.get(role) or profile.chapter_templates.get("core") or {}
+    exemplars = template.get("exemplar_sections", [])
+    if isinstance(exemplars, list):
+        return [ex for ex in exemplars if isinstance(ex, dict)]
+    return []
 
 
 def _chapter_summary(index: int, chapter: LectureDraft) -> dict:

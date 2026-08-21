@@ -130,7 +130,8 @@ V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、�
       "common_mistakes": ["本章应点破的易错点"],
       "section_plan": ["建议小节标题"],
       "component_usage": ["用 procedure 展示 F 检验步骤", "用 worked_example 展示完整计算"],
-      "depth_guidance": "这章需要逐步计算演示" 或 "这章以概念梳理为主"
+      "depth_guidance": "这章需要逐步计算演示" 或 "这章以概念梳理为主",
+      "must_verify": ["字幕支撑不足的知识点：原因（如 '公式推导：字幕只有结论没有过程'）"]
     }}
   ],
 
@@ -149,6 +150,7 @@ V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、�
 3. writer_system_prompt 必须包含：只用字幕内容、不编造、术语统一、组件格式。
 4. bridge_from_prev/bridge_to_next 必须具体。
 5. component_usage 必须引用 components 中定义的 name。
+6. 关注各讲 digest 中 knowledge_points 的 sufficiency 字段：sufficiency 为 insufficient 或 partial 的知识点必须列入 must_verify，并注明原因。不能把字幕支撑不足的知识点当作确定事实呈现。
 
 课程与摘要：
 {json.dumps(payload, ensure_ascii=False)}"""
@@ -209,6 +211,7 @@ def _coerce_plan(course: Course, digests: list[LectureDigest], data: dict) -> Bo
             section_plan=_str_list(raw.get("section_plan")),
             component_usage=_str_list(raw.get("component_usage")),
             depth_guidance=str(raw.get("depth_guidance") or ""),
+            must_verify=_str_list(raw.get("must_verify")),
         ))
 
     return BookPlan(

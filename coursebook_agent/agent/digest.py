@@ -69,7 +69,9 @@ async def compress_lecture(
       "description": "一句话说明老师怎么讲的这个点（不解释概念本身，描述教学方式）",
       "category": "concept|formula|example|procedure|fact",
       "chunk_refs": ["c001", "c005"],
-      "time_refs": ["05:30-12:40"]
+      "time_refs": ["05:30-12:40"],
+      "sufficiency": "sufficient|partial|insufficient",
+      "sufficiency_note": "对该知识点字幕支撑度的简要评估（如：只有口头描述缺少具体数值；公式符号可能不准确；有完整例题演示）"
     }}
   ],
   "key_examples": ["例：用物理考试成绩演示 z 检验（c015, 12:30-18:00）"],
@@ -87,6 +89,7 @@ async def compress_lecture(
 3. 不要写成讲义或摘要。这是给主编看的"原始素材清单"。
 4. 老师讲了但没解释清楚的概念，在 description 里注明。
 5. 公式用文字描述，不要试图用 LaTeX。
+6. sufficiency 评估标准：sufficient = 字幕有完整讲解含步骤/数值/例子；partial = 提及但不完整，缺关键环节；insufficient = 仅一笔带过或只有名词。每个知识点都必须评估。
 
 字幕材料：
 {source}"""
@@ -109,6 +112,8 @@ def _coerce_digest(data: dict, lecture: Lecture, chunks: list[TimedChunk], total
             category=str(item.get("category") or ""),
             chunk_refs=refs,
             time_refs=[str(t) for t in (item.get("time_refs") or [])],
+            sufficiency=str(item.get("sufficiency") or "sufficient"),
+            sufficiency_note=str(item.get("sufficiency_note") or ""),
         ))
 
     return LectureDigest(
