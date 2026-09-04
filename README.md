@@ -6,7 +6,8 @@
 
 - **后端** FastAPI + Python：字幕获取 → 清洗分块 → 字幕压缩 → 全书规划 → 分章撰写（并发）→ 质量门禁 → 全书合成
 - **前端** React + TypeScript + Vite + Tailwind + shadcn/ui：5 页（书架 / 工作台 / 阅读器 / 设置 / 质量报告）
-- **质量门禁** `agent/quality.py`：组件契约、例子清理、确定性门禁、LLM 审校
+- **质量门禁** `agent/quality.py`：组件契约、例子清理、确定性门禁、可选 LLM 审校
+- **开发交接** `AGENTS.md` 是文档入口，`docs/DEVELOPMENT.md` 是协作与验证协议
 
 ## 运行
 

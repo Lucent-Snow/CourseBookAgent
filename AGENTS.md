@@ -17,6 +17,7 @@ CourseBookAgent — 把智云课堂字幕整理成课程教辅的教学智能体
 - `docs/examples/OUTPUT_SPEC.md`：教辅书输出格式示例
 - `docs/API_ZHIYUN.md`：智云课堂数据获取接口
 - `docs/decisions/`：架构决策记录
+- `docs/DEVELOPMENT.md`：AI 接手、协作、分支、验证与文档同步协议
 
 ## 开发命令
 
@@ -28,6 +29,7 @@ cd frontend && npm install && npm run dev   # 起前端 dev server（/api 代理
 uv run python -m coursebook_agent.cli --course-id 82493 --plan-only  # 生成全书蓝图
 uv run python -m coursebook_agent.cli --course-id 82493 --only 2,3,4 --regenerate --review  # 重生成指定讲次
 uv run python scripts/overnight_book_quality.py --course-id 82493 --review  # 全量重跑
+cd frontend && npm run build && npm run lint                 # 前端构建与 lint
 ```
 
 ## 模块边界
@@ -42,7 +44,11 @@ uv run python scripts/overnight_book_quality.py --course-id 82493 --review  # �
 ## 工作规则
 
 - 核心目标：让输出像一本可复习的教辅书，不是讲次摘要拼接
-- 前端只是展示；核心发力点是生成工作流
-- 新增功能必须回答：它是否让"课程 → 教辅书"的输出更稳、更像成稿？
-- 文档和代码同步更新；复杂改动先写 ADR 到 `docs/decisions/`
-- 任何改动都要跑测试：`uv run python -m unittest discover -s tests -v`
+- 当前对外叙述以教师使用为主：课程资产沉淀、讲义草稿和人工审核；学生复习是自然的第二场景
+- 前端只是展示和任务可见性；核心发力点是生成工作流与成品质量
+- 新增功能必须回答：它是否让"课程 → 教辅书"的输出更稳、更像成稿，或显著改善现场演示？
+- 遇到生成卡住、失败或进度异常，先建立可复现测试并分别验证任务、LLM、并发、锁和前端轮询，不把现象直接写成根因
+- 代码与文档同步更新；涉及数据结构、持久化、工作流方向或比赛口径的复杂改动先写 ADR 到 `docs/decisions/`
+- 当前 Git 基线是 `main` / `origin/main`，任务应从独立分支开始；完成后跑检查、提交小步 commit，并先检查再合并
+- 任何改动都要跑后端测试；前端改动还必须构建并 lint：`uv run python -m unittest discover -s tests -v`、`cd frontend && npm run build && npm run lint`
+- 当前 `data/` 被 Git 忽略，只能作为本机实验数据；不要把凭据、原始字幕或生成产物提交到仓库
