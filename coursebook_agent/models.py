@@ -32,6 +32,14 @@ class TranscriptSegment(BaseModel):
     text: str
 
 
+class TeachingSignal(BaseModel):
+    """A teaching signal extracted from a subtitle chunk."""
+
+    signal_type: str  # emphasis | question | correction | example | admin
+    confidence: float = 1.0
+    matched_text: str = ""
+
+
 class TimedChunk(BaseModel):
     """A readable, source-addressable unit sent to the model."""
 
@@ -41,6 +49,7 @@ class TimedChunk(BaseModel):
     end_sec: int
     text: str
     source_segment_indices: list[int] = Field(default_factory=list)
+    signals: list[TeachingSignal] = Field(default_factory=list)
 
     @property
     def citation(self) -> str:
@@ -57,8 +66,9 @@ class KnowledgePoint(BaseModel):
     category: str = ""  # concept | formula | example | procedure | fact
     chunk_refs: list[str] = Field(default_factory=list)  # which chunks contain this
     time_refs: list[str] = Field(default_factory=list)  # e.g. ["05:30-12:40"]
-    sufficiency: str = "sufficient"  # sufficient | partial | insufficient — 字幕对该知识点的支撑程度
-    sufficiency_note: str = ""  # 充分性评估说明，如"只有口头描述，缺少具体数值"
+    sufficiency: str = "sufficient"  # sufficient | partial | insufficient
+    sufficiency_note: str = ""
+    teaching_signals_summary: str = ""  # e.g. "emphasis, example"
 
 
 class LectureDigest(BaseModel):

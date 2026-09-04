@@ -21,7 +21,7 @@ from coursebook_agent.agent.quality import (
 from coursebook_agent.agent.synthesize import synthesize_book, synthesize_book_fallback
 from coursebook_agent.config import config
 from coursebook_agent.models import BookPlan, CourseBook, LectureDraft
-from coursebook_agent.preprocess.transcript import chunk_segments, clean_segments
+from coursebook_agent.preprocess.transcript import chunk_segments, clean_segments, apply_canonical_terms
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunSource
 
@@ -163,6 +163,11 @@ class CourseBookPipeline:
         # 获取字幕 chunks（无论缓存命中还是重新生成都需要，用于质量门禁）
         segments = await asyncio.to_thread(self.source.get_transcript, lecture, refresh_source)
         chunks = chunk_segments(clean_segments(segments))
+
+        # 术语规范化（从 profile 加载别名并替换）
+        profile_path_for_terms = Path(__file__).resolve().parent.parent / "profiles" / f"{course_id}-v2.json"
+        chunks, term_logs = apply_canonical_terms(chunks, profile_path_for_terms)
+
         chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
         chunks_path.write_text(
             json.dumps([c.model_dump() for c in chunks], ensure_ascii=False, indent=2),
@@ -181,7 +186,7 @@ class CourseBookPipeline:
                 previous_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
 
         # ── 生成 + 质量门禁重试循环 ──────────────────────────────────────────
-        max_attempts = 2
+        max_attempts = 3
         revision_feedback: list[str] = []
 
         for attempt in range(max_attempts):
@@ -250,7 +255,7 @@ class CourseBookPipeline:
         *,
         refresh_source: bool = False,
         regenerate: bool = False,
-        review: bool = False,
+        review: bool = True,
         use_book_plan: bool = True,
         synthesize: bool = True,
         progress=None,
@@ -289,12 +294,22 @@ class CourseBookPipeline:
             nonlocal done
             summary: dict | None = None
             async with sem:
+                # 加载上一章草稿用于衔接上下文
+                prev_draft: LectureDraft | None = None
+                if position > 1:
+                    prev_lecture = lectures[position - 2]
+                    prev_path = self.intermediate_dir / f"chapter-{prev_lecture.lecture_id}.json"
+                    if prev_path.exists():
+                        try:
+                            prev_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+                        except Exception:
+                            pass
                 try:
                     chapter = await self.generate_lecture(
                         course_id, position,
                         refresh_source=refresh_source, regenerate=regenerate,
                         review=review, use_book_plan=use_book_plan,
-                        previous_draft=None, plan=plan,
+                        previous_draft=prev_draft, plan=plan,
                     )
                     chapters_by_pos[position] = chapter
                     summary = _chapter_summary(position, chapter)

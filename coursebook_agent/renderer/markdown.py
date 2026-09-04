@@ -21,13 +21,13 @@ def _render_component(comp: ChapterComponent) -> str:
         return "\n".join(lines) + "\n"
 
     if comp.component_type == "tip_box":
-        lines = [f"> 💡 **{title}**" if title else "> 💡"]
+        lines = [f"> **{title}**" if title else "> **补充说明**"]
         if body:
             lines.append(f"> {body}")
         return "\n".join(lines) + "\n"
 
     if comp.component_type == "warning":
-        lines = [f"> ⚠️ **{title}**" if title else "> ⚠️"]
+        lines = [f"> **【易错】**{title}" if title else "> **【易错】**"]
         if body:
             lines.append(f"> {body}")
         return "\n".join(lines) + "\n"
@@ -43,14 +43,14 @@ def _render_component(comp: ChapterComponent) -> str:
         return "\n".join(lines) + "\n"
 
     if comp.component_type == "side_note":
-        lines = [f"> 📝 {body}" if body else ""]
+        lines = [f"> **旁注：**{body}" if body else ""]
         if source_ref:
             lines.append(f"> *来源：{source_ref}*")
         return "\n".join(lines) + "\n"
 
     # Unknown components are a validation failure upstream. Render their usable
     # content without exposing implementation labels to students as a last resort.
-    lines = ["> 📝 **补充说明**"]
+    lines = ["> **补充说明**"]
     if title:
         lines.append(f"> **{title}**")
     if body:

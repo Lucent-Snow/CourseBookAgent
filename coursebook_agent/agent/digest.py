@@ -30,7 +30,8 @@ SYSTEM = """你是课堂字幕压缩器。目标读者是一位聪明的总编�
 5. 老师的授课流向很重要：先讲了什么、然后转向什么、用什么过渡。
 6. 行政内容（签到、作业通知）简要记录即可，不展开。
 7. ASR 质量问题单独记录。
-8. 只返回 JSON。"""
+8. 字幕中已标注教学信号（emphasis=强调、question=提问、correction=纠错、example=例题），标注为 emphasis 的内容是课堂重点，必须纳入 knowledge_points。
+9. 只返回 JSON。"""
 
 
 def _chunks_to_source(chunks: list[TimedChunk]) -> str:
@@ -71,7 +72,8 @@ async def compress_lecture(
       "chunk_refs": ["c001", "c005"],
       "time_refs": ["05:30-12:40"],
       "sufficiency": "sufficient|partial|insufficient",
-      "sufficiency_note": "对该知识点字幕支撑度的简要评估（如：只有口头描述缺少具体数值；公式符号可能不准确；有完整例题演示）"
+      "sufficiency_note": "对该知识点字幕支撑度的简要评估",
+      "teaching_signals_summary": "该知识点涉及的教学信号（如 emphasis, example）"
     }}
   ],
   "key_examples": ["例：用物理考试成绩演示 z 检验（c015, 12:30-18:00）"],
@@ -114,6 +116,7 @@ def _coerce_digest(data: dict, lecture: Lecture, chunks: list[TimedChunk], total
             time_refs=[str(t) for t in (item.get("time_refs") or [])],
             sufficiency=str(item.get("sufficiency") or "sufficient"),
             sufficiency_note=str(item.get("sufficiency_note") or ""),
+            teaching_signals_summary=str(item.get("teaching_signals_summary") or ""),
         ))
 
     return LectureDigest(
