@@ -130,7 +130,7 @@ course_id
 |---|---|---|---|
 | Markdown | 文本引用 | 文本标记 | 通用、可编辑 |
 | Web | 可点击链接跳转字幕 | HTML 组件（折叠、侧边栏） | 在线学习 |
-| PDF | 省略链接 | 静态排版 | 打印/提交 |
+| PDF | 尚未实现 | 后置能力 | 打印/提交 |
 
 ---
 
@@ -147,7 +147,7 @@ course_id
 
 ## 当前状态
 
-生成工作流已完整实现并集成到 `pipeline.py`。章节撰写并发执行（`asyncio.Semaphore` 限流），写盘前统一经过质量门禁（组件契约 + 例子清理）。
+生成工作流已集成到 `pipeline.py`。章节撰写并发执行（`asyncio.Semaphore` 限流），写盘前统一经过组件契约与例子清理；确定性门禁始终执行，LLM 审校只在 `review=True` 时执行。当前 Web `/api/generate` 明确传入 `review=False`，因此默认 Web 生成不会进入 LLM 审校与修订循环；通宵脚本默认开启 review。
 
 | 层 | 状态 | 验证方式 |
 |---|---|---|
@@ -156,7 +156,7 @@ course_id
 | 分章撰写 | 已实现，**并发执行** | 单章生成 + 组件渲染 e2e 通过 |
 | 质量门禁 | 已实现（`agent/quality.py`，组件契约 + 例子清理） | 机器残留测试通过 |
 | 全书合成 | 已实现（LLM + 确定性回退） | 全书合成通过 |
-| 渲染 | Markdown 完整，前端 React 5 页已实现 | 组件渲染测试 + 浏览器 e2e 通过 |
+| 渲染 | Markdown 完整，前端 React 5 页已实现；PDF 未实现 | 组件渲染测试 + 前端构建通过 |
 
 测试：`uv run python -m unittest discover -s tests -v`（当前 24 个用例全通过）
 
