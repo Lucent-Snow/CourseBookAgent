@@ -1,5 +1,7 @@
 # CourseBookAgent API 接口文档
 
+新增可靠性与来源接口、字段及离线验证命令见 [OFFLINE_ACCEPTANCE.md](OFFLINE_ACCEPTANCE.md)。
+
 > 前端（React）与后端（FastAPI）的对接契约。按设计稿 5 页（书架 / 工作台 / 阅读器 / 设置 / 质量报告）组织。以下接口均已实现。
 
 ## 全部接口

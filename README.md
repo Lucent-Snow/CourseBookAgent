@@ -31,6 +31,9 @@ npm run dev    # http://localhost:5173，/api 代理到 8000
 
 ## 测试
 
+无需账号或 API Key 的隔离回归：`python scripts/check_offline.py`。
+恢复、质量指标及前端交接说明见 [离线验收](docs/OFFLINE_ACCEPTANCE.md)。
+
 ```bash
 uv run python -m unittest discover -s tests -v   # 后端（24 用例）
 cd frontend && npm run build                      # 前端构建
