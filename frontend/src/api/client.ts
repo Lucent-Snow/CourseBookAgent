@@ -49,6 +49,8 @@ export const api = {
     }),
 
   job: (jobId: string) => request<JobState>(`/api/jobs/${jobId}`),
+  retryJob: (jobId: string) => request<JobState>(`/api/jobs/${jobId}/retry`, { method: 'POST' }),
+  cancelJob: (jobId: string) => request<JobState>(`/api/jobs/${jobId}/cancel`, { method: 'POST' }),
 
   book: (courseId: string) => request<CourseBook>(`/api/books/${courseId}`),
 

@@ -28,6 +28,7 @@ export interface TranscriptLink {
 }
 
 export interface LectureDraft {
+  quality_metrics?: { traceability?: TraceabilityMetrics }
   lecture_id: string
   title: string
   overview: string
@@ -112,6 +113,7 @@ export interface ChapterSummary {
 }
 
 export interface JobState {
+  course_id: string
   job_id: string
   status: string
   step: string
@@ -149,22 +151,31 @@ export interface RunSummary {
 }
 
 export interface RunChapterResult {
+  confirmation?: { confirmed: boolean; note: string; at: string } | null
   index: number
   lecture_id: string
   accepted: boolean
   corrections: number
   attempt?: number
-  deterministic?: { accepted: boolean; issues: string[] }
+  deterministic?: { accepted: boolean; issues: string[]; metrics?: { traceability?: TraceabilityMetrics } }
   semantic?: { accepted: boolean; issues: string[]; metrics?: { review_status: string } }
 }
 
 export interface RunReport {
+  course_id?: string
   run_id: string
   profile_version: string
   indices: number[]
   accepted: number
   rejected: number
   results: RunChapterResult[]
+}
+
+export interface TraceabilityMetrics {
+  source_coverage: number
+  sections_without_sources: number
+  valid_referenced_chunks: number
+  invalid_referenced_chunks: number
 }
 
 export interface BookSummary {
