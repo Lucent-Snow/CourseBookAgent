@@ -173,6 +173,13 @@ def deterministic_quality_gate(
             issues.append(f"小节“{section.heading}”没有来源")
         if not section.time_links:
             issues.append(f"小节“{section.heading}”没有时间段")
+        if chunks:
+            known_chunk_ids = {chunk.chunk_id for chunk in chunks}
+            unknown_refs = sorted(set(section.source_chunk_ids) - known_chunk_ids)
+            if unknown_refs:
+                issues.append(
+                    f"小节“{section.heading}”引用了不存在的字幕块：{', '.join(unknown_refs)}"
+                )
     if chunks:
         max_end = max(chunk.end_sec for chunk in chunks)
         for source_range in draft.source_ranges:

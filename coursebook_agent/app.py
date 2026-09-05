@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import time
 import uuid
@@ -26,6 +27,32 @@ app = FastAPI(title="CourseBookAgent", version="0.1.0")
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 jobs: dict[str, JobState] = {}
 generation_lock = asyncio.Lock()
+JOB_DIR = config.data_dir / "jobs"
+JOB_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _job_path(job_id: str) -> Path:
+    return JOB_DIR / f"{job_id}.json"
+
+
+def _persist_job(state: JobState) -> None:
+    """Persist job state atomically so status survives an app restart."""
+    path = _job_path(state.job_id)
+    temp_path = path.with_suffix(".json.tmp")
+    temp_path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def _load_jobs() -> None:
+    for path in JOB_DIR.glob("*.json"):
+        try:
+            state = JobState.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        jobs[state.job_id] = state
+
+
+_load_jobs()
 
 
 class GenerateRequest(BaseModel):
@@ -91,6 +118,7 @@ async def courses():
 async def generate(request: GenerateRequest):
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = JobState(job_id=job_id, status="queued", step="排队", progress=0, message="准备生成")
+    _persist_job(jobs[job_id])
     asyncio.create_task(_run_job(job_id, request))
     return jobs[job_id].model_dump()
 
@@ -99,8 +127,10 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
     state = jobs[job_id]
     if generation_lock.locked():
         state.status, state.step, state.message = "queued", "排队", "已有生成任务运行，等待执行"
+        _persist_job(state)
     async with generation_lock:
         state.status, state.step, state.message = "running", "获取字幕", "正在读取课程讲次和字幕"
+        _persist_job(state)
         await _generate_locked(state, request)
 
 
@@ -117,6 +147,7 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
                 [c for c in state.chapters if c.get("index") != idx] + [chapter],
                 key=lambda c: c.get("index", 0),
             )
+        _persist_job(state)
 
     try:
         book = await pipeline.generate_course(request.course_id, refresh_source=request.refresh_source, regenerate=request.regenerate, review=False, progress=progress)
@@ -124,8 +155,10 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book
         else:
             state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程讲义已生成", book
+        _persist_job(state)
     except Exception as exc:
         state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "生成失败"
+        _persist_job(state)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -204,6 +237,13 @@ async def download_persisted_markdown(course_id: str):
 
 
 def _get_job(job_id: str) -> JobState:
+    if job_id not in jobs:
+        path = _job_path(job_id)
+        if path.exists():
+            try:
+                jobs[job_id] = JobState.model_validate_json(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                pass
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="任务不存在")
     return jobs[job_id]
@@ -327,6 +367,7 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
 async def regenerate_lecture(course_id: str, index: int):
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = JobState(job_id=job_id, status="queued", step="排队", progress=0, message="准备重生成该讲")
+    _persist_job(jobs[job_id])
     asyncio.create_task(_run_regenerate(job_id, course_id, index))
     return jobs[job_id].model_dump()
 
@@ -335,6 +376,7 @@ async def _run_regenerate(job_id: str, course_id: str, index: int) -> None:
     state = jobs[job_id]
     async with generation_lock:
         state.status, state.step, state.message = "running", "生成", f"正在重生成第 {index} 讲"
+        _persist_job(state)
         try:
             pipeline = CourseBookPipeline()
             await pipeline.generate_lecture(course_id, index, regenerate=True, review=True)
@@ -345,8 +387,10 @@ async def _run_regenerate(job_id: str, course_id: str, index: int) -> None:
             )
             state.status, state.progress, state.step, state.message = "completed", 100, "完成", f"第 {index} 讲已重新生成"
             state.book = book
+            _persist_job(state)
         except Exception as exc:
             state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "重生成失败"
+            _persist_job(state)
 
 
 if __name__ == "__main__":
