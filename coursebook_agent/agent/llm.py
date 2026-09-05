@@ -17,15 +17,21 @@ logger = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, code: str = "model_error", retryable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
 
 
 class LLMClient:
-    def __init__(self, max_retries: int = 3, timeout: float | None = None):
-        self.max_retries = max_retries
+    def __init__(self, max_retries: int = 3, timeout: float | None = None, transport=None):
+        self.max_retries = max(1, max_retries)
+        self.transport = transport
         self.timeout = timeout or config.llm.timeout
 
     async def complete(self, system: str, user: str, *, max_tokens: int = 5000, temperature: float = 0.2) -> str:
+        if not (config.llm.base_url and config.llm.api_key and config.llm.model):
+            raise LLMError("请先配置模型端点、模型名和 API Key", "configuration")
         url = config.llm.base_url.rstrip("/") + "/chat/completions"
         payload = {
             "model": config.llm.model,
@@ -40,24 +46,34 @@ class LLMClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
                     response = await asyncio.wait_for(client.post(url, json=payload, headers=headers), timeout=self.timeout)
                 if response.status_code in {408, 409, 429} or response.status_code >= 500:
-                    raise LLMError(f"模型服务暂时不可用（HTTP {response.status_code}）")
-                response.raise_for_status()
+                    raise LLMError(f"模型服务暂时不可用（HTTP {response.status_code}）",
+                                   "rate_limit" if response.status_code == 429 else "service", True)
+                if response.is_error:
+                    raise LLMError(f"模型请求失败（HTTP {response.status_code}）",
+                                   "authentication" if response.status_code in {401, 403} else "request")
                 body = response.json()
                 content = _extract_message_text(body)
                 if not content.strip():
-                    choice = (body.get("choices") or [{}])[0]
-                    finish = choice.get("finish_reason", "unknown")
-                    raise LLMError(f"模型未返回最终内容（finish_reason={finish}）")
+                    raise LLMError("模型未返回最终内容", "empty_response", True)
                 return content.strip()
-            except (asyncio.TimeoutError, httpx.HTTPError, ValueError, LLMError) as exc:
-                last_error = exc
-                logger.warning("LLM request attempt %s/%s failed: %s", attempt, self.max_retries, exc)
+            except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError, AttributeError, LLMError) as exc:
+                if isinstance(exc, LLMError):
+                    last_error = exc
+                elif isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException)):
+                    last_error = LLMError("模型请求超时", "timeout", True)
+                elif isinstance(exc, httpx.HTTPError):
+                    last_error = LLMError("模型网络连接失败", "network", True)
+                else:
+                    last_error = LLMError("模型响应格式无效", "response_format", True)
+                logger.warning("LLM attempt %s/%s failed: %s", attempt, self.max_retries, last_error.code)
+                if not last_error.retryable:
+                    raise last_error from exc
                 if attempt < self.max_retries:
                     await asyncio.sleep((2 ** (attempt - 1)) + random.random())
-        raise LLMError(f"模型调用连续失败: {last_error}") from last_error
+        raise last_error
 
     async def complete_json(self, system: str, user: str, *, max_tokens: int = 7000) -> dict[str, Any]:
         # Reasoning models spend many tokens on thinking; leave headroom for the final JSON.
@@ -87,7 +103,7 @@ class LLMClient:
             try:
                 return extract_json_object(repair)
             except (json.JSONDecodeError, ValueError) as exc:
-                raise LLMError(f"模型连续返回无法解析的 JSON: {exc}") from exc
+                raise LLMError("模型连续返回无法解析的 JSON", "invalid_json") from exc
 
 
 def _extract_message_text(body: dict[str, Any]) -> str:
@@ -105,7 +121,7 @@ def _extract_message_text(body: dict[str, Any]) -> str:
     if isinstance(content, str) and content.strip():
         return content
     # Reasoning-model fallbacks seen in some OpenAI-compatible gateways.
-    for key in ("reasoning_content", "reasoning", "output_text"):
+    for key in ("output_text",):
         value = message.get(key)
         if isinstance(value, str) and value.strip():
             return value

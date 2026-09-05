@@ -159,6 +159,8 @@ class ChapterSection(BaseModel):
 
 
 class LectureDraft(BaseModel):
+    quality_metrics: dict = Field(default_factory=dict)
+    quality_report: dict = Field(default_factory=dict)
     lecture_id: str
     title: str
     overview: str
@@ -206,7 +208,11 @@ class CourseBook(BaseModel):
 
 
 class JobState(BaseModel):
+    error_code: str | None = None
+    request: dict = Field(default_factory=dict)
+    events: list[dict] = Field(default_factory=list)
     job_id: str
+    course_id: str = ""
     status: str
     step: str
     progress: int = 0

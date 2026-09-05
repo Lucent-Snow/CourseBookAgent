@@ -44,6 +44,8 @@ export function WorkspacePage() {
   const [error, setError] = useState('')
   const [progress, setProgress] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [activeJob, setActiveJob] = useState<string | null>(null)
+  const [retryable, setRetryable] = useState(false)
   const [info, setInfo] = useState<ProgressInfo>({ phase: 'idle', current: null, total: null })
   const [chapters, setChapters] = useState<ChapterSummary[]>([])
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -53,10 +55,25 @@ export function WorkspacePage() {
   const pollTimer = useRef<number | null>(null)
   const tickRef = useRef<number | null>(null)
   const lastCurrentRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
+    let disposed = false
+    mountedRef.current = true
     void api.listCourses().then(setCourses).catch(() => {})
+    const saved = localStorage.getItem('coursebook-active-job')
+    if (saved) {
+      void api.job(saved).then(job => {
+        if (disposed) return
+        setActiveJob(job.job_id)
+        setCourseId(job.course_id)
+        setBusy(['queued', 'running'].includes(job.status))
+        poll(job.job_id, job.course_id)
+      }).catch(() => localStorage.removeItem('coursebook-active-job'))
+    }
     return () => {
+      disposed = true
+      mountedRef.current = false
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
       if (tickRef.current) window.clearInterval(tickRef.current)
     }
@@ -87,22 +104,27 @@ export function WorkspacePage() {
     void (async () => {
       try {
         const job = await api.job(jobId)
+        if (!mountedRef.current) return
         setProgress(job.progress ?? 0)
         setStatus(job.message || job.step)
         setError(job.status === 'failed' ? (job.error || '生成失败') : '')
         setChapters(job.chapters ?? [])
+        setRetryable(['failed', 'partial', 'interrupted'].includes(job.status))
         const parsed = parseMessage(job.message || '')
         setInfo(parsed)
         if (parsed.phase === '生成' && parsed.current) recordTiming(parsed.current)
 
-        if (job.status === 'completed' || job.status === 'partial') {
+        if (job.status === 'completed') {
+          if (localStorage.getItem('coursebook-active-job') === jobId) {
+            localStorage.removeItem('coursebook-active-job')
+          }
           setInfo({ phase: '完成', current: null, total: null })
           setProgress(100)
           setBusy(false)
           navigate(`/read/${genCourseId}`)
           return
         }
-        if (job.status === 'failed') {
+        if (['failed', 'partial', 'interrupted'].includes(job.status)) {
           setBusy(false)
           return
         }
@@ -128,7 +150,24 @@ export function WorkspacePage() {
     lastCurrentRef.current = null
     try {
       const job = await api.generate(courseId, forceRegen)
+      setActiveJob(job.job_id)
+      setRetryable(false)
+      localStorage.setItem('coursebook-active-job', job.job_id)
       poll(job.job_id, courseId)
+    } catch (err) {
+      setBusy(false)
+      setError((err as Error).message)
+    }
+  }
+
+  async function retry() {
+    if (!activeJob) return
+    setBusy(true)
+    setError('')
+    try {
+      const job = await api.retryJob(activeJob)
+      setRetryable(false)
+      poll(job.job_id, job.course_id)
     } catch (err) {
       setBusy(false)
       setError((err as Error).message)
@@ -211,6 +250,18 @@ export function WorkspacePage() {
         <Button onClick={generate} disabled={busy} className="mt-3 w-full">
           {busy ? '生成中…' : '生成全课讲义'}
         </Button>
+        {retryable && (
+          <Button onClick={retry} disabled={busy} variant="outline" className="mt-3 w-full">
+            恢复任务（复用已完成章节）
+          </Button>
+        )}
+        {busy && activeJob && (
+          <Button variant="outline" className="mt-3 w-full" onClick={() => {
+            void api.cancelJob(activeJob).catch(err => setError((err as Error).message))
+          }}>
+            停止生成并保留进度
+          </Button>
+        )}
 
         {busy && (
           <div className="mt-6 space-y-4">

@@ -76,7 +76,7 @@ export function SettingsPage() {
   }
 
   async function clearCache() {
-    if (!window.confirm('确定清除派生产物（中间产物、输出、运行记录）？原始字幕与蓝图会保留。')) return
+    if (!window.confirm('确定清除中间产物与输出？原始字幕、蓝图、任务快照与质量记录会保留。')) return
     await run(async () => {
       const res = await api.clearCache()
       setStatus(`已清除：${res.removed.join('、')}`)
