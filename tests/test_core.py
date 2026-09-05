@@ -24,6 +24,7 @@ from coursebook_agent.agent.quality import (
     enforce_component_contract,
     normalize_chunks,
     sanitize_examples,
+    traceability_metrics,
 )
 
 
@@ -188,6 +189,22 @@ class V2WorkflowTests(unittest.TestCase):
         result = deterministic_quality_gate(draft, instruction, self.profile, chunks)
         self.assertFalse(result.accepted)
         self.assertTrue(any("不存在的字幕块" in issue for issue in result.issues))
+
+    def test_traceability_metrics_report_coverage_and_invalid_refs(self):
+        draft = LectureDraft(
+            lecture_id="l1", title="标题", overview="概述",
+            sections=[
+                ChapterSection(heading="一", content="正文", source_chunk_ids=["c001"], time_links=["00:00-00:10"]),
+                ChapterSection(heading="二", content="正文", source_chunk_ids=["c999"], time_links=["00:10-00:20"]),
+                ChapterSection(heading="三", content="正文", time_links=["00:20-00:30"]),
+            ],
+        )
+        chunks = [TimedChunk(chunk_id="c001", lecture_id="l1", start_sec=0, end_sec=10, text="证据")]
+        metrics = traceability_metrics(draft, chunks)
+        self.assertEqual(metrics["sections_with_sources"], 2)
+        self.assertEqual(metrics["source_coverage"], 0.667)
+        self.assertEqual(metrics["valid_referenced_chunks"], 1)
+        self.assertEqual(metrics["invalid_referenced_chunks"], 1)
 
 
 class ComponentTests(unittest.TestCase):

@@ -152,6 +152,28 @@ def sanitize_examples(draft: LectureDraft) -> LectureDraft:
     return draft
 
 
+def traceability_metrics(draft: LectureDraft, chunks: list[TimedChunk]) -> dict[str, Any]:
+    """Summarize whether chapter sections point to real transcript evidence."""
+    known_chunk_ids = {chunk.chunk_id for chunk in chunks}
+    total_sections = len(draft.sections)
+    sections_with_sources = sum(bool(section.source_chunk_ids) for section in draft.sections)
+    referenced_ids = {
+        chunk_id
+        for section in draft.sections
+        for chunk_id in section.source_chunk_ids
+    }
+    valid_referenced_ids = referenced_ids & known_chunk_ids
+    invalid_referenced_ids = referenced_ids - known_chunk_ids
+    return {
+        "total_sections": total_sections,
+        "sections_with_sources": sections_with_sources,
+        "source_coverage": round(sections_with_sources / total_sections, 3) if total_sections else 0.0,
+        "referenced_chunks": len(referenced_ids),
+        "valid_referenced_chunks": len(valid_referenced_ids),
+        "invalid_referenced_chunks": len(invalid_referenced_ids),
+    }
+
+
 def deterministic_quality_gate(
     draft: LectureDraft,
     instruction: ChapterInstruction,
@@ -162,6 +184,9 @@ def deterministic_quality_gate(
     text_chars = sum(len(section.content.strip()) for section in draft.sections)
     component_types = [c.component_type for section in draft.sections for c in section.components]
     issues: list[str] = []
+    metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
+    if chunks:
+        metrics["traceability"] = traceability_metrics(draft, chunks)
     min_sections, max_sections = template.get("section_range", [2, 12])
     min_chars, max_chars = template.get("body_chars", [800, 8000])
     if not min_sections <= len(draft.sections) <= max_sections:
@@ -197,7 +222,6 @@ def deterministic_quality_gate(
         issues.append("课堂例子含未解析 JSON 对象")
     if not draft.learning_goals or not draft.common_mistakes:
         issues.append("缺少学习目标或易错点")
-    metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
     return QualityResult(not issues, issues, metrics)
 
 
