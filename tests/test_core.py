@@ -174,6 +174,21 @@ class V2WorkflowTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertIn("超出视频范围", result.issues[0])
 
+    def test_quality_gate_rejects_unknown_source_chunk(self):
+        draft = LectureDraft(
+            lecture_id="l1", title="标题", overview="导读" * 30,
+            learning_goals=["目标"], common_mistakes=["错误"],
+            sections=[
+                ChapterSection(heading="一", content="正文" * 30, source_chunk_ids=["c999"], time_links=["00:00-00:10"]),
+                ChapterSection(heading="二", content="正文" * 30, source_chunk_ids=["c001"], time_links=["00:00-00:10"]),
+            ], summary=["小结"],
+        )
+        instruction = type("Instruction", (), {"chapter_role": "core"})()
+        chunks = [TimedChunk(chunk_id="c001", lecture_id="l1", start_sec=0, end_sec=20, text="证据")]
+        result = deterministic_quality_gate(draft, instruction, self.profile, chunks)
+        self.assertFalse(result.accepted)
+        self.assertTrue(any("不存在的字幕块" in issue for issue in result.issues))
+
 
 class ComponentTests(unittest.TestCase):
     def test_worked_example_render(self):
