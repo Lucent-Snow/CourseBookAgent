@@ -240,7 +240,8 @@ def _str_list(value) -> list[str]:
 
 def save_plan(plan: BookPlan, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
+    from coursebook_agent.storage import atomic_write_text
+    atomic_write_text(path, plan.model_dump_json(indent=2))
 
 
 def load_plan(path: Path) -> BookPlan:

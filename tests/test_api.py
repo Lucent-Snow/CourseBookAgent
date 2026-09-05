@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -13,7 +14,8 @@ class ApiTests(unittest.TestCase):
         response = self.client.get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
-        self.assertTrue(response.json()["llm_configured"])
+        with patch("coursebook_agent.app.config.llm.api_key", ""):
+            self.assertFalse(self.client.get("/api/health").json()["llm_configured"])
         self.assertIn("zhiyun_live_configured", response.json())
 
     def test_unknown_job_is_404(self):

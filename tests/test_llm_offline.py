@@ -57,3 +57,10 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(LLMError) as ctx:
                 await client.complete_json("s", "u")
             self.assertEqual(ctx.exception.code, "invalid_json")
+
+    async def test_reasoning_only_is_not_a_final_answer(self):
+        def handler(request):
+            return httpx.Response(200, json={"choices": [{"message": {"reasoning_content": "private reasoning"}}]})
+        with self.assertRaises(LLMError) as ctx:
+            await LLMClient(max_retries=1, transport=httpx.MockTransport(handler)).complete("s", "u")
+        self.assertEqual(ctx.exception.code, "empty_response")

@@ -154,7 +154,7 @@ def sanitize_examples(draft: LectureDraft) -> LectureDraft:
 
 def traceability_metrics(draft: LectureDraft, chunks: list[TimedChunk]) -> dict[str, Any]:
     """Summarize whether chapter sections point to real transcript evidence."""
-    known_chunk_ids = {chunk.chunk_id for chunk in chunks}
+    known_chunk_ids = {chunk.chunk_id for chunk in chunks if chunk.lecture_id == draft.lecture_id}
     total_sections = len(draft.sections)
     sections_with_sources = sum(bool(section.source_chunk_ids) for section in draft.sections)
     referenced_ids = {
@@ -164,10 +164,14 @@ def traceability_metrics(draft: LectureDraft, chunks: list[TimedChunk]) -> dict[
     }
     valid_referenced_ids = referenced_ids & known_chunk_ids
     invalid_referenced_ids = referenced_ids - known_chunk_ids
+    valid_sections = sum(bool(s.source_chunk_ids) and set(s.source_chunk_ids) <= known_chunk_ids
+                         for s in draft.sections)
     return {
         "total_sections": total_sections,
         "sections_with_sources": sections_with_sources,
-        "source_coverage": round(sections_with_sources / total_sections, 3) if total_sections else 0.0,
+        "source_coverage": round(valid_sections / total_sections, 3) if total_sections else 0.0,
+        "sections_with_valid_sources": valid_sections,
+        "sections_without_sources": total_sections - sections_with_sources,
         "referenced_chunks": len(referenced_ids),
         "valid_referenced_chunks": len(valid_referenced_ids),
         "invalid_referenced_chunks": len(invalid_referenced_ids),
@@ -185,7 +189,7 @@ def deterministic_quality_gate(
     component_types = [c.component_type for section in draft.sections for c in section.components]
     issues: list[str] = []
     metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
-    if chunks:
+    if chunks is not None:
         metrics["traceability"] = traceability_metrics(draft, chunks)
     min_sections, max_sections = template.get("section_range", [2, 12])
     min_chars, max_chars = template.get("body_chars", [800, 8000])
@@ -198,8 +202,8 @@ def deterministic_quality_gate(
             issues.append(f"小节“{section.heading}”没有来源")
         if not section.time_links:
             issues.append(f"小节“{section.heading}”没有时间段")
-        if chunks:
-            known_chunk_ids = {chunk.chunk_id for chunk in chunks}
+        if chunks is not None:
+            known_chunk_ids = {chunk.chunk_id for chunk in chunks if chunk.lecture_id == draft.lecture_id}
             unknown_refs = sorted(set(section.source_chunk_ids) - known_chunk_ids)
             if unknown_refs:
                 issues.append(

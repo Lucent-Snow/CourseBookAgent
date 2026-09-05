@@ -57,8 +57,6 @@ class LLMClient:
                 body = response.json()
                 content = _extract_message_text(body)
                 if not content.strip():
-                    choice = (body.get("choices") or [{}])[0]
-                    finish = choice.get("finish_reason", "unknown")
                     raise LLMError("模型未返回最终内容", "empty_response", True)
                 return content.strip()
             except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError, AttributeError, LLMError) as exc:

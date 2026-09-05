@@ -202,7 +202,7 @@ class V2WorkflowTests(unittest.TestCase):
         chunks = [TimedChunk(chunk_id="c001", lecture_id="l1", start_sec=0, end_sec=10, text="证据")]
         metrics = traceability_metrics(draft, chunks)
         self.assertEqual(metrics["sections_with_sources"], 2)
-        self.assertEqual(metrics["source_coverage"], 0.667)
+        self.assertEqual(metrics["source_coverage"], 0.333)
         self.assertEqual(metrics["valid_referenced_chunks"], 1)
         self.assertEqual(metrics["invalid_referenced_chunks"], 1)
 
