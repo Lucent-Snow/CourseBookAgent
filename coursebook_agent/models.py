@@ -207,6 +207,7 @@ class CourseBook(BaseModel):
 
 class JobState(BaseModel):
     job_id: str
+    course_id: str = ""
     status: str
     step: str
     progress: int = 0

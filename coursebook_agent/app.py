@@ -117,7 +117,7 @@ async def courses():
 @app.post("/api/generate", status_code=202)
 async def generate(request: GenerateRequest):
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = JobState(job_id=job_id, status="queued", step="排队", progress=0, message="准备生成")
+    jobs[job_id] = JobState(job_id=job_id, course_id=request.course_id, status="queued", step="排队", progress=0, message="准备生成")
     _persist_job(jobs[job_id])
     asyncio.create_task(_run_job(job_id, request))
     return jobs[job_id].model_dump()
@@ -134,7 +134,7 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
         await _generate_locked(state, request)
 
 
-async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
+async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
     pipeline = CourseBookPipeline()
 
     def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
@@ -150,7 +150,14 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
         _persist_job(state)
 
     try:
-        book = await pipeline.generate_course(request.course_id, refresh_source=request.refresh_source, regenerate=request.regenerate, review=False, progress=progress)
+        book = await pipeline.generate_course(
+            request.course_id,
+            refresh_source=request.refresh_source,
+            regenerate=request.regenerate,
+            review=False,
+            progress=progress,
+            only_indices=only_indices,
+        )
         if book.warnings:
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book
         else:
@@ -164,6 +171,42 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
 @app.get("/api/jobs/{job_id}")
 async def job_status(job_id: str):
     return _get_job(job_id).model_dump()
+
+
+@app.post("/api/jobs/{job_id}/retry", status_code=202)
+async def retry_failed_job(job_id: str):
+    state = _get_job(job_id)
+    if state.status not in {"failed", "partial"}:
+        raise HTTPException(status_code=409, detail="只有失败或部分完成的任务可以重试")
+    failed_indices = sorted(
+        int(item["index"])
+        for item in state.chapters
+        if item.get("status") == "failed" and str(item.get("index", "")).isdigit()
+    )
+    if not state.course_id:
+        raise HTTPException(status_code=409, detail="任务缺少课程信息，无法重试")
+    if not failed_indices:
+        raise HTTPException(status_code=409, detail="没有可重试的失败章节")
+    state.status = "queued"
+    state.step = "排队"
+    state.progress = 0
+    state.error = None
+    state.message = f"准备重试 {len(failed_indices)} 个失败章节"
+    _persist_job(state)
+    asyncio.create_task(_run_retry_job(state.job_id, state.course_id, failed_indices))
+    return {"job_id": state.job_id, "retry_indices": failed_indices, **state.model_dump()}
+
+
+async def _run_retry_job(job_id: str, course_id: str, retry_indices: list[int]) -> None:
+    state = jobs[job_id]
+    async with generation_lock:
+        state.status, state.step, state.message = "running", "重试", f"正在重试 {len(retry_indices)} 个失败章节"
+        _persist_job(state)
+        await _generate_locked(
+            state,
+            GenerateRequest(course_id=course_id, regenerate=True),
+            only_indices=retry_indices,
+        )
 
 
 @app.get("/api/jobs/{job_id}/book")
@@ -366,7 +409,7 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
 @app.post("/api/courses/{course_id}/lectures/{index}/regenerate", status_code=202)
 async def regenerate_lecture(course_id: str, index: int):
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = JobState(job_id=job_id, status="queued", step="排队", progress=0, message="准备重生成该讲")
+    jobs[job_id] = JobState(job_id=job_id, course_id=course_id, status="queued", step="排队", progress=0, message="准备重生成该讲")
     _persist_job(jobs[job_id])
     asyncio.create_task(_run_regenerate(job_id, course_id, index))
     return jobs[job_id].model_dump()
