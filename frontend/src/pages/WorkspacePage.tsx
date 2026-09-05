@@ -55,12 +55,16 @@ export function WorkspacePage() {
   const pollTimer = useRef<number | null>(null)
   const tickRef = useRef<number | null>(null)
   const lastCurrentRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
+    let disposed = false
+    mountedRef.current = true
     void api.listCourses().then(setCourses).catch(() => {})
     const saved = localStorage.getItem('coursebook-active-job')
     if (saved) {
       void api.job(saved).then(job => {
+        if (disposed) return
         setActiveJob(job.job_id)
         setCourseId(job.course_id)
         setBusy(['queued', 'running'].includes(job.status))
@@ -68,6 +72,8 @@ export function WorkspacePage() {
       }).catch(() => localStorage.removeItem('coursebook-active-job'))
     }
     return () => {
+      disposed = true
+      mountedRef.current = false
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
       if (tickRef.current) window.clearInterval(tickRef.current)
     }
@@ -98,6 +104,7 @@ export function WorkspacePage() {
     void (async () => {
       try {
         const job = await api.job(jobId)
+        if (!mountedRef.current) return
         setProgress(job.progress ?? 0)
         setStatus(job.message || job.step)
         setError(job.status === 'failed' ? (job.error || '生成失败') : '')
@@ -108,6 +115,9 @@ export function WorkspacePage() {
         if (parsed.phase === '生成' && parsed.current) recordTiming(parsed.current)
 
         if (job.status === 'completed') {
+          if (localStorage.getItem('coursebook-active-job') === jobId) {
+            localStorage.removeItem('coursebook-active-job')
+          }
           setInfo({ phase: '完成', current: null, total: null })
           setProgress(100)
           setBusy(false)

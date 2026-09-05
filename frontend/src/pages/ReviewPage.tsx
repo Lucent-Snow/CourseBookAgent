@@ -49,6 +49,9 @@ export function ReviewPage() {
 
   const chapter = report?.results.find((r) => r.index === selectedIdx)
   const trace = chapter?.deterministic?.metrics?.traceability
+  const reviewStatus = chapter?.semantic?.metrics?.review_status
+  const reviewLabel = reviewStatus === 'pass' ? '通过' : reviewStatus === 'revise' ? '需修订'
+    : reviewStatus === 'human_review' ? '需人工核对' : reviewStatus === 'failed' ? '审校失败' : '未审校'
   const issues = [
     ...(chapter?.deterministic?.issues ?? []).map((t) => ({ text: t, kind: 'det' })),
     ...(chapter?.semantic?.issues ?? []).map((t) => ({ text: t, kind: 'sem' })),
@@ -154,7 +157,7 @@ export function ReviewPage() {
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground">
-                    语义审校：{chapter.semantic?.metrics?.review_status ?? '未审校'}
+                    语义审校：{reviewLabel}
                     {chapter.confirmation?.confirmed ? ' · 已人工确认' : ''}
                   </p>
                   {issues.length === 0 ? (
