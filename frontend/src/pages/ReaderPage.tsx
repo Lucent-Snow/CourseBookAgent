@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { BookReader } from '@/components/book/BookReader'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
@@ -7,6 +7,7 @@ import type { CourseBook } from '@/types'
 
 export function ReaderPage() {
   const { courseId = '82493' } = useParams()
+  const navigate = useNavigate()
   const [book, setBook] = useState<CourseBook | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -62,7 +63,10 @@ export function ReaderPage() {
       <BookReader book={book} onRegenerate={(index) => {
         setActionMessage(`正在提交第 ${index} 讲的重新生成任务…`)
         void api.regenerateLecture(courseId, index)
-          .then(() => setActionMessage(`第 ${index} 讲已提交，请到生成工作台查看进度。`))
+          .then((job) => {
+            localStorage.setItem('coursebook-active-job', job.job_id)
+            navigate(`/workspace?courseId=${courseId}`)
+          })
           .catch((err) => setActionMessage(`提交失败：${(err as Error).message}`))
       }} />
     </div>
