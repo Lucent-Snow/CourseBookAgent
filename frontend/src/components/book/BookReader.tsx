@@ -58,7 +58,7 @@ function FrontMatter({ book }: { book: CourseBook }) {
   )
 }
 
-export function BookReader({ book }: { book: CourseBook }) {
+export function BookReader({ book, onRegenerate }: { book: CourseBook; onRegenerate?: (index: number) => void }) {
   const [active, setActive] = useState(-1)
   const chapter = active >= 0 ? book.chapters[active] : null
 
@@ -109,7 +109,18 @@ export function BookReader({ book }: { book: CourseBook }) {
       </div>
 
       <main className="min-w-0">
-        {chapter ? <ChapterView chapter={chapter} /> : <FrontMatter book={book} />}
+        {chapter ? (
+          <>
+            {onRegenerate && (
+              <div className="mb-4 flex justify-end">
+                <Button variant="outline" size="sm" onClick={() => onRegenerate(active + 1)}>
+                  重新生成本讲
+                </Button>
+              </div>
+            )}
+            <ChapterView chapter={chapter} />
+          </>
+        ) : <FrontMatter book={book} />}
       </main>
     </div>
   )

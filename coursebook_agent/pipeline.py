@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict
 from pathlib import Path
 
-from coursebook_agent.agent.chapter import _apply_statistical_guardrails, generate_chapter
+from coursebook_agent.agent.chapter import _apply_statistical_guardrails, _collect_ranges, _build_transcript_links, generate_chapter
 from coursebook_agent.agent.digest import compress_lecture, compress_lecture_from_cache
 from coursebook_agent.agent.editor import load_plan, plan_book, save_plan, heuristic_book_plan
 from coursebook_agent.agent.llm import LLMClient
@@ -17,7 +18,9 @@ from coursebook_agent.agent.quality import (
     llm_quality_gate,
     load_profile,
     sanitize_examples,
+    traceability_metrics,
 )
+from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.agent.synthesize import synthesize_book, synthesize_book_fallback
 from coursebook_agent.config import config
 from coursebook_agent.models import BookPlan, CourseBook, LectureDraft
@@ -54,13 +57,13 @@ class CourseBookPipeline:
 
         # Cache chunks too
         chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
-        chunks_path.write_text(
+        atomic_write_text(chunks_path,
             json.dumps([c.model_dump() for c in chunks], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
         digest = await compress_lecture(lecture, chunks, client=LLMClient(max_retries=3, timeout=180))
-        digest_path.write_text(digest.model_dump_json(indent=2), encoding="utf-8")
+        atomic_write_text(digest_path, digest.model_dump_json(indent=2))
         return digest
 
     async def get_digest(self, course_id: str, lecture_index: int, *, refresh_source: bool = False, refresh: bool = False):
@@ -153,7 +156,7 @@ class CourseBookPipeline:
 
         # 加载课程 profile（质量门禁需要）
         profile: CourseProfile | None = None
-        profile_path = Path(__file__).resolve().parent.parent / "profiles" / f"{course_id}-v2.json"
+        profile_path = Path(__file__).resolve().parent / "profiles" / f"{course_id}-v2.json"
         if profile_path.exists():
             try:
                 profile = load_profile(profile_path)
@@ -169,7 +172,7 @@ class CourseBookPipeline:
         chunks, term_logs = apply_canonical_terms(chunks, profile_path_for_terms)
 
         chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
-        chunks_path.write_text(
+        atomic_write_text(chunks_path,
             json.dumps([c.model_dump() for c in chunks], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -214,10 +217,21 @@ class CourseBookPipeline:
             draft = sanitize_examples(enforce_component_contract(draft))
 
             quality_issues: list[str] = []
+            draft.quality_metrics = {"traceability": traceability_metrics(draft, chunks)}
+            trace = draft.quality_metrics["traceability"]
+            if trace["source_coverage"] < 1 or not draft.sections:
+                quality_issues.append("部分小节没有有效字幕来源")
+            draft.quality_report = {
+                "deterministic": {"accepted": not quality_issues, "issues": list(quality_issues),
+                                  "metrics": draft.quality_metrics},
+                "semantic": {"accepted": False, "issues": [], "metrics": {"review_status": "not_run"}},
+            }
 
             # 第二层：确定性质量检查（始终执行）
             if profile and instruction:
                 det_result = deterministic_quality_gate(draft, instruction, profile, chunks)
+                draft.quality_metrics.update(det_result.metrics)
+                draft.quality_report["deterministic"] = asdict(det_result)
                 if not det_result.accepted:
                     quality_issues.extend(det_result.issues)
 
@@ -225,10 +239,13 @@ class CourseBookPipeline:
             if review and profile and instruction:
                 try:
                     llm_result = await llm_quality_gate(draft, instruction, profile, chunks)
+                    draft.quality_report["semantic"] = asdict(llm_result)
                     if not llm_result.accepted:
                         quality_issues.extend(llm_result.issues)
                 except Exception as exc:
-                    draft.warnings.append(f"[审校] LLM 审校失败：{exc}")
+                    quality_issues.append(f"[审校] LLM 审校失败：{exc}")
+                    draft.quality_report["semantic"] = {
+                        "accepted": False, "issues": [str(exc)], "metrics": {"review_status": "failed"}}
 
             # ── 重试判定 ──────────────────────────────────────────────────────
             if not quality_issues:
@@ -242,10 +259,63 @@ class CourseBookPipeline:
 
         # 写盘前应用统计护栏
         draft = _apply_statistical_guardrails(draft)
-        draft_path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
+        evidence = [c for c in chunks if c.lecture_id == draft.lecture_id]
+        draft.source_ranges = _collect_ranges(draft.sections, evidence)
+        draft.transcript_links = _build_transcript_links(draft.sections, evidence)
+        by_id = {c.chunk_id: c for c in evidence}
+        for section in draft.sections:
+            section.time_links = [by_id[cid].citation for cid in dict.fromkeys(section.source_chunk_ids) if cid in by_id]
+        draft.quality_report["accepted"] = not quality_issues and draft.quality_report["semantic"]["accepted"]
+        atomic_write_text(draft_path, draft.model_dump_json(indent=2))
         output_path = config.output_dir / f"lecture-{lecture.index:02d}-{lecture.lecture_id}.md"
-        output_path.write_text(render_chapter(draft), encoding="utf-8")
+        atomic_write_text(output_path, render_chapter(draft))
         return draft
+
+    async def generate_single_lecture(
+        self,
+        course_id: str,
+        lecture_index: int,
+        *,
+        refresh_source: bool = False,
+        review: bool = True,
+    ) -> CourseBook:
+        """Generate one lecture without requiring the rest of the course cache.
+
+        This is the first-generation path used by the UI.  A later full-course
+        run can reuse the saved chapter and complete the book-level synthesis.
+        """
+        course = await asyncio.to_thread(self.source.get_course, course_id, refresh_source)
+        lectures = await asyncio.to_thread(self.source.list_lectures, course_id, refresh_source)
+        if lecture_index < 1 or lecture_index > len(lectures):
+            raise ValueError(f"讲次序号必须在 1-{len(lectures)} 之间")
+        plan = await self.ensure_book_plan(course_id, refresh=False, refresh_source=refresh_source)
+        chapter = await self.generate_lecture(
+            course_id,
+            lecture_index,
+            refresh_source=refresh_source,
+            regenerate=True,
+            review=review,
+            plan=plan,
+        )
+
+        book_path = self.intermediate_dir / f"coursebook-{course_id}.json"
+        if book_path.exists():
+            book = CourseBook.model_validate_json(book_path.read_text(encoding="utf-8"))
+            replaced = False
+            for position, existing in enumerate(book.chapters):
+                if existing.lecture_id == chapter.lecture_id or position == lecture_index - 1:
+                    book.chapters[position] = chapter
+                    replaced = True
+                    break
+            if not replaced:
+                book.chapters.append(chapter)
+        else:
+            book = CourseBook(course=course, title=plan.book_title, chapters=[chapter])
+            book.components = plan.components
+            book.render_config = plan.render_config
+        atomic_write_text(book_path, book.model_dump_json(indent=2))
+        atomic_write_text(config.output_dir / f"coursebook-{course_id}.md", render_coursebook(book))
+        return book
 
     # ── Layer 4: Full course generation ──────────────────────────────────────
 
@@ -261,19 +331,27 @@ class CourseBookPipeline:
         progress=None,
         only_indices: list[int] | None = None,
         concurrency: int = 3,
+        checkpoint_dir: Path | None = None,
     ) -> CourseBook:
         course = await asyncio.to_thread(self.source.get_course, course_id, refresh_source)
         lectures = await asyncio.to_thread(self.source.list_lectures, course_id, refresh_source)
 
         # Layer 2: Book plan
+        if not lectures:
+            raise ValueError("课程没有可生成的讲次")
+        if only_indices is not None and any(i < 1 or i > len(lectures) for i in only_indices):
+            raise ValueError("重试讲次超出课程范围")
         plan = None
-        if use_book_plan:
+        checkpoint_plan = checkpoint_dir / "plan.json" if checkpoint_dir else None
+        if checkpoint_plan and checkpoint_plan.exists():
+            plan = load_plan(checkpoint_plan)
+        elif use_book_plan:
             if progress:
                 progress(0, max(len(lectures), 1), "总编辑规划全书结构")
             try:
                 plan = await self.ensure_book_plan(
                     course_id,
-                    refresh=regenerate or not self.plan_path(course_id).exists(),
+                    refresh=(regenerate and only_indices is None) or not self.plan_path(course_id).exists(),
                     refresh_source=refresh_source,
                     concurrency=concurrency,
                 )
@@ -281,6 +359,16 @@ class CourseBookPipeline:
                 if progress:
                     progress(0, max(len(lectures), 1), f"全书规划失败：{exc}")
                 plan = None
+        if plan and checkpoint_plan:
+            atomic_write_text(checkpoint_plan, plan.model_dump_json(indent=2))
+        if checkpoint_dir:
+            old_manifest = checkpoint_dir / "lectures.json"
+            if old_manifest.exists():
+                saved = json.loads(old_manifest.read_text(encoding="utf-8"))
+                if [l["lecture_id"] for l in saved] != [l.lecture_id for l in lectures]:
+                    raise ValueError("课程讲次已变化，请新建生成任务")
+            atomic_write_text(checkpoint_dir / "lectures.json",
+                              json.dumps([l.model_dump() for l in lectures], ensure_ascii=False))
 
         # Layer 3: Generate chapters（并发，信号量限流）
         selected = set(only_indices or [])
@@ -312,6 +400,12 @@ class CourseBookPipeline:
                         previous_draft=prev_draft, plan=plan,
                     )
                     chapters_by_pos[position] = chapter
+                    if checkpoint_dir:
+                        chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
+                        if chunks_path.exists():
+                            atomic_write_text(checkpoint_dir / chunks_path.name, chunks_path.read_text(encoding="utf-8"))
+                        atomic_write_text(checkpoint_dir / f"chapter-{lecture.lecture_id}.json",
+                                          chapter.model_dump_json(indent=2))
                     summary = _chapter_summary(position, chapter)
                 except Exception as exc:
                     failed = LectureDraft(
@@ -335,24 +429,26 @@ class CourseBookPipeline:
 
         tasks = []
         for position, lecture in enumerate(lectures, start=1):
-            if selected and position not in selected:
+            if only_indices is not None and position not in selected:
                 draft_path = self.intermediate_dir / f"chapter-{lecture.lecture_id}.json"
+                if checkpoint_dir:
+                    draft_path = checkpoint_dir / f"chapter-{lecture.lecture_id}.json"
                 if draft_path.exists():
                     chapters_by_pos[position] = LectureDraft.model_validate_json(
                         draft_path.read_text(encoding="utf-8")
                     )
+                    if chapters_by_pos[position].lecture_id != lecture.lecture_id:
+                        raise ValueError("章节快照与课程讲次不匹配")
                 else:
-                    chapters_by_pos[position] = LectureDraft(
-                        lecture_id=lecture.lecture_id,
-                        title=f"第 {position} 讲：{lecture.title}",
-                        overview="本章尚未生成。",
-                    )
+                    raise ValueError(f"第 {position} 讲缓存缺失，无法复用；请重新生成该讲")
                 done += 1
+                if progress:
+                    progress(done, total, "读取已完成章节", _chapter_summary(position, chapters_by_pos[position]))
                 continue
-            tasks.append(gen_one(position, lecture))
+            tasks.append((position, lecture))
 
         if tasks:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*(gen_one(position, lecture) for position, lecture in tasks))
 
         chapters = [chapters_by_pos[p] for p in sorted(chapters_by_pos)]
 
@@ -375,8 +471,8 @@ class CourseBookPipeline:
             book.render_config = plan.render_config
 
         book_path = self.intermediate_dir / f"coursebook-{course_id}.json"
-        book_path.write_text(book.model_dump_json(indent=2), encoding="utf-8")
-        (config.output_dir / f"coursebook-{course_id}.md").write_text(render_coursebook(book), encoding="utf-8")
+        atomic_write_text(book_path, book.model_dump_json(indent=2))
+        atomic_write_text(config.output_dir / f"coursebook-{course_id}.md", render_coursebook(book))
         if progress:
             progress(len(lectures), max(len(lectures), 1), "课程教辅生成完成")
         return book
@@ -418,6 +514,7 @@ def _chapter_summary(index: int, chapter: LectureDraft) -> dict:
         "index": index,
         "title": chapter.title,
         "status": "done",
+        "quality_metrics": chapter.quality_metrics,
         "module_name": chapter.module_name,
         "chapter_role": chapter.chapter_role,
         "sections": sections,

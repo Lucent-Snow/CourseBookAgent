@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
-import type { ChapterSummary, CourseListItem } from '@/types'
+import type { ChapterSummary, CourseListItem, LectureListItem } from '@/types'
 
 type Phase = 'idle' | '规划' | '生成' | '合成' | '完成'
 
@@ -38,12 +38,15 @@ export function WorkspacePage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [courses, setCourses] = useState<CourseListItem[]>([])
+  const [lectures, setLectures] = useState<LectureListItem[]>([])
   const [courseId, setCourseId] = useState(searchParams.get('courseId') ?? '82493')
   const [forceRegen, setForceRegen] = useState(false)
   const [status, setStatus] = useState('选择课程后开始生成')
   const [error, setError] = useState('')
   const [progress, setProgress] = useState(0)
   const [busy, setBusy] = useState(false)
+  const [activeJob, setActiveJob] = useState<string | null>(null)
+  const [retryable, setRetryable] = useState(false)
   const [info, setInfo] = useState<ProgressInfo>({ phase: 'idle', current: null, total: null })
   const [chapters, setChapters] = useState<ChapterSummary[]>([])
   const [expanded, setExpanded] = useState<number | null>(null)
@@ -53,14 +56,34 @@ export function WorkspacePage() {
   const pollTimer = useRef<number | null>(null)
   const tickRef = useRef<number | null>(null)
   const lastCurrentRef = useRef<number | null>(null)
+  const mountedRef = useRef(true)
 
   useEffect(() => {
+    let disposed = false
+    mountedRef.current = true
     void api.listCourses().then(setCourses).catch(() => {})
+    const saved = localStorage.getItem('coursebook-active-job')
+    if (saved) {
+      void api.job(saved).then(job => {
+        if (disposed) return
+        setActiveJob(job.job_id)
+        setCourseId(job.course_id)
+        setBusy(['queued', 'running'].includes(job.status))
+        poll(job.job_id, job.course_id)
+      }).catch(() => localStorage.removeItem('coursebook-active-job'))
+    }
     return () => {
+      disposed = true
+      mountedRef.current = false
       if (pollTimer.current) window.clearTimeout(pollTimer.current)
       if (tickRef.current) window.clearInterval(tickRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (!courseId) return
+    void api.listLectures(courseId).then(setLectures).catch(() => setLectures([]))
+  }, [courseId])
 
   useEffect(() => {
     if (!busy) return
@@ -87,22 +110,27 @@ export function WorkspacePage() {
     void (async () => {
       try {
         const job = await api.job(jobId)
+        if (!mountedRef.current) return
         setProgress(job.progress ?? 0)
         setStatus(job.message || job.step)
         setError(job.status === 'failed' ? (job.error || '生成失败') : '')
         setChapters(job.chapters ?? [])
+        setRetryable(['failed', 'partial', 'interrupted'].includes(job.status))
         const parsed = parseMessage(job.message || '')
         setInfo(parsed)
         if (parsed.phase === '生成' && parsed.current) recordTiming(parsed.current)
 
-        if (job.status === 'completed' || job.status === 'partial') {
+        if (job.status === 'completed') {
+          if (localStorage.getItem('coursebook-active-job') === jobId) {
+            localStorage.removeItem('coursebook-active-job')
+          }
           setInfo({ phase: '完成', current: null, total: null })
           setProgress(100)
           setBusy(false)
           navigate(`/read/${genCourseId}`)
           return
         }
-        if (job.status === 'failed') {
+        if (['failed', 'partial', 'interrupted'].includes(job.status)) {
           setBusy(false)
           return
         }
@@ -128,6 +156,39 @@ export function WorkspacePage() {
     lastCurrentRef.current = null
     try {
       const job = await api.generate(courseId, forceRegen)
+      setActiveJob(job.job_id)
+      setRetryable(false)
+      localStorage.setItem('coursebook-active-job', job.job_id)
+      poll(job.job_id, courseId)
+    } catch (err) {
+      setBusy(false)
+      setError((err as Error).message)
+    }
+  }
+
+  async function retry() {
+    if (!activeJob) return
+    setBusy(true)
+    setError('')
+    try {
+      const job = await api.retryJob(activeJob)
+      setRetryable(false)
+      poll(job.job_id, job.course_id)
+    } catch (err) {
+      setBusy(false)
+      setError((err as Error).message)
+    }
+  }
+
+  async function generateSingle(index: number, regenerate = false) {
+    setBusy(true)
+    setProgress(0)
+    setError('')
+    setStatus(`正在准备第 ${index} 讲`)
+    try {
+      const job = regenerate ? await api.regenerateLecture(courseId, index) : await api.generateLecture(courseId, index)
+      setActiveJob(job.job_id)
+      localStorage.setItem('coursebook-active-job', job.job_id)
       poll(job.job_id, courseId)
     } catch (err) {
       setBusy(false)
@@ -208,9 +269,41 @@ export function WorkspacePage() {
           强制重新生成（忽略缓存，可观察完整生成过程）
         </label>
 
+        {lectures.length > 0 && (
+          <div className="mt-5 rounded-lg border bg-muted/20 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium">按讲生成</span>
+              <span className="text-xs text-muted-foreground">先试一讲，确认质量后再生成全课</span>
+            </div>
+            <div className="max-h-56 space-y-1 overflow-auto">
+              {lectures.map((lecture) => (
+                <div key={lecture.lecture_id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted">
+                  <span className="w-10 shrink-0 text-muted-foreground">第 {lecture.index} 讲</span>
+                  <span className="min-w-0 flex-1 truncate">{lecture.title}</span>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void generateSingle(lecture.index)}>
+                    生成
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <Button onClick={generate} disabled={busy} className="mt-3 w-full">
           {busy ? '生成中…' : '生成全课讲义'}
         </Button>
+        {retryable && (
+          <Button onClick={retry} disabled={busy} variant="outline" className="mt-3 w-full">
+            恢复任务（复用已完成章节）
+          </Button>
+        )}
+        {busy && activeJob && (
+          <Button variant="outline" className="mt-3 w-full" onClick={() => {
+            void api.cancelJob(activeJob).catch(err => setError((err as Error).message))
+          }}>
+            停止生成并保留进度
+          </Button>
+        )}
 
         {busy && (
           <div className="mt-6 space-y-4">

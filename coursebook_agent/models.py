@@ -67,7 +67,7 @@ class KnowledgePoint(BaseModel):
     chunk_refs: list[str] = Field(default_factory=list)  # which chunks contain this
     time_refs: list[str] = Field(default_factory=list)  # e.g. ["05:30-12:40"]
     sufficiency: str = "sufficient"  # sufficient | partial | insufficient
-    sufficiency_note: str = ""
+    sufficiency_note: str = ""  # 充分性评估说明，如"只有口头描述，缺少具体数值"
     teaching_signals_summary: str = ""  # e.g. "emphasis, example"
 
 
@@ -191,6 +191,9 @@ class LectureDraft(BaseModel):
     chapter_components: list[ChapterComponent] = Field(default_factory=list)
     # Source links for web reader
     transcript_links: list[dict] = Field(default_factory=list)  # [{"label": "c005", "start": 330, "end": 760}]
+    # Quality metrics (from main branch)
+    quality_metrics: dict = Field(default_factory=dict)
+    quality_report: dict = Field(default_factory=dict)
 
 
 # ── 第4层：全书产物 ────────────────────────────────────────────────────────
@@ -217,6 +220,7 @@ class CourseBook(BaseModel):
 
 class JobState(BaseModel):
     job_id: str
+    course_id: str = ""
     status: str
     step: str
     progress: int = 0
@@ -224,6 +228,10 @@ class JobState(BaseModel):
     error: str | None = None
     book: CourseBook | None = None
     chapters: list[dict] = Field(default_factory=list)  # 每讲生成摘要，实时更新
+    # From main branch
+    error_code: str | None = None
+    request: dict = Field(default_factory=dict)
+    events: list[dict] = Field(default_factory=list)
 
 
 def format_timestamp(seconds: int | float) -> str:

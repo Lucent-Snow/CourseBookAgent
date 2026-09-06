@@ -48,6 +48,10 @@ export function ReviewPage() {
   }, [selectedRun])
 
   const chapter = report?.results.find((r) => r.index === selectedIdx)
+  const trace = chapter?.deterministic?.metrics?.traceability
+  const reviewStatus = chapter?.semantic?.metrics?.review_status
+  const reviewLabel = reviewStatus === 'pass' ? '通过' : reviewStatus === 'revise' ? '需修订'
+    : reviewStatus === 'human_review' ? '需人工核对' : reviewStatus === 'failed' ? '审校失败' : '未审校'
   const issues = [
     ...(chapter?.deterministic?.issues ?? []).map((t) => ({ text: t, kind: 'det' })),
     ...(chapter?.semantic?.issues ?? []).map((t) => ({ text: t, kind: 'sem' })),
@@ -57,6 +61,7 @@ export function ReviewPage() {
     if (!selectedRun || selectedIdx == null) return
     try {
       await api.confirmChapter(selectedRun, selectedIdx, '已人工对照确认')
+      setReport(await api.runReport(selectedRun))
       setConfirmMsg(`第 ${selectedIdx} 讲已标记确认`)
     } catch (err) {
       setConfirmMsg((err as Error).message)
@@ -79,7 +84,7 @@ export function ReviewPage() {
     <div>
       <h2 className="text-2xl font-bold">质量报告</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        每讲生成后经过确定性门禁与 LLM 审校，未通过的内容在此标记、修订、人工确认。
+        查看来源校验与审校状态。来源覆盖率仅表示引用可定位，不代表内容准确率。
       </p>
 
       <div className="mt-6 flex flex-wrap items-center gap-4">
@@ -144,8 +149,19 @@ export function ReviewPage() {
                 </div>
 
                 <div className="mt-4 space-y-2">
+                  {trace && (
+                    <p className="text-sm">
+                      有效来源覆盖率 {(trace.source_coverage * 100).toFixed(1)}% ·
+                      有效引用 {trace.valid_referenced_chunks} · 无效引用 {trace.invalid_referenced_chunks} ·
+                      无来源小节 {trace.sections_without_sources}
+                    </p>
+                  )}
+                  <p className="text-sm text-muted-foreground">
+                    语义审校：{reviewLabel}
+                    {chapter.confirmation?.confirmed ? ' · 已人工确认' : ''}
+                  </p>
                   {issues.length === 0 ? (
-                    <p className="text-sm text-muted-foreground">未发现问题。</p>
+                    <p className="text-sm text-muted-foreground">已执行的检查未记录问题；未审校内容仍需核对。</p>
                   ) : (
                     issues.map((iss, i) => (
                       <IssueRow
@@ -163,7 +179,7 @@ export function ReviewPage() {
                 </div>
 
                 <div className="mt-5 flex items-center gap-3">
-                  <Button onClick={confirm} disabled={chapter.accepted}>
+                  <Button onClick={confirm} disabled={chapter.accepted || chapter.confirmation?.confirmed}>
                     标记已确认
                   </Button>
                   <Button
@@ -171,7 +187,9 @@ export function ReviewPage() {
                     onClick={() => {
                       void (async () => {
                         try {
-                          const job = await api.regenerateLecture(report.run_id.split('-')[0] || '82493', chapter.index)
+                          const courseId = report.course_id || runs.find(r => r.run_id === report.run_id)?.course_id
+                          if (!courseId) throw new Error('缺少课程信息，无法重新生成')
+                          const job = await api.regenerateLecture(courseId, chapter.index)
                           setConfirmMsg(`已提交重生成任务：${job.job_id}`)
                         } catch (err) {
                           setConfirmMsg((err as Error).message)

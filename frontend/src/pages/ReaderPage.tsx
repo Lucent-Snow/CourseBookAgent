@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { BookReader } from '@/components/book/BookReader'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
@@ -7,9 +7,11 @@ import type { CourseBook } from '@/types'
 
 export function ReaderPage() {
   const { courseId = '82493' } = useParams()
+  const navigate = useNavigate()
   const [book, setBook] = useState<CourseBook | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [actionMessage, setActionMessage] = useState('')
 
   useEffect(() => {
     setLoading(true)
@@ -48,11 +50,25 @@ export function ReaderPage() {
         <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
           ← 返回书架
         </Link>
-        <Button render={<a href={api.downloadUrl(courseId)} />} variant="secondary" size="sm">
-          导出 Markdown
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button render={<Link to={`/workspace?courseId=${courseId}`} />} variant="outline" size="sm">
+            生成工作台
+          </Button>
+          <Button render={<a href={api.downloadUrl(courseId)} />} variant="secondary" size="sm">
+            导出 Markdown
+          </Button>
+        </div>
       </div>
-      <BookReader book={book} />
+      {actionMessage && <p className="mb-4 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{actionMessage}</p>}
+      <BookReader book={book} onRegenerate={(index) => {
+        setActionMessage(`正在提交第 ${index} 讲的重新生成任务…`)
+        void api.regenerateLecture(courseId, index)
+          .then((job) => {
+            localStorage.setItem('coursebook-active-job', job.job_id)
+            navigate(`/workspace?courseId=${courseId}`)
+          })
+          .catch((err) => setActionMessage(`提交失败：${(err as Error).message}`))
+      }} />
     </div>
   )
 }

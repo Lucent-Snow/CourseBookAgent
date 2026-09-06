@@ -428,7 +428,7 @@ def _collect_ranges(sections: list[ChapterSection], chunks: list[TimedChunk]) ->
         selected = [by_id[x] for x in section.source_chunk_ids if x in by_id]
         if not selected:
             continue
-        citation = f"{section.heading}：字幕 {format_timestamp(selected[0].start_sec)}–{format_timestamp(selected[-1].end_sec)}"
+        citation = f"{section.heading}：字幕 {format_timestamp(min(c.start_sec for c in selected))}–{format_timestamp(max(c.end_sec for c in selected))}"
         if citation not in seen:
             seen.add(citation)
             result.append(citation)
