@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-ResourceKind = Literal["zhiyun_course", "transcript", "pptx", "pdf", "docx", "markdown", "text"]
+ResourceKind = Literal["zhiyun_course", "transcript", "courseware", "pptx", "pdf", "docx", "markdown", "text"]
 ParseStatus = Literal["pending", "parsing", "ready", "failed"]
 
 
@@ -61,6 +61,9 @@ class ResourcePreview(BaseModel):
 
 class ZhiyunImportRequest(BaseModel):
     course_id: str = Field(pattern=r"^[A-Za-z0-9_-]+$")
+    lecture_ids: list[str] = Field(default_factory=list)
+    content_types: list[Literal["transcript", "courseware"]] = Field(default_factory=lambda: ["transcript"])
+    refresh: bool = False
 
 
 class SnapshotCreate(BaseModel):

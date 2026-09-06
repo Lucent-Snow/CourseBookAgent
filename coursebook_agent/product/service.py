@@ -183,48 +183,77 @@ class ProductService:
             db.execute("UPDATE datasets SET updated_at = ? WHERE dataset_id = ?", (now, dataset_id))
         return self.get_resource(resource_id)
 
-    def import_zhiyun_course(self, dataset_id: str, course_id: str) -> list[Resource]:
+    def import_zhiyun_course(
+        self, dataset_id: str, course_id: str, *, lecture_ids: list[str] | None = None,
+        content_types: list[str] | None = None, refresh: bool = False,
+    ) -> list[Resource]:
         self.get_dataset(dataset_id)
         source = ZhiyunSource()
-        course = source.get_course(course_id)
-        lectures = source.list_lectures(course_id)
+        courses = source.list_courses(refresh=refresh)
+        course = next((item for item in courses if item.course_id == str(course_id)), None)
+        lectures = source.list_lectures(course_id, refresh=refresh)
+        if not course:
+            from coursebook_agent.models import Course
+            course = Course(course_id=str(course_id), name=f"课程 {course_id}")
+        selected = set(lecture_ids or [])
+        lectures = [lecture for lecture in lectures if not selected or lecture.lecture_id in selected]
+        kinds = list(dict.fromkeys(content_types or ["transcript"]))
+        if not kinds or any(kind not in {"transcript", "courseware"} for kind in kinds):
+            raise ValueError("请选择字幕或智云课件")
         imported: list[Resource] = []
         for lecture in lectures:
-            segments = source.get_transcript(lecture)
-            text = "\n".join(
-                f"[{segment.start_sec}-{segment.end_sec}] {segment.text}" for segment in segments
-            )
-            content = text.encode("utf-8")
-            digest = hashlib.sha256(content).hexdigest()
-            blob_path = self.blob_dir / digest
-            if not blob_path.exists():
-                blob_path.write_bytes(content)
-            resource_id, revision_id, now = _id("res"), _id("rev"), _now()
-            text_path = self.text_dir / f"{revision_id}.txt"
-            atomic_write_text(text_path, text)
             metadata = {
-                "course_id": course_id,
-                "course_name": course.name,
-                "lecture_id": lecture.lecture_id,
-                "lecture_index": lecture.index,
-                "duration": lecture.duration,
-                "teacher": course.teacher,
-                "term": course.term,
+                "course_id": course_id, "course_name": course.name,
+                "lecture_id": lecture.lecture_id, "lecture_index": lecture.index,
+                "duration": lecture.duration, "teacher": course.teacher, "term": course.term,
             }
-            with self._connect() as db:
-                db.execute(
-                    "INSERT INTO resources VALUES (?, ?, 'transcript', ?, 'zhiyun', ?, ?, ?)",
-                    (resource_id, dataset_id, lecture.title, f"{course_id}:{lecture.lecture_id}", now, now),
-                )
-                db.execute(
-                    "INSERT INTO revisions VALUES (?, ?, 1, ?, 'text/plain', ?, ?, ?, ?, 'ready', NULL, ?, NULL, ?, ?)",
-                    (revision_id, resource_id, f"{lecture.index:02d}-{lecture.title}.txt", len(content), digest,
-                     str(blob_path), str(text_path), len(text), json.dumps(metadata, ensure_ascii=False), now),
-                )
-            imported.append(self.get_resource(resource_id))
+            if "transcript" in kinds:
+                segments = source.get_transcript(lecture, refresh=refresh)
+                text = "\n".join(f"[{item.start_sec}-{item.end_sec}] {item.text}" for item in segments)
+                imported.append(self._add_zhiyun_resource(
+                    dataset_id, "transcript", lecture.title, f"{lecture.index:02d}-{lecture.title}.txt",
+                    text, metadata, f"{course_id}:{lecture.lecture_id}:transcript",
+                ))
+            if "courseware" in kinds:
+                pages = source.get_courseware(lecture, refresh=refresh)
+                if pages:
+                    text = "\n".join(
+                        f"[第 {index} 页 · {page.get('created_sec', 0)} 秒] {page.get('title') or '课件页'}\n{page.get('image_url')}"
+                        for index, page in enumerate(pages, start=1)
+                    )
+                    page_metadata = {**metadata, "page_count": len(pages), "pages": pages}
+                    imported.append(self._add_zhiyun_resource(
+                        dataset_id, "courseware", f"{lecture.title} · 智云课件",
+                        f"{lecture.index:02d}-{lecture.title}-课件.txt", text, page_metadata,
+                        f"{course_id}:{lecture.lecture_id}:courseware", page_count=len(pages),
+                    ))
         with self._connect() as db:
             db.execute("UPDATE datasets SET updated_at = ? WHERE dataset_id = ?", (_now(), dataset_id))
         return imported
+
+    def _add_zhiyun_resource(
+        self, dataset_id: str, kind: str, title: str, filename: str, text: str,
+        metadata: dict, source_ref: str, page_count: int | None = None,
+    ) -> Resource:
+        content = text.encode("utf-8")
+        digest = hashlib.sha256(content).hexdigest()
+        blob_path = self.blob_dir / digest
+        if not blob_path.exists():
+            blob_path.write_bytes(content)
+        resource_id, revision_id, now = _id("res"), _id("rev"), _now()
+        text_path = self.text_dir / f"{revision_id}.txt"
+        atomic_write_text(text_path, text)
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO resources VALUES (?, ?, ?, ?, 'zhiyun', ?, ?, ?)",
+                (resource_id, dataset_id, kind, title, source_ref, now, now),
+            )
+            db.execute(
+                "INSERT INTO revisions VALUES (?, ?, 1, ?, 'text/plain', ?, ?, ?, ?, 'ready', NULL, ?, ?, ?, ?)",
+                (revision_id, resource_id, filename, len(content), digest, str(blob_path), str(text_path),
+                 len(text), page_count, json.dumps(metadata, ensure_ascii=False), now),
+            )
+        return self.get_resource(resource_id)
 
     def list_resources(self, dataset_id: str) -> list[Resource]:
         self.get_dataset(dataset_id)

@@ -74,18 +74,41 @@ class ProductServiceTests(unittest.TestCase):
     @patch("coursebook_agent.product.service.ZhiyunSource")
     def test_zhiyun_import_creates_one_resource_per_lecture(self, source_class):
         source = source_class.return_value
-        source.get_course.return_value = Course(course_id="82493", name="应用统计学", teacher="张老师")
+        source.list_courses.return_value = [Course(course_id="82493", name="应用统计学", teacher="张老师")]
         source.list_lectures.return_value = [
             Lecture(lecture_id="l1", course_id="82493", title="第一讲", index=1, duration=120),
             Lecture(lecture_id="l2", course_id="82493", title="第二讲", index=2, duration=180),
         ]
-        source.get_transcript.side_effect = lambda lecture: [
+        source.get_transcript.side_effect = lambda lecture, refresh=False: [
             TranscriptSegment(lecture_id=lecture.lecture_id, index=0, start_sec=0, end_sec=10, text="课程内容")
         ]
         dataset = self.service.create_dataset(DatasetCreate(name="统计学"))
         resources = self.service.import_zhiyun_course(dataset.dataset_id, "82493")
         self.assertEqual([item.title for item in resources], ["第一讲", "第二讲"])
         self.assertEqual(resources[0].current_revision.metadata["lecture_index"], 1)
+
+    @patch("coursebook_agent.product.service.ZhiyunSource")
+    def test_zhiyun_import_filters_lectures_and_includes_courseware(self, source_class):
+        source = source_class.return_value
+        source.list_courses.return_value = [Course(course_id="82493", name="应用统计学")]
+        source.list_lectures.return_value = [
+            Lecture(lecture_id="l1", course_id="82493", title="第一讲", index=1),
+            Lecture(lecture_id="l2", course_id="82493", title="第二讲", index=2),
+        ]
+        source.get_transcript.return_value = [
+            TranscriptSegment(lecture_id="l2", index=0, start_sec=0, end_sec=10, text="课程内容")
+        ]
+        source.get_courseware.return_value = [
+            {"slide_id": "p1", "created_sec": 5, "title": "总体与样本", "image_url": "https://example.test/p1.jpg"}
+        ]
+        dataset = self.service.create_dataset(DatasetCreate(name="统计学"))
+        resources = self.service.import_zhiyun_course(
+            dataset.dataset_id, "82493", lecture_ids=["l2"],
+            content_types=["transcript", "courseware"],
+        )
+        self.assertEqual([item.kind for item in resources], ["transcript", "courseware"])
+        self.assertTrue(all(item.current_revision.metadata["lecture_id"] == "l2" for item in resources))
+        self.assertEqual(resources[1].current_revision.page_count, 1)
 
 
 class ProductApiTests(unittest.TestCase):
