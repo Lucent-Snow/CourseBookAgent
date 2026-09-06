@@ -94,3 +94,47 @@ class WorkflowPreset(BaseModel):
     steps: list[WorkflowStep]
     default_config: dict[str, Any]
     output_kind: str
+
+
+class AgentProjection(BaseModel):
+    agent_id: str
+    role: str = "chapter_writer"
+    label: str
+    status: Literal["pending", "running", "succeeded", "failed", "blocked"]
+    step: str
+    message: str
+    attempt: int = 1
+    started_at: str | None = None
+    finished_at: str | None = None
+    retryable: bool = False
+    error: str | None = None
+    output_available: bool = False
+
+
+class RunProjection(BaseModel):
+    run_id: str
+    course_id: str
+    snapshot_id: str | None = None
+    preset_id: str = "coursebook"
+    status: str
+    phase: str
+    progress: int
+    message: str
+    created_at: str | None = None
+    updated_at: str | None = None
+    active_agents: int = 0
+    failed_agents: int = 0
+    total_agents: int = 0
+    agents: list[AgentProjection] = Field(default_factory=list)
+    artifact_available: bool = False
+
+
+class ArtifactSummary(BaseModel):
+    artifact_id: str
+    run_id: str
+    course_id: str
+    title: str
+    kind: str = "coursebook"
+    status: Literal["ready", "partial"]
+    chapter_count: int
+    created_at: str | None = None

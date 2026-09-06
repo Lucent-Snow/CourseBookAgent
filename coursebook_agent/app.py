@@ -73,6 +73,10 @@ class GenerateRequest(BaseModel):
     refresh_source: bool = False
     regenerate: bool = False
     review: bool = False
+    snapshot_id: str | None = None
+    preset_id: str = "coursebook"
+    lecture_indices: list[int] | None = None
+    concurrency: int = Field(default=3, ge=1, le=8)
 
 
 def _schedule(job_id: str, coroutine) -> None:
@@ -160,7 +164,7 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
     async with generation_lock:
         state.status, state.step, state.message = "running", "获取字幕", "正在读取课程讲次和字幕"
         _persist_job(state)
-        await _generate_locked(state, request)
+        await _generate_locked(state, request, only_indices=request.lecture_indices)
 
 
 async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
@@ -186,6 +190,7 @@ async def _generate_locked(state: JobState, request: GenerateRequest, only_indic
             progress=progress,
             only_indices=only_indices,
             checkpoint_dir=JOB_DIR / state.job_id,
+            concurrency=request.concurrency,
         ), timeout=3600)
         if any(c.get("status") == "failed" for c in state.chapters):
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book

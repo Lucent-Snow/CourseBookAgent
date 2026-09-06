@@ -6,7 +6,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from coursebook_agent.app import app
-from coursebook_agent.models import Course, Lecture, TranscriptSegment
+from coursebook_agent.models import Course, CourseBook, JobState, Lecture, TranscriptSegment
 from coursebook_agent.product.models import DatasetCreate, SnapshotCreate
 from coursebook_agent.product.service import ProductService
 
@@ -94,6 +94,34 @@ class ProductApiTests(unittest.TestCase):
         response = self.client.get("/api/product/workflow-presets")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["data"][0]["preset_id"], "coursebook")
+
+    def test_run_and_artifact_projections(self):
+        from coursebook_agent import app as app_module
+
+        state = JobState(
+            job_id="product-run",
+            course_id="82493",
+            request={"snapshot_id": "snap-1", "lecture_indices": [1, 2]},
+            status="running",
+            step="生成",
+            progress=40,
+            message="正在生成章节",
+            chapters=[{"index": 1, "title": "第一章", "status": "done"}],
+        )
+        app_module.jobs[state.job_id] = state
+        try:
+            run = self.client.get("/api/product/runs/product-run")
+            self.assertEqual(run.status_code, 200)
+            self.assertEqual(run.json()["snapshot_id"], "snap-1")
+            self.assertEqual(run.json()["active_agents"], 1)
+            self.assertEqual(run.json()["agents"][0]["status"], "succeeded")
+
+            state.book = CourseBook(course=Course(course_id="82493", name="统计学"), title="统计学教辅")
+            artifact = self.client.get("/api/product/artifacts/product-run")
+            self.assertEqual(artifact.status_code, 200)
+            self.assertEqual(artifact.json()["artifact"]["artifact_id"], "product-run")
+        finally:
+            app_module.jobs.pop(state.job_id, None)
 
 
 if __name__ == "__main__":
