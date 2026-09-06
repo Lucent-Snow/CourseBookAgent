@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from coursebook_agent.agent.llm import LLMClient, LLMError
-from coursebook_agent.config import config, save_llm_settings
+from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
 from coursebook_agent.models import CourseBook, JobState, LectureDraft
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
@@ -127,6 +127,15 @@ async def zhiyun_login(request: ZhiyunLoginRequest):
 async def courses():
     try:
         values = await asyncio.to_thread(ZhiyunSource().list_courses)
+        return {"data": [item.model_dump() for item in values]}
+    except ZhiyunError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/courses/{course_id}/lectures")
+async def course_lectures(course_id: str):
+    try:
+        values = await asyncio.to_thread(ZhiyunSource().list_lectures, course_id)
         return {"data": [item.model_dump() for item in values]}
     except ZhiyunError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -408,13 +417,13 @@ async def settings():
 
 @app.put("/api/settings/llm")
 async def update_llm_settings(request: LLMSettingsRequest):
-    base_url = request.base_url.strip()
+    base_url = normalize_llm_base_url(request.base_url)
     model = request.model.strip()
     if not base_url or not model:
         raise HTTPException(status_code=400, detail="端点与模型名不能为空")
     api_key = request.api_key.strip() or config.llm.api_key
     save_llm_settings(base_url, model, api_key)
-    return {"ok": True, "configured": bool(base_url and model and api_key)}
+    return {"ok": True, "configured": bool(config.llm.base_url and model and api_key), "base_url": config.llm.base_url}
 
 
 @app.post("/api/settings/llm/test")
@@ -509,37 +518,62 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
     return {"ok": True}
 
 
-# ── Single-lecture regeneration ──────────────────────────────────────────
+# ── Single-lecture generation / regeneration ──────────────────────────────
 
-@app.post("/api/courses/{course_id}/lectures/{index}/regenerate", status_code=202)
-async def regenerate_lecture(course_id: str, index: int):
+async def _start_single_lecture_job(course_id: str, index: int, regenerate: bool) -> JobState:
     job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = JobState(job_id=job_id, course_id=course_id, request={"review": True, "only_indices": [index]}, status="queued", step="排队", progress=0, message="准备重生成该讲")
-    _persist_job(jobs[job_id])
-    _schedule(job_id, _run_regenerate(job_id, course_id, index))
-    return jobs[job_id].model_dump()
+    state = JobState(
+        job_id=job_id,
+        course_id=course_id,
+        request={"review": True, "only_indices": [index], "regenerate": regenerate},
+        status="queued",
+        step="排队",
+        progress=0,
+        message=f"准备{'重新' if regenerate else ''}生成第 {index} 讲",
+    )
+    jobs[job_id] = state
+    _persist_job(state)
+    _schedule(job_id, _run_single_lecture(job_id, course_id, index))
+    return state
 
 
-async def _run_regenerate(job_id: str, course_id: str, index: int) -> None:
+async def _run_single_lecture(job_id: str, course_id: str, index: int) -> None:
     state = jobs[job_id]
     async with generation_lock:
-        state.status, state.step, state.message = "running", "生成", f"正在重生成第 {index} 讲"
+        state.status, state.step, state.message = "running", "生成", f"正在生成第 {index} 讲"
         _persist_job(state)
         try:
             pipeline = CourseBookPipeline()
+            book = await asyncio.wait_for(
+                pipeline.generate_single_lecture(course_id, index, review=True),
+                timeout=3600,
+            )
+            state.book = book
             lectures = await asyncio.to_thread(pipeline.source.list_lectures, course_id)
-            if not 1 <= index <= len(lectures):
-                raise ValueError("讲次超出课程范围")
-            for lecture in lectures:
-                if lecture.index == index:
-                    continue
-                path = pipeline.intermediate_dir / f"chapter-{lecture.lecture_id}.json"
-                chapter = LectureDraft.model_validate_json(path.read_text(encoding="utf-8"))
-                atomic_write_text(JOB_DIR / job_id / path.name, chapter.model_dump_json(indent=2))
-            await _generate_locked(state, GenerateRequest(course_id=course_id, regenerate=True, review=True), [index])
-        except Exception as exc:
-            state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "重生成失败"
+            target_id = lectures[index - 1].lecture_id
+            chapter = next((c for c in book.chapters if c.lecture_id == target_id), book.chapters[-1])
+            state.chapters = [{
+                "index": index,
+                "title": chapter.title,
+                "status": "done",
+                "total_chars": sum(len(s.content) for s in chapter.sections),
+                "sections": [{"heading": s.heading, "chars": len(s.content), "components": len(s.components), "time_links": len(s.time_links)} for s in chapter.sections],
+                "warnings": chapter.warnings[:5],
+            }]
+            state.status, state.progress, state.step, state.message = "completed", 100, "完成", f"第 {index} 讲已生成"
             _persist_job(state)
+        except Exception as exc:
+            state.status, state.step, state.error, state.message = "failed", "失败", str(exc), f"第 {index} 讲生成失败"
+            _persist_job(state)
+
+
+@app.post("/api/courses/{course_id}/lectures/{index}/generate", status_code=202)
+async def generate_lecture(course_id: str, index: int):
+    return (await _start_single_lecture_job(course_id, index, False)).model_dump()
+
+@app.post("/api/courses/{course_id}/lectures/{index}/regenerate", status_code=202)
+async def regenerate_lecture(course_id: str, index: int):
+    return (await _start_single_lecture_job(course_id, index, True)).model_dump()
 
 
 if __name__ == "__main__":

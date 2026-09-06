@@ -54,7 +54,8 @@ export function SettingsPage() {
     await run(async () => {
       const res = await api.saveLlm(baseUrl, model, apiKey)
       setStatus('大模型配置已保存')
-      setSettings((s) => (s ? { ...s, llm: { ...s.llm, base_url: baseUrl, model, configured: res.configured } } : s))
+      setBaseUrl(res.base_url)
+      setSettings((s) => (s ? { ...s, llm: { ...s.llm, base_url: res.base_url, model, configured: res.configured } } : s))
     })
   }
 
