@@ -171,6 +171,15 @@ export interface RunReport {
   results: RunChapterResult[]
 }
 
+export interface LectureListItem {
+  lecture_id: string
+  course_id: string
+  title: string
+  index: number
+  date?: string | null
+  duration?: number | null
+}
+
 export interface TraceabilityMetrics {
   source_coverage: number
   sections_without_sources: number

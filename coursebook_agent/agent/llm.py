@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from coursebook_agent.config import config
+from coursebook_agent.config import config, normalize_llm_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class LLMClient:
     async def complete(self, system: str, user: str, *, max_tokens: int = 5000, temperature: float = 0.2) -> str:
         if not (config.llm.base_url and config.llm.api_key and config.llm.model):
             raise LLMError("请先配置模型端点、模型名和 API Key", "configuration")
-        url = config.llm.base_url.rstrip("/") + "/chat/completions"
+        url = normalize_llm_base_url(config.llm.base_url) + "/chat/completions"
         payload = {
             "model": config.llm.model,
             "messages": [

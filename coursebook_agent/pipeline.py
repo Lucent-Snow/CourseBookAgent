@@ -266,6 +266,52 @@ class CourseBookPipeline:
         atomic_write_text(output_path, render_chapter(draft))
         return draft
 
+    async def generate_single_lecture(
+        self,
+        course_id: str,
+        lecture_index: int,
+        *,
+        refresh_source: bool = False,
+        review: bool = True,
+    ) -> CourseBook:
+        """Generate one lecture without requiring the rest of the course cache.
+
+        This is the first-generation path used by the UI.  A later full-course
+        run can reuse the saved chapter and complete the book-level synthesis.
+        """
+        course = await asyncio.to_thread(self.source.get_course, course_id, refresh_source)
+        lectures = await asyncio.to_thread(self.source.list_lectures, course_id, refresh_source)
+        if lecture_index < 1 or lecture_index > len(lectures):
+            raise ValueError(f"讲次序号必须在 1-{len(lectures)} 之间")
+        plan = await self.ensure_book_plan(course_id, refresh=False, refresh_source=refresh_source)
+        chapter = await self.generate_lecture(
+            course_id,
+            lecture_index,
+            refresh_source=refresh_source,
+            regenerate=True,
+            review=review,
+            plan=plan,
+        )
+
+        book_path = self.intermediate_dir / f"coursebook-{course_id}.json"
+        if book_path.exists():
+            book = CourseBook.model_validate_json(book_path.read_text(encoding="utf-8"))
+            replaced = False
+            for position, existing in enumerate(book.chapters):
+                if existing.lecture_id == chapter.lecture_id or position == lecture_index - 1:
+                    book.chapters[position] = chapter
+                    replaced = True
+                    break
+            if not replaced:
+                book.chapters.append(chapter)
+        else:
+            book = CourseBook(course=course, title=plan.book_title, chapters=[chapter])
+            book.components = plan.components
+            book.render_config = plan.render_config
+        atomic_write_text(book_path, book.model_dump_json(indent=2))
+        atomic_write_text(config.output_dir / f"coursebook-{course_id}.md", render_coursebook(book))
+        return book
+
     # ── Layer 4: Full course generation ──────────────────────────────────────
 
     async def generate_course(

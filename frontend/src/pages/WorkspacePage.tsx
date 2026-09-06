@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
-import type { ChapterSummary, CourseListItem } from '@/types'
+import type { ChapterSummary, CourseListItem, LectureListItem } from '@/types'
 
 type Phase = 'idle' | '规划' | '生成' | '合成' | '完成'
 
@@ -38,6 +38,7 @@ export function WorkspacePage() {
   const [searchParams] = useSearchParams()
   const navigate = useNavigate()
   const [courses, setCourses] = useState<CourseListItem[]>([])
+  const [lectures, setLectures] = useState<LectureListItem[]>([])
   const [courseId, setCourseId] = useState(searchParams.get('courseId') ?? '82493')
   const [forceRegen, setForceRegen] = useState(false)
   const [status, setStatus] = useState('选择课程后开始生成')
@@ -78,6 +79,11 @@ export function WorkspacePage() {
       if (tickRef.current) window.clearInterval(tickRef.current)
     }
   }, [])
+
+  useEffect(() => {
+    if (!courseId) return
+    void api.listLectures(courseId).then(setLectures).catch(() => setLectures([]))
+  }, [courseId])
 
   useEffect(() => {
     if (!busy) return
@@ -174,6 +180,22 @@ export function WorkspacePage() {
     }
   }
 
+  async function generateSingle(index: number, regenerate = false) {
+    setBusy(true)
+    setProgress(0)
+    setError('')
+    setStatus(`正在准备第 ${index} 讲`)
+    try {
+      const job = regenerate ? await api.regenerateLecture(courseId, index) : await api.generateLecture(courseId, index)
+      setActiveJob(job.job_id)
+      localStorage.setItem('coursebook-active-job', job.job_id)
+      poll(job.job_id, courseId)
+    } catch (err) {
+      setBusy(false)
+      setError((err as Error).message)
+    }
+  }
+
   const elapsedSec = startTime ? Math.floor((now - startTime) / 1000) : 0
   const doneTimings = Object.values(chapterTimes).filter((t) => t.end)
   const doneCount = doneTimings.length
@@ -246,6 +268,26 @@ export function WorkspacePage() {
           />
           强制重新生成（忽略缓存，可观察完整生成过程）
         </label>
+
+        {lectures.length > 0 && (
+          <div className="mt-5 rounded-lg border bg-muted/20 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-medium">按讲生成</span>
+              <span className="text-xs text-muted-foreground">先试一讲，确认质量后再生成全课</span>
+            </div>
+            <div className="max-h-56 space-y-1 overflow-auto">
+              {lectures.map((lecture) => (
+                <div key={lecture.lecture_id} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted">
+                  <span className="w-10 shrink-0 text-muted-foreground">第 {lecture.index} 讲</span>
+                  <span className="min-w-0 flex-1 truncate">{lecture.title}</span>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void generateSingle(lecture.index)}>
+                    生成
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <Button onClick={generate} disabled={busy} className="mt-3 w-full">
           {busy ? '生成中…' : '生成全课讲义'}

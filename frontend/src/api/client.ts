@@ -3,6 +3,7 @@ import type {
   BookSummary,
   CourseBook,
   CourseListItem,
+  LectureListItem,
   JobState,
   RunReport,
   RunSummary,
@@ -40,6 +41,10 @@ export const api = {
     const res = await request<{ data: CourseListItem[] }>('/api/courses')
     return res.data ?? []
   },
+  listLectures: async (courseId: string): Promise<LectureListItem[]> => {
+    const res = await request<{ data: LectureListItem[] }>(`/api/courses/${courseId}/lectures`)
+    return res.data ?? []
+  },
 
   generate: (courseId: string, regenerate = false) =>
     request<JobState>('/api/generate', {
@@ -66,7 +71,7 @@ export const api = {
   // 设置
   settings: () => request<Settings>('/api/settings'),
   saveLlm: (base_url: string, model: string, api_key: string) =>
-    request<{ ok: boolean; configured: boolean }>('/api/settings/llm', {
+    request<{ ok: boolean; configured: boolean; base_url: string }>('/api/settings/llm', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ base_url, model, api_key }),
@@ -95,4 +100,6 @@ export const api = {
     request<JobState>(`/api/courses/${courseId}/lectures/${index}/regenerate`, {
       method: 'POST',
     }),
+  generateLecture: (courseId: string, index: number) =>
+    request<JobState>(`/api/courses/${courseId}/lectures/${index}/generate`, { method: 'POST' }),
 }

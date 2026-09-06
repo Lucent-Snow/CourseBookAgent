@@ -2,6 +2,7 @@
 
 import os
 import logging
+from urllib.parse import urlparse
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -98,12 +99,25 @@ def _env_value(value: str) -> str:
         return '"' + value.replace('"', '\\"') + '"'
     return value
 
+def normalize_llm_base_url(value: str) -> str:
+    """Normalize a provider host entered in the settings page.
+
+    Users commonly paste ``api.deepseek.com`` without a scheme.  httpx then
+    raises a low-level "Request URL is missing" error, so make the setting
+    safe before it reaches the client.
+    """
+    value = value.strip().rstrip("/")
+    if value and not urlparse(value).scheme:
+        value = f"https://{value}"
+    return value
+
 
 def save_llm_settings(base_url: str, model: str, api_key: str) -> None:
     """Persist LLM settings to .env and refresh the in-memory config.
 
     The existing .env is rewritten line-by-line so unrelated settings survive.
     """
+    base_url = normalize_llm_base_url(base_url)
     updates = {
         "LLM_BASE_URL": base_url,
         "LLM_MODEL": model,
