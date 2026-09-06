@@ -23,8 +23,10 @@ from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
+from coursebook_agent.product.api import router as product_router
 
 app = FastAPI(title="CourseBookAgent", version="0.1.0")
+app.include_router(product_router)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 jobs: dict[str, JobState] = {}
 generation_lock = asyncio.Lock()
