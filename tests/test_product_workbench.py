@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +9,35 @@ from fastapi.testclient import TestClient
 from coursebook_agent.app import app
 from coursebook_agent.models import Course, CourseBook, JobState, Lecture, TranscriptSegment
 from coursebook_agent.product.models import DatasetCreate, SnapshotCreate
+from coursebook_agent.product.parsers import parse_document
 from coursebook_agent.product.service import ProductService
+
+
+class DocumentParserTests(unittest.TestCase):
+    def test_docx_and_pptx_extract_structure(self):
+        from docx import Document
+        from pptx import Presentation
+
+        docx_buffer = BytesIO()
+        document = Document()
+        document.add_heading("课程讲义", 1)
+        document.add_paragraph("假设检验内容")
+        document.save(docx_buffer)
+        self.assertIn("假设检验内容", parse_document("notes.docx", docx_buffer.getvalue()).text)
+
+        pptx_buffer = BytesIO()
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = "统计学"
+        slide.placeholders[1].text = "总体与样本"
+        presentation.save(pptx_buffer)
+        parsed = parse_document("slides.pptx", pptx_buffer.getvalue())
+        self.assertEqual(parsed.page_count, 1)
+        self.assertIn("总体与样本", parsed.text)
+
+    def test_unsupported_binary_file_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "仅支持"):
+            parse_document("legacy.ppt", b"binary")
 
 
 class ProductServiceTests(unittest.TestCase):
