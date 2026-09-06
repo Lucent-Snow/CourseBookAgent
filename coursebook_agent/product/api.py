@@ -97,7 +97,7 @@ def inspect_zhiyun_course(course_id: str, refresh: bool = False):
 @router.post("/datasets/{dataset_id}/imports/zhiyun", status_code=201)
 def import_zhiyun(dataset_id: str, request: ZhiyunImportRequest):
     try:
-        resources = service().import_zhiyun_course(
+        resources, warnings = service().import_zhiyun_course(
             dataset_id, request.course_id, lecture_ids=request.lecture_ids,
             content_types=request.content_types, refresh=request.refresh,
         )
@@ -107,7 +107,7 @@ def import_zhiyun(dataset_id: str, request: ZhiyunImportRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"data": resources}
+    return {"data": resources, "warnings": warnings}
 
 
 @router.get("/datasets/{dataset_id}/resources")

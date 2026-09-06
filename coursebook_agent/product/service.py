@@ -186,7 +186,7 @@ class ProductService:
     def import_zhiyun_course(
         self, dataset_id: str, course_id: str, *, lecture_ids: list[str] | None = None,
         content_types: list[str] | None = None, refresh: bool = False,
-    ) -> list[Resource]:
+    ) -> tuple[list[Resource], list[str]]:
         self.get_dataset(dataset_id)
         source = ZhiyunSource()
         courses = source.list_courses(refresh=refresh)
@@ -196,11 +196,17 @@ class ProductService:
             from coursebook_agent.models import Course
             course = Course(course_id=str(course_id), name=f"课程 {course_id}")
         selected = set(lecture_ids or [])
-        lectures = [lecture for lecture in lectures if not selected or lecture.lecture_id in selected]
+        if selected:
+            available = {lecture.lecture_id for lecture in lectures}
+            missing = selected - available
+            if missing:
+                raise ValueError(f"所选讲次不存在：{', '.join(sorted(missing))}")
+            lectures = [lecture for lecture in lectures if lecture.lecture_id in selected]
         kinds = list(dict.fromkeys(content_types or ["transcript"]))
         if not kinds or any(kind not in {"transcript", "courseware"} for kind in kinds):
             raise ValueError("请选择字幕或智云课件")
         imported: list[Resource] = []
+        warnings: list[str] = []
         for lecture in lectures:
             metadata = {
                 "course_id": course_id, "course_name": course.name,
@@ -208,28 +214,36 @@ class ProductService:
                 "duration": lecture.duration, "teacher": course.teacher, "term": course.term,
             }
             if "transcript" in kinds:
-                segments = source.get_transcript(lecture, refresh=refresh)
-                text = "\n".join(f"[{item.start_sec}-{item.end_sec}] {item.text}" for item in segments)
-                imported.append(self._add_zhiyun_resource(
-                    dataset_id, "transcript", lecture.title, f"{lecture.index:02d}-{lecture.title}.txt",
-                    text, metadata, f"{course_id}:{lecture.lecture_id}:transcript",
-                ))
-            if "courseware" in kinds:
-                pages = source.get_courseware(lecture, refresh=refresh)
-                if pages:
-                    text = "\n".join(
-                        f"[第 {index} 页 · {page.get('created_sec', 0)} 秒] {page.get('title') or '课件页'}\n{page.get('image_url')}"
-                        for index, page in enumerate(pages, start=1)
-                    )
-                    page_metadata = {**metadata, "page_count": len(pages), "pages": pages}
+                try:
+                    segments = source.get_transcript(lecture, refresh=refresh)
+                    text = "\n".join(f"[{item.start_sec}-{item.end_sec}] {item.text}" for item in segments)
                     imported.append(self._add_zhiyun_resource(
-                        dataset_id, "courseware", f"{lecture.title} · 智云课件",
-                        f"{lecture.index:02d}-{lecture.title}-课件.txt", text, page_metadata,
-                        f"{course_id}:{lecture.lecture_id}:courseware", page_count=len(pages),
+                        dataset_id, "transcript", lecture.title, f"{lecture.index:02d}-{lecture.title}.txt",
+                        text, metadata, f"{course_id}:{lecture.lecture_id}:transcript",
                     ))
+                except Exception as exc:
+                    warnings.append(f"{lecture.title}的课堂字幕导入失败：{exc}")
+            if "courseware" in kinds:
+                try:
+                    pages = source.get_courseware(lecture, refresh=refresh)
+                    if not pages:
+                        warnings.append(f"{lecture.title}没有可用的智云课件页")
+                    else:
+                        text = "\n".join(
+                            f"[第 {index} 页 · {page.get('created_sec', 0)} 秒] {page.get('title') or '课件页'}\n{page.get('image_url')}"
+                            for index, page in enumerate(pages, start=1)
+                        )
+                        page_metadata = {**metadata, "page_count": len(pages), "pages": pages}
+                        imported.append(self._add_zhiyun_resource(
+                            dataset_id, "courseware", f"{lecture.title} · 智云课件",
+                            f"{lecture.index:02d}-{lecture.title}-课件.txt", text, page_metadata,
+                            f"{course_id}:{lecture.lecture_id}:courseware", page_count=len(pages),
+                        ))
+                except Exception as exc:
+                    warnings.append(f"{lecture.title}的智云课件页导入失败：{exc}")
         with self._connect() as db:
             db.execute("UPDATE datasets SET updated_at = ? WHERE dataset_id = ?", (_now(), dataset_id))
-        return imported
+        return imported, warnings
 
     def _add_zhiyun_resource(
         self, dataset_id: str, kind: str, title: str, filename: str, text: str,

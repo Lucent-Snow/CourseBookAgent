@@ -1,6 +1,28 @@
 import type { CourseBook } from '@/types'
 
-export type ResourceKind = 'zhiyun_course' | 'transcript' | 'pptx' | 'pdf' | 'docx' | 'markdown' | 'text'
+export type ResourceKind = 'zhiyun_course' | 'transcript' | 'courseware' | 'pptx' | 'pdf' | 'docx' | 'markdown' | 'text'
+
+export interface ZhiyunCourse {
+  course_id: string
+  name: string
+  teacher: string | null
+  term: string | null
+}
+
+export interface ZhiyunLecture {
+  lecture_id: string
+  course_id: string
+  title: string
+  index: number
+  duration: number | null
+  lecturer_name: string | null
+}
+
+export interface ZhiyunCourseInspection {
+  course: ZhiyunCourse
+  lectures: ZhiyunLecture[]
+  content_types: Array<{ key: 'transcript' | 'courseware'; name: string; description: string }>
+}
 export type ParseStatus = 'pending' | 'parsing' | 'ready' | 'failed'
 
 export interface Dataset {

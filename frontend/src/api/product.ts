@@ -8,6 +8,8 @@ import type {
   Resource,
   RunProjection,
   WorkflowPreset,
+  ZhiyunCourse,
+  ZhiyunCourseInspection,
 } from '@/product-types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -36,8 +38,10 @@ export const productApi = {
     data.append('file', file)
     return request<Resource>(`/api/product/datasets/${datasetId}/resources`, { method: 'POST', body: data })
   },
-  importZhiyun: async (datasetId: string, courseId: string) =>
-    (await request<{ data: Resource[] }>(`/api/product/datasets/${datasetId}/imports/zhiyun`, json({ course_id: courseId }))).data,
+  zhiyunCourses: async () => (await request<{ data: ZhiyunCourse[] }>('/api/product/imports/zhiyun/courses')).data,
+  inspectZhiyunCourse: (courseId: string) => request<ZhiyunCourseInspection>(`/api/product/imports/zhiyun/courses/${courseId}`),
+  importZhiyun: (datasetId: string, courseId: string, lectureIds: string[], contentTypes: Array<'transcript' | 'courseware'>) =>
+    request<{ data: Resource[]; warnings: string[] }>(`/api/product/datasets/${datasetId}/imports/zhiyun`, json({ course_id: courseId, lecture_ids: lectureIds, content_types: contentTypes })),
   preview: (revisionId: string) => request<{ revision: Resource['current_revision']; text: string }>(`/api/product/resource-revisions/${revisionId}/preview`),
   createSnapshot: (datasetId: string, revisionIds: string[], label = '') =>
     request<InputSnapshot>(`/api/product/datasets/${datasetId}/snapshots`, json({ resource_revision_ids: revisionIds, label })),
