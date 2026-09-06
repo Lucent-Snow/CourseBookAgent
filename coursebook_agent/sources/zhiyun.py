@@ -94,6 +94,9 @@ class ZhiyunSource:
             raise ZhiyunError(f"未获取到讲次 {lecture.lecture_id} 的字幕；可能是登录过期或该视频没有字幕")
         return api._normalize_transcript_segments(transcript)
 
+    async def _fetch_courseware(self, course_id: str, lecture_id: str) -> list[dict[str, Any]]:
+        return await self._make_api().get_ppt_timeline(course_id, lecture_id)
+
     def _load_or_fetch(self, cache_name: str, feature: str, fetch, refresh: bool) -> dict[str, Any]:
         cached = None if refresh else self._read_cache(cache_name)
         if cached is not None:
@@ -139,6 +142,14 @@ class ZhiyunSource:
             )
             for index, row in enumerate(rows, start=1)
         ]
+
+    def get_courseware(self, lecture: Lecture, refresh: bool = False) -> list[dict[str, Any]]:
+        payload = self._load_or_fetch(
+            f"courseware-{lecture.lecture_id}", "courseware_timeline",
+            lambda: self._fetch_courseware(lecture.course_id, lecture.lecture_id), refresh,
+        )
+        rows = payload.get("data", [])
+        return [row for row in rows if isinstance(row, dict) and row.get("image_url")]
 
     def get_transcript(self, lecture: Lecture, refresh: bool = False) -> list[TranscriptSegment]:
         payload = self._load_or_fetch(

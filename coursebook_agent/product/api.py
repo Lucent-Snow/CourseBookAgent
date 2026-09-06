@@ -63,12 +63,48 @@ async def upload_resource(
     return resource
 
 
+@router.get("/imports/zhiyun/courses")
+def list_zhiyun_courses(refresh: bool = False):
+    from coursebook_agent.sources.zhiyun import ZhiyunSource
+
+    try:
+        return {"data": ZhiyunSource().list_courses(refresh=refresh)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/imports/zhiyun/courses/{course_id}")
+def inspect_zhiyun_course(course_id: str, refresh: bool = False):
+    from coursebook_agent.sources.zhiyun import ZhiyunSource
+
+    try:
+        source = ZhiyunSource()
+        courses = source.list_courses(refresh=refresh)
+        course = next((item for item in courses if item.course_id == course_id), None)
+        lectures = source.list_lectures(course_id, refresh=refresh)
+        return {
+            "course": course or {"course_id": course_id, "name": f"课程 {course_id}"},
+            "lectures": lectures,
+            "content_types": [
+                {"key": "transcript", "name": "课堂字幕", "description": "带时间点的课堂字幕文本"},
+                {"key": "courseware", "name": "智云课件页", "description": "课堂录制中的 PPT 页面图片与时间点，不是原始 PPTX"},
+            ],
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @router.post("/datasets/{dataset_id}/imports/zhiyun", status_code=201)
 def import_zhiyun(dataset_id: str, request: ZhiyunImportRequest):
     try:
-        resources = service().import_zhiyun_course(dataset_id, request.course_id)
+        resources = service().import_zhiyun_course(
+            dataset_id, request.course_id, lecture_ids=request.lecture_ids,
+            content_types=request.content_types, refresh=request.refresh,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"data": resources}
