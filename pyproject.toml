@@ -10,6 +10,10 @@ dependencies = [
     "python-dotenv",
     "pydantic",
     "pycryptodome>=3.20.0",
+    "python-multipart",
+    "python-pptx",
+    "pypdf",
+    "python-docx",
 ]
 
 [build-system]
