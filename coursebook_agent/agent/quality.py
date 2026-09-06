@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from coursebook_agent.agent.llm import LLMClient, LLMError
+from coursebook_agent.agent.style_rules import ALL_BANNED, check_content
 from coursebook_agent.models import ChapterInstruction, LectureDraft, TimedChunk
 
 KNOWN_COMPONENTS = {"worked_example", "tip_box", "warning", "side_note", "procedure"}
@@ -152,32 +153,6 @@ def sanitize_examples(draft: LectureDraft) -> LectureDraft:
     return draft
 
 
-def traceability_metrics(draft: LectureDraft, chunks: list[TimedChunk]) -> dict[str, Any]:
-    """Summarize whether chapter sections point to real transcript evidence."""
-    known_chunk_ids = {chunk.chunk_id for chunk in chunks if chunk.lecture_id == draft.lecture_id}
-    total_sections = len(draft.sections)
-    sections_with_sources = sum(bool(section.source_chunk_ids) for section in draft.sections)
-    referenced_ids = {
-        chunk_id
-        for section in draft.sections
-        for chunk_id in section.source_chunk_ids
-    }
-    valid_referenced_ids = referenced_ids & known_chunk_ids
-    invalid_referenced_ids = referenced_ids - known_chunk_ids
-    valid_sections = sum(bool(s.source_chunk_ids) and set(s.source_chunk_ids) <= known_chunk_ids
-                         for s in draft.sections)
-    return {
-        "total_sections": total_sections,
-        "sections_with_sources": sections_with_sources,
-        "source_coverage": round(valid_sections / total_sections, 3) if total_sections else 0.0,
-        "sections_with_valid_sources": valid_sections,
-        "sections_without_sources": total_sections - sections_with_sources,
-        "referenced_chunks": len(referenced_ids),
-        "valid_referenced_chunks": len(valid_referenced_ids),
-        "invalid_referenced_chunks": len(invalid_referenced_ids),
-    }
-
-
 def deterministic_quality_gate(
     draft: LectureDraft,
     instruction: ChapterInstruction,
@@ -188,9 +163,6 @@ def deterministic_quality_gate(
     text_chars = sum(len(section.content.strip()) for section in draft.sections)
     component_types = [c.component_type for section in draft.sections for c in section.components]
     issues: list[str] = []
-    metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
-    if chunks is not None:
-        metrics["traceability"] = traceability_metrics(draft, chunks)
     min_sections, max_sections = template.get("section_range", [2, 12])
     min_chars, max_chars = template.get("body_chars", [800, 8000])
     if not min_sections <= len(draft.sections) <= max_sections:
@@ -202,13 +174,6 @@ def deterministic_quality_gate(
             issues.append(f"小节“{section.heading}”没有来源")
         if not section.time_links:
             issues.append(f"小节“{section.heading}”没有时间段")
-        if chunks is not None:
-            known_chunk_ids = {chunk.chunk_id for chunk in chunks if chunk.lecture_id == draft.lecture_id}
-            unknown_refs = sorted(set(section.source_chunk_ids) - known_chunk_ids)
-            if unknown_refs:
-                issues.append(
-                    f"小节“{section.heading}”引用了不存在的字幕块：{', '.join(unknown_refs)}"
-                )
     if chunks:
         max_end = max(chunk.end_sec for chunk in chunks)
         for source_range in draft.source_ranges:
@@ -226,6 +191,41 @@ def deterministic_quality_gate(
         issues.append("课堂例子含未解析 JSON 对象")
     if not draft.learning_goals or not draft.common_mistakes:
         issues.append("缺少学习目标或易错点")
+
+    # AI 套话检测
+    for section in draft.sections:
+        sec_issues = check_content(section.content)
+        if sec_issues:
+            issues.append(f'小节"{section.heading}"：{"；".join(sec_issues[:2])}')
+
+    # 空洞内容检测：section 内容如果主要是过渡句且无实质知识内容
+    transition_ratio = 0
+    for section in draft.sections:
+        content = section.content.strip()
+        if not content:
+            continue
+        transition_count = 0
+        for pattern in ALL_BANNED:
+            if re.search(pattern, content):
+                transition_count += 1
+        total_sentences = max(1, len(re.findall(r'[。！？\.!]', content)))
+        if total_sentences <= 3 and transition_count >= 1:
+            issues.append(f'小节"{section.heading}"内容过短且含过渡句，缺乏实质知识内容')
+            transition_ratio += 1
+
+    # 组件质量检查
+    for section in draft.sections:
+        for comp in section.components:
+            if comp.component_type == "worked_example":
+                body = comp.data.get("body", "")
+                if len(body) < 50:
+                    issues.append(f'小节"{section.heading}"的 worked_example 过短（{len(body)}字），未展示完整解题过程')
+            if comp.component_type == "procedure":
+                steps = comp.data.get("steps", "")
+                if not steps:
+                    issues.append(f'小节"{section.heading}"的 procedure 缺少步骤内容')
+
+    metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
     return QualityResult(not issues, issues, metrics)
 
 
@@ -248,9 +248,13 @@ async def llm_quality_gate(
 草稿：{draft.model_dump_json()}
 
 只返回 JSON：
-{{"status":"pass|revise|human_review","issues":["可执行问题"],"missing_must_cover":["遗漏项"],"unsupported_claims":["无字幕支持的具体主张"],"asr_uncertainties":["需人工确认项"]}}
+{{"status":"pass|revise|human_review","issues":["可执行问题"],"missing_must_cover":["遗漏项"],"unsupported_claims":["无字幕支持的具体主张"],"asr_uncertainties":["需人工确认项"],"style_issues":["AI味/套话/文风问题"]}}
 
-规则：must_cover 任一项缺失即 revise；不能确认的数值、公式、专名不能批准为确定事实；不要以文笔好为由忽略覆盖问题。"""
+规则：
+1. must_cover 任一项缺失即 revise；不能确认的数值、公式、专名不能批准为确定事实；不要以文笔好为由忽略覆盖问题。
+2. 文风检查：读起来像一本好的大学教辅，还是 AI 生成的课堂摘要？如果像后者，列出具体的 AI 味问题（过渡套话、空洞概述、假互动等）。
+3. 教学信号利用：老师在字幕中强调的重点是否在讲义中体现为重点标注？老师的提问是否转化为引导式讲解？
+4. 结构检查：各小节是否有实质内容而非过渡句？知识点是按教学逻辑组织还是按时间顺序线性堆砌？"""
     try:
         response = await LLMClient(max_retries=2, timeout=180).complete_json(
             "你是只依据提供证据审校的编辑。只输出 JSON。", prompt, max_tokens=5000
@@ -258,6 +262,9 @@ async def llm_quality_gate(
     except LLMError as exc:
         return QualityResult(False, [f"LLM 审校失败：{exc}"], {"review_status": "failed"})
     issues = [str(x) for key in ("issues", "missing_must_cover", "unsupported_claims") for x in (response.get(key) or []) if str(x).strip()]
+    style_issues = [str(x) for x in (response.get("style_issues") or []) if str(x).strip()]
+    if style_issues:
+        issues.extend(f"文风：{x}" for x in style_issues)
     status = str(response.get("status", "revise"))
     if response.get("asr_uncertainties"):
         issues.extend(f"ASR 待人工确认：{x}" for x in response["asr_uncertainties"])

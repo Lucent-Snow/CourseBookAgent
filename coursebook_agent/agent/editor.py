@@ -27,7 +27,8 @@ SYSTEM = """你是高校课程教辅书的总编辑。
 1. 把 14 讲按知识主线组织成一本教辅书，而不是按课堂时间序拼接。
 2. 定义书里用到的组件（例题框、Tips、易错警告等），让分章写作者有统一的格式。
 3. 为每一章写具体的写作指令：覆盖什么、压缩什么、用什么组件、写到什么深度。
-4. 写一份给所有分章写作者的共享系统 prompt。
+4. 每章的 section_plan 必须带内容锚点：每个小节对应哪些知识点、哪些 chunk_refs、有什么教学信号。这样分章写作者拿到的是"带素材的结构图"而不是"空标题列表"。
+5. 写一份给所有分章写作者的共享系统 prompt。
 5. 定义渲染配置（Web 版需要时间戳链接，PDF 版不需要等）。
 
 只返回 JSON。"""
@@ -128,7 +129,7 @@ V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、�
       "bridge_to_next": "启下",
       "canonical_terms": ["本章应使用的标准术语"],
       "common_mistakes": ["本章应点破的易错点"],
-      "section_plan": ["建议小节标题"],
+      "section_plan": [{"heading": "小节标题", "knowledge_points": ["知识点名"], "chunk_refs": ["c001", "c005"], "teaching_signals": "emphasis, question", "writing_focus": "为什么需要\u2192原理\u2192步骤"}],
       "component_usage": ["用 procedure 展示 F 检验步骤", "用 worked_example 展示完整计算"],
       "depth_guidance": "这章需要逐步计算演示" 或 "这章以概念梳理为主",
       "must_verify": ["字幕支撑不足的知识点：原因（如 '公式推导：字幕只有结论没有过程'）"]
@@ -150,7 +151,7 @@ V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、�
 3. writer_system_prompt 必须包含：只用字幕内容、不编造、术语统一、组件格式。
 4. bridge_from_prev/bridge_to_next 必须具体。
 5. component_usage 必须引用 components 中定义的 name。
-6. 关注各讲 digest 中 knowledge_points 的 sufficiency 字段：sufficiency 为 insufficient 或 partial 的知识点必须列入 must_verify，并注明原因。不能把字幕支撑不足的知识点当作确定事实呈现。
+6. 关注各讲 digest 中 knowledge_points 的 sufficiency 字段：sufficiency 为 insufficient 或 partial 的知识点必须列入 must_verify，并注明原因。不能把字幕支撑不足的知识点当作确定事实呈现。\n7. section_plan 中每个小节必须填写 knowledge_points、chunk_refs、teaching_signals，不能只给空标题。
 
 课程与摘要：
 {json.dumps(payload, ensure_ascii=False)}"""
@@ -208,7 +209,7 @@ def _coerce_plan(course: Course, digests: list[LectureDigest], data: dict) -> Bo
             bridge_to_next=str(raw.get("bridge_to_next") or ""),
             canonical_terms=_str_list(raw.get("canonical_terms")),
             common_mistakes=_str_list(raw.get("common_mistakes")),
-            section_plan=_str_list(raw.get("section_plan")),
+            section_plan=_section_plan_list(raw.get("section_plan")),
             component_usage=_str_list(raw.get("component_usage")),
             depth_guidance=str(raw.get("depth_guidance") or ""),
             must_verify=_str_list(raw.get("must_verify")),
@@ -232,6 +233,21 @@ def _coerce_plan(course: Course, digests: list[LectureDigest], data: dict) -> Bo
     )
 
 
+def _section_plan_list(value) -> list[str]:
+    """Extract section headings from section_plan, supporting both old (str list) and new (dict list) formats."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value:
+        if isinstance(item, dict):
+            heading = item.get("heading", "")
+            if heading:
+                result.append(str(heading).strip())
+        elif str(item).strip():
+            result.append(str(item).strip())
+    return result
+
+
 def _str_list(value) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -240,8 +256,7 @@ def _str_list(value) -> list[str]:
 
 def save_plan(plan: BookPlan, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    from coursebook_agent.storage import atomic_write_text
-    atomic_write_text(path, plan.model_dump_json(indent=2))
+    path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
 
 
 def load_plan(path: Path) -> BookPlan:

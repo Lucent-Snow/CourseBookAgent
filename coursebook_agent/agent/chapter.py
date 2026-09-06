@@ -29,7 +29,9 @@ SYSTEM = """你是高校课程教辅书的分章写作者。
 2. 总编辑对这一章的具体指令
 3. 该讲的完整字幕
 
-你的任务：把字幕整理成教辅书的一章，让读者（可能不太聪明的学生）能读懂。
+你的任务：把字幕整理成教辅书的一章。
+
+写作框架：问题驱动 → 概念阐释 → 方法步骤 → 实例演示 → 易错警示。
 
 关键规则：
 - 只用字幕内容，不编造
@@ -37,10 +39,53 @@ SYSTEM = """你是高校课程教辅书的分章写作者。
 - 例题要完整展示解题过程
 - 每个知识点标注来源（chunk_id + 时间段）
 - 按总编辑定义的组件格式展示例题/Tips/警告
-- 不写"根据字幕"等元话语"""
+- 不写"根据字幕"等元话语
+- 直接进入主题，不要用"首先让我们来了解""接下来我们将探讨"等过渡句开头
+- 用具体知识内容填充每个小节，禁止只写空洞的概述句
+- 方法步骤必须精确到"照着做能完成"的程度
+- 术语首次出现时简要解释，之后直接使用
+- 像一本好的大学教辅那样写作：平实、精确、不啰嗦"""
 
 
+from coursebook_agent.agent.style_rules import inject_prompt_rules
 from coursebook_agent.config import config
+
+
+def _build_section_materials(instruction, chunks) -> str:
+    """从章节指令构建锚点驱动的素材包，用于 prompt 注入。"""
+    if not instruction or not instruction.section_plan:
+        return ""
+    chunk_map = {c.chunk_id: c for c in chunks}
+    parts = []
+    for sec in instruction.section_plan:
+        if isinstance(sec, dict):
+            heading = sec.get("heading", "")
+            chunk_refs = sec.get("chunk_refs", [])
+            signals = sec.get("teaching_signals", "")
+            kps = sec.get("knowledge_points", [])
+        else:
+            heading = str(sec)
+            chunk_refs = []
+            signals = ""
+            kps = []
+        material_chunks = [chunk_map[cid] for cid in chunk_refs if cid in chunk_map]
+        if not material_chunks:
+            continue
+        total_chars = sum(len(c.text) for c in material_chunks)
+        signal_desc = ""
+        for c in material_chunks:
+            if c.signals:
+                sig_types = [s.signal_type for s in c.signals]
+                signal_desc += f"  {c.chunk_id} 信号：{'、'.join(sig_types)}\n"
+        kp_line = f"  知识点：{'、'.join(kps)}" if kps else ""
+        parts.append(
+            f'Section "{heading}":\n'
+            f"  素材来源：{', '.join(c.chunk_id for c in material_chunks)}（约 {total_chars} 字）\n"
+            f"{signal_desc}{kp_line}"
+        )
+    if not parts:
+        return ""
+    return "【各小节专属素材包（锚点驱动）】\n以下每个 Section 已预分配对应的字幕 chunk。写该小节时以这些 chunk 的内容为主要素材，不要线性遍历所有字幕。\n\n" + "\n".join(parts)
 
 
 def _chunks_to_source(chunks: list[TimedChunk]) -> str:
@@ -87,6 +132,7 @@ async def generate_chapter(
     llm = client or LLMClient(max_retries=3, timeout=max(150, config.timeout if hasattr(config, 'timeout') else 150))
     source = _chunks_to_source(chunks)
     context = _instruction_context(instruction, plan, previous_draft)
+    system_prompt = inject_prompt_rules(SYSTEM)
 
     target_title = instruction.book_title if instruction else f"第 {lecture.index} 讲：{lecture.title}"
     role = instruction.chapter_role if instruction else "core"
@@ -124,9 +170,13 @@ async def generate_chapter(
         if exemplar_parts:
             exemplar_context = "【高质量小节范例（写作质量必须达到这个水平）】\n以下是优秀小节的真实样例。你的每个小节都应该像这样：有具体的知识内容、完整的步骤演示、清晰的逻辑递进，而不是空洞的过渡句或笼统的概述。\n\n" + "\n\n".join(exemplar_parts) + "\n"
 
+    section_materials = _build_section_materials(instruction, chunks)
+
     prompt = f"""{context}
 
 {revision_context}
+
+{section_materials}
 
 {exemplar_context}
 {template_context}
@@ -180,12 +230,14 @@ async def generate_chapter(
 3. 例题必须展示完整解题过程，不能只说"老师用XX例子说明了YY"。
 4. 如果字幕中某个知识点讲得模糊，用 [不确定：...] 标注，而不是按常识补全它。
 5. 段落之间要有逻辑递进（为什么需要→原理→步骤→例子→注意什么），不能是孤立的知识点罗列。
+6. 有专属素材包的 Section 必须以其素材为主，不要线性遍历所有字幕。
+7. 禁止使用"首先让我们来了解""接下来我们将探讨""总而言之""综上所述""值得注意的是""不难发现""由此可见"等 AI 套话。
 【结构要求】
-6. sections 里每个 section 都要有有效 source_chunk_ids。
-7. 每个 section 至少有 1 个 time_link。
-8. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。
-9. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
-10. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
+8. sections 里每个 section 都要有有效 source_chunk_ids。
+9. 每个 section 至少有 1 个 time_link。
+10. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。
+11. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
+12. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
 
     data = await llm.complete_json(SYSTEM, prompt, max_tokens=20000)
 
@@ -395,6 +447,3 @@ def _build_transcript_links(sections: list[ChapterSection], chunks: list[TimedCh
                 links.append({"label": cid, "start_sec": c.start_sec, "end_sec": c.end_sec})
     return links
 
-
-# Need config import at module level
-from coursebook_agent.config import config

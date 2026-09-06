@@ -32,6 +32,14 @@ class TranscriptSegment(BaseModel):
     text: str
 
 
+class TeachingSignal(BaseModel):
+    """A teaching signal extracted from a subtitle chunk."""
+
+    signal_type: str  # emphasis | question | correction | example | admin
+    confidence: float = 1.0
+    matched_text: str = ""
+
+
 class TimedChunk(BaseModel):
     """A readable, source-addressable unit sent to the model."""
 
@@ -41,6 +49,7 @@ class TimedChunk(BaseModel):
     end_sec: int
     text: str
     source_segment_indices: list[int] = Field(default_factory=list)
+    signals: list[TeachingSignal] = Field(default_factory=list)
 
     @property
     def citation(self) -> str:
@@ -57,8 +66,9 @@ class KnowledgePoint(BaseModel):
     category: str = ""  # concept | formula | example | procedure | fact
     chunk_refs: list[str] = Field(default_factory=list)  # which chunks contain this
     time_refs: list[str] = Field(default_factory=list)  # e.g. ["05:30-12:40"]
-    sufficiency: str = "sufficient"  # sufficient | partial | insufficient — 字幕对该知识点的支撑程度
+    sufficiency: str = "sufficient"  # sufficient | partial | insufficient
     sufficiency_note: str = ""  # 充分性评估说明，如"只有口头描述，缺少具体数值"
+    teaching_signals_summary: str = ""  # e.g. "emphasis, example"
 
 
 class LectureDigest(BaseModel):
@@ -159,8 +169,6 @@ class ChapterSection(BaseModel):
 
 
 class LectureDraft(BaseModel):
-    quality_metrics: dict = Field(default_factory=dict)
-    quality_report: dict = Field(default_factory=dict)
     lecture_id: str
     title: str
     overview: str
@@ -183,6 +191,9 @@ class LectureDraft(BaseModel):
     chapter_components: list[ChapterComponent] = Field(default_factory=list)
     # Source links for web reader
     transcript_links: list[dict] = Field(default_factory=list)  # [{"label": "c005", "start": 330, "end": 760}]
+    # Quality metrics (from main branch)
+    quality_metrics: dict = Field(default_factory=dict)
+    quality_report: dict = Field(default_factory=dict)
 
 
 # ── 第4层：全书产物 ────────────────────────────────────────────────────────
@@ -208,9 +219,6 @@ class CourseBook(BaseModel):
 
 
 class JobState(BaseModel):
-    error_code: str | None = None
-    request: dict = Field(default_factory=dict)
-    events: list[dict] = Field(default_factory=list)
     job_id: str
     course_id: str = ""
     status: str
@@ -220,6 +228,10 @@ class JobState(BaseModel):
     error: str | None = None
     book: CourseBook | None = None
     chapters: list[dict] = Field(default_factory=list)  # 每讲生成摘要，实时更新
+    # From main branch
+    error_code: str | None = None
+    request: dict = Field(default_factory=dict)
+    events: list[dict] = Field(default_factory=list)
 
 
 def format_timestamp(seconds: int | float) -> str:
