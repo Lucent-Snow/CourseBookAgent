@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from coursebook_agent.product.models import DatasetCreate, SnapshotCreate, ZhiyunImportRequest
+from coursebook_agent.product.projections import project_artifact, project_run
 from coursebook_agent.product.service import ProductService
 
 router = APIRouter(prefix="/api/product", tags=["product-workbench"])
@@ -101,3 +102,38 @@ def get_snapshot(snapshot_id: str):
 @router.get("/workflow-presets")
 def list_workflow_presets():
     return {"data": ProductService.workflow_presets()}
+
+
+@router.get("/runs")
+def list_run_projections():
+    from coursebook_agent.app import jobs
+
+    return {"data": [project_run(state) for state in reversed(list(jobs.values()))]}
+
+
+@router.get("/runs/{run_id}")
+def get_run_projection(run_id: str):
+    from coursebook_agent.app import _get_job
+
+    return _call(lambda: project_run(_get_job(run_id)))
+
+
+@router.get("/artifacts")
+def list_artifacts():
+    from coursebook_agent.app import jobs
+
+    return {"data": [artifact for state in reversed(list(jobs.values())) if (artifact := project_artifact(state))]}
+
+
+@router.get("/artifacts/{artifact_id}")
+def get_artifact(artifact_id: str):
+    from coursebook_agent.app import _get_job
+
+    def resolve():
+        state = _get_job(artifact_id)
+        artifact = project_artifact(state)
+        if not artifact:
+            raise KeyError("产物不存在")
+        return {"artifact": artifact, "book": state.book}
+
+    return _call(resolve)
