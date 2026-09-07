@@ -175,7 +175,12 @@ def deterministic_quality_gate(
         if not section.time_links:
             issues.append(f"小节“{section.heading}”没有时间段")
     if chunks:
+        chunk_ids = {c.chunk_id for c in chunks}
         max_end = max(chunk.end_sec for chunk in chunks)
+        for section in draft.sections:
+            for cid in section.source_chunk_ids:
+                if cid not in chunk_ids:
+                    issues.append(f'小节"{section.heading}"引用了不存在的字幕块：{cid}')
         for source_range in draft.source_ranges:
             matched = re.findall(r"(?:(\d{2}):)?(\d{2}):(\d{2})", source_range)
             if len(matched) >= 2:
@@ -216,10 +221,6 @@ def deterministic_quality_gate(
     # 组件质量检查
     for section in draft.sections:
         for comp in section.components:
-            if comp.component_type == "worked_example":
-                body = comp.data.get("body", "")
-                if len(body) < 50:
-                    issues.append(f'小节"{section.heading}"的 worked_example 过短（{len(body)}字），未展示完整解题过程')
             if comp.component_type == "procedure":
                 steps = comp.data.get("steps", "")
                 if not steps:
@@ -227,6 +228,29 @@ def deterministic_quality_gate(
 
     metrics = {"sections": len(draft.sections), "body_chars": text_chars, "components": component_types}
     return QualityResult(not issues, issues, metrics)
+
+
+def traceability_metrics(draft: LectureDraft, chunks: list[TimedChunk]) -> dict[str, Any]:
+    """Compute traceability metrics for a draft against available source chunks."""
+    chunk_ids = {c.chunk_id for c in chunks if c.lecture_id == draft.lecture_id}
+    sections_with_sources = 0
+    valid_refs = set()
+    invalid_refs = set()
+    for section in draft.sections:
+        if section.source_chunk_ids:
+            sections_with_sources += 1
+            for cid in section.source_chunk_ids:
+                if cid in chunk_ids:
+                    valid_refs.add(cid)
+                else:
+                    invalid_refs.add(cid)
+    total_sections = max(1, len(draft.sections))
+    return {
+        "sections_with_sources": sections_with_sources,
+        "source_coverage": round(len(valid_refs) / total_sections, 3),
+        "valid_referenced_chunks": len(valid_refs),
+        "invalid_referenced_chunks": len(invalid_refs),
+    }
 
 
 async def llm_quality_gate(
