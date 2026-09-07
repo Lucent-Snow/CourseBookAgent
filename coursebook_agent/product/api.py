@@ -3,10 +3,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
-from coursebook_agent.product.models import DatasetCreate, SnapshotCreate, ZhiyunImportRequest
+from coursebook_agent.config import config
+from coursebook_agent.product.models import (
+    DatasetCreate,
+    ProviderInspection,
+    SnapshotCreate,
+    XueZaiImportRequest,
+    ZhiyunImportRequest,
+)
 from coursebook_agent.product.projections import project_artifact, project_run
 from coursebook_agent.product.service import ProductService
+
+
+class UnifiedLoginRequest(BaseModel):
+    username: str
+    password: str
+    webvpn: bool = False
 
 router = APIRouter(prefix="/api/product", tags=["product-workbench"])
 
@@ -100,6 +114,143 @@ def import_zhiyun(dataset_id: str, request: ZhiyunImportRequest):
         resources, warnings = service().import_zhiyun_course(
             dataset_id, request.course_id, lecture_ids=request.lecture_ids,
             content_types=request.content_types, refresh=request.refresh,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"data": resources, "warnings": warnings}
+
+
+@router.get("/imports/xuezai/auth")
+def xuezai_auth_status():
+    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+
+    try:
+        return XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").auth_status()
+    except XueZaiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/imports/xuezai/auth", status_code=201)
+def xuezai_login(request: UnifiedLoginRequest):
+    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+
+    try:
+        return XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").login(request.username, request.password)
+    except XueZaiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.delete("/imports/xuezai/auth", status_code=204)
+def xuezai_logout():
+    from coursebook_agent.sources.xuezai.assist import XueZaiSource
+
+    XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").logout()
+    return None
+
+
+@router.get("/auth/providers")
+def provider_auth_status():
+    """Return the connected status of every provider."""
+    from coursebook_agent.sources.xuezai.assist import XueZaiSource
+
+    zhiyun_status: dict[str, object]
+    try:
+        zhiyun_status = {"authenticated": bool(config.zhiyun.has_credentials), "username": ""}
+        if config.zhiyun.session_file.exists():
+            import json as _json
+            payload = _json.loads(config.zhiyun.session_file.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                zhiyun_status["authenticated"] = bool(payload.get("zhiyun_jwt") or config.zhiyun.jwt)
+                zhiyun_status["username"] = payload.get("username", "")
+    except (OSError, ValueError):
+        zhiyun_status = {"authenticated": False, "username": ""}
+    try:
+        xuezai = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").auth_status()
+    except Exception:  # noqa: BLE001 — best-effort status, surface 502 only on the dedicated endpoints
+        xuezai = {"authenticated": False, "username": ""}
+    return {"zhiyun": zhiyun_status, "xue_zai_zju": xuezai}
+
+
+@router.post("/auth/login", status_code=201)
+def unified_login(request: UnifiedLoginRequest):
+    """Log in once and obtain sessions for both providers.
+
+    Zhiyun uses the existing JWT exchange; 学在浙大 uses the CAS public key
+    RSA flow.  Both providers share the same university credentials.
+    """
+    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+    from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
+
+    results: dict[str, object] = {}
+    zhiyun_error: str | None = None
+    xuezai_error: str | None = None
+    try:
+        zhiyun_status = ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
+        results["zhiyun"] = {"authenticated": True, "username": zhiyun_status.get("username", request.username)}
+    except ZhiyunError as exc:
+        zhiyun_error = str(exc)
+        results["zhiyun"] = {"authenticated": False, "username": ""}
+    try:
+        xuezai = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").login(request.username, request.password)
+        results["xue_zai_zju"] = xuezai
+    except XueZaiError as exc:
+        xuezai_error = str(exc)
+        results["xue_zai_zju"] = {"authenticated": False, "username": ""}
+    if zhiyun_error and xuezai_error:
+        raise HTTPException(status_code=502, detail=f"智云：{zhiyun_error}；学在浙大：{xuezai_error}")
+    response: dict[str, object] = {"providers": results, "username": request.username}
+    if zhiyun_error:
+        response["warnings"] = [f"智云课堂登录未成功：{zhiyun_error}"]
+    if xuezai_error:
+        response.setdefault("warnings", []).append(f"学在浙大登录未成功：{xuezai_error}")
+    return response
+
+
+@router.get("/imports/xuezai/courses")
+def list_xuezai_courses(refresh: bool = False):
+    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+
+    try:
+        return {"data": [course.model_dump() if hasattr(course, "model_dump") else {
+            "course_id": course.course_id, "name": course.name, "teacher": course.teacher, "term": course.term,
+        } for course in XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").list_my_courses(refresh=refresh)]}
+    except XueZaiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/imports/xuezai/courses/{course_id}")
+def inspect_xuezai_course(course_id: int, refresh: bool = False):
+    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+
+    try:
+        source = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai")
+        courses = source.list_my_courses(refresh=refresh)
+        course = next((item for item in courses if item.course_id == course_id), None)
+        uploads = source.list_course_uploads(course_id, refresh=refresh)
+        inspection = ProviderInspection(
+            provider="xue_zai_zju",
+            course={"course_id": str(course_id), "name": course.name if course else f"课程 {course_id}",
+                    "teacher": course.teacher if course else None, "term": course.term if course else None},
+            lectures=[],
+            uploads=[upload.__dict__ for upload in uploads],
+            content_types=[
+                {"key": "xuezai_upload", "name": "原始课件文件", "description": "下载 PDF、PPTX、DOCX 等原始文件，存入资料集"},
+            ],
+        )
+        return inspection
+    except XueZaiError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/datasets/{dataset_id}/imports/xuezai", status_code=201)
+def import_xuezai(dataset_id: str, request: XueZaiImportRequest):
+    try:
+        resources, warnings = service().import_xuezai_uploads(
+            dataset_id, course_id=request.course_id, upload_ids=request.upload_ids, refresh=request.refresh,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc

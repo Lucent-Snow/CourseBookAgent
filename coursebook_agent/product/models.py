@@ -7,7 +7,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-ResourceKind = Literal["zhiyun_course", "transcript", "courseware", "pptx", "pdf", "docx", "markdown", "text"]
+ResourceKind = Literal["zhiyun_course", "transcript", "courseware", "xuezai_upload", "pptx", "pdf", "docx", "markdown", "text"]
+Provider = Literal["zhiyun", "xue_zai_zju"]
 ParseStatus = Literal["pending", "parsing", "ready", "failed"]
 
 
@@ -48,6 +49,7 @@ class Resource(BaseModel):
     kind: ResourceKind
     title: str
     source_type: str
+    provider: Provider = "zhiyun"
     source_ref: str | None = None
     created_at: str
     updated_at: str
@@ -64,6 +66,27 @@ class ZhiyunImportRequest(BaseModel):
     lecture_ids: list[str] = Field(default_factory=list)
     content_types: list[Literal["transcript", "courseware"]] = Field(default_factory=lambda: ["transcript"])
     refresh: bool = False
+
+
+class XueZaiImportRequest(BaseModel):
+    course_id: int = Field(ge=1)
+    upload_ids: list[int] = Field(default_factory=list)
+    refresh: bool = False
+
+
+class ProviderCourseSummary(BaseModel):
+    course_id: str
+    name: str
+    teacher: str | None = None
+    term: str | None = None
+
+
+class ProviderInspection(BaseModel):
+    provider: Provider
+    course: ProviderCourseSummary
+    lectures: list[dict[str, Any]] = Field(default_factory=list)
+    uploads: list[dict[str, Any]] = Field(default_factory=list)
+    content_types: list[dict[str, str]] = Field(default_factory=list)
 
 
 class SnapshotCreate(BaseModel):
