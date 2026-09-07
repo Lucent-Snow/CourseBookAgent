@@ -54,6 +54,7 @@ class ProductService:
 
     def _initialize(self) -> None:
         with self._connect() as db:
+            db.execute("PRAGMA foreign_keys = ON")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS schema_meta (
                     key TEXT PRIMARY KEY,
@@ -73,6 +74,7 @@ class ProductService:
                     kind TEXT NOT NULL,
                     title TEXT NOT NULL,
                     source_type TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'zhiyun',
                     source_ref TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -104,6 +106,16 @@ class ProductService:
                     created_at TEXT NOT NULL
                 );
             """)
+            self._ensure_column(db, "resources", "provider", "TEXT NOT NULL DEFAULT 'zhiyun'")
+
+    def _ensure_column(self, db: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        existing = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        if existing is None:
+            return
+        rows = db.execute(f"PRAGMA table_info({table})").fetchall()
+        if any(row["name"] == column for row in rows):
+            return
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def create_dataset(self, request: DatasetCreate) -> Dataset:
         dataset_id = _id("ds")
@@ -171,7 +183,7 @@ class ProductService:
             atomic_write_text(text_path, text)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO resources VALUES (?, ?, ?, ?, 'upload', NULL, ?, ?)",
+                "INSERT INTO resources VALUES (?, ?, ?, ?, 'upload', 'zhiyun', NULL, ?, ?)",
                 (resource_id, dataset_id, kind, Path(filename).stem, now, now),
             )
             db.execute(
@@ -259,13 +271,97 @@ class ProductService:
         atomic_write_text(text_path, text)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO resources VALUES (?, ?, ?, ?, 'zhiyun', ?, ?, ?)",
+                "INSERT INTO resources VALUES (?, ?, ?, ?, 'zhiyun', 'zhiyun', ?, ?, ?)",
                 (resource_id, dataset_id, kind, title, source_ref, now, now),
             )
             db.execute(
                 "INSERT INTO revisions VALUES (?, ?, 1, ?, 'text/plain', ?, ?, ?, ?, 'ready', NULL, ?, ?, ?, ?)",
                 (revision_id, resource_id, filename, len(content), digest, str(blob_path), str(text_path),
                  len(text), page_count, json.dumps(metadata, ensure_ascii=False), now),
+            )
+        return self.get_resource(resource_id)
+
+    def import_xuezai_uploads(
+        self,
+        dataset_id: str,
+        course_id: int,
+        upload_ids: list[int] | None = None,
+        refresh: bool = False,
+    ) -> tuple[list[Resource], list[str]]:
+        self.get_dataset(dataset_id)
+        from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+
+        source = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai")
+        try:
+            courses = source.list_my_courses(refresh=refresh)
+        except XueZaiError:
+            courses = []
+        course = next((item for item in courses if item.course_id == int(course_id)), None)
+        try:
+            uploads = source.list_course_uploads(int(course_id), refresh=refresh)
+        except XueZaiError as exc:
+            raise exc
+        if course is None:
+            from coursebook_agent.sources.xuezai.assist import XueZaiCourse
+            course = XueZaiCourse(course_id=int(course_id), name=f"课程 {course_id}")
+        selected = {int(value) for value in (upload_ids or [])}
+        if selected:
+            available = {upload.upload_id for upload in uploads}
+            missing = selected - available
+            if missing:
+                raise ValueError(f"所选课件不存在：{', '.join(str(item) for item in sorted(missing))}")
+            uploads = [upload for upload in uploads if upload.upload_id in selected]
+        imported: list[Resource] = []
+        warnings: list[str] = []
+        for upload in uploads:
+            try:
+                content = source.download_upload(upload)
+            except XueZaiError as exc:
+                warnings.append(f"{upload.filename}下载失败：{exc}")
+                continue
+            resource = self._add_xuezai_resource(
+                dataset_id, course, upload, content,
+            )
+            imported.append(resource)
+        with self._connect() as db:
+            db.execute("UPDATE datasets SET updated_at = ? WHERE dataset_id = ?", (_now(), dataset_id))
+        return imported, warnings
+
+    def _add_xuezai_resource(self, dataset_id: str, course, upload, content: bytes) -> Resource:
+        digest = hashlib.sha256(content).hexdigest()
+        blob_path = self.blob_dir / digest
+        if not blob_path.exists():
+            blob_path.write_bytes(content)
+        resource_id, revision_id, now = _id("res"), _id("rev"), _now()
+        kind = resource_kind(upload.filename) or "xuezai_upload"
+        mime_type = upload.content_type or mimetypes.guess_type(upload.filename)[0] or "application/octet-stream"
+        status, error, text, page_count, metadata = "ready", None, "", None, {
+            "provider": "xue_zai_zju",
+            "course_id": course.course_id,
+            "course_name": course.name,
+            "upload_id": upload.upload_id,
+            "reference_id": upload.reference_id,
+            "module": upload.module,
+        }
+        try:
+            parsed = parse_document(upload.filename, content)
+            text, page_count, metadata = parsed.text, parsed.page_count, {**parsed.metadata, **metadata}
+        except Exception as exc:
+            status, error = "failed", str(exc)
+            kind = "xuezai_upload"
+        text_path = self.text_dir / f"{revision_id}.txt"
+        if status == "ready" and text:
+            atomic_write_text(text_path, text)
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO resources VALUES (?, ?, ?, ?, 'xuezai', 'xue_zai_zju', ?, ?, ?)",
+                (resource_id, dataset_id, kind, upload.filename, f"{course.course_id}:{upload.upload_id}", now, now),
+            )
+            db.execute(
+                "INSERT INTO revisions VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (revision_id, resource_id, upload.filename, mime_type, len(content), digest, str(blob_path),
+                 str(text_path) if status == "ready" else None, status, error, len(text), page_count,
+                 json.dumps(metadata, ensure_ascii=False), now),
             )
         return self.get_resource(resource_id)
 

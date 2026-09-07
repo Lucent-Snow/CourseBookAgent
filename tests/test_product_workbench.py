@@ -11,6 +11,7 @@ from coursebook_agent.models import Course, CourseBook, JobState, Lecture, Trans
 from coursebook_agent.product.models import DatasetCreate, SnapshotCreate
 from coursebook_agent.product.parsers import parse_document
 from coursebook_agent.product.service import ProductService
+from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource, _rsa_encrypt
 
 
 class DocumentParserTests(unittest.TestCase):
@@ -199,6 +200,35 @@ class ProductApiTests(unittest.TestCase):
             self.assertEqual(artifact.json()["artifact"]["artifact_id"], "product-run")
         finally:
             app_module.jobs.pop(state.job_id, None)
+
+
+class XueZaiAdapterTests(unittest.TestCase):
+    def test_rsa_password_helper_encodes_consistently(self):
+        from Crypto.PublicKey import RSA
+
+        key = RSA.generate(1024)
+        modulus_hex = format(key.n, "x")
+        exponent_hex = format(key.e, "x")
+        ciphertext = _rsa_encrypt("test-password", modulus_hex, exponent_hex)
+        self.assertGreater(len(ciphertext), 0)
+        # The base64 string should be decodable.
+        import base64
+        self.assertGreater(len(base64.b64decode(ciphertext)), 0)
+
+    def test_blank_credentials_are_rejected(self):
+        source = XueZaiSource(cache_dir=Path(tempfile.mkdtemp()))
+        with self.assertRaisesRegex(XueZaiError, "请输入学号和密码"):
+            source.login("", "")
+
+    def test_logout_clears_session(self):
+        source = XueZaiSource(cache_dir=Path(tempfile.mkdtemp()))
+        source.username = "demo"
+        source._authenticated = True
+        source.session_file.write_text("{}", encoding="utf-8")
+        source.logout()
+        self.assertFalse(source.session_file.exists())
+        self.assertEqual(source.username, "")
+        self.assertFalse(source._authenticated)
 
 
 if __name__ == "__main__":
