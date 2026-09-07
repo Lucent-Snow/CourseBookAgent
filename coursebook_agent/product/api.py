@@ -179,12 +179,14 @@ def provider_auth_status():
 
 
 @router.post("/auth/login", status_code=201)
-def unified_login(request: UnifiedLoginRequest):
+async def unified_login(request: UnifiedLoginRequest):
     """Log in once and obtain sessions for both providers.
 
     Zhiyun uses the existing JWT exchange; 学在浙大 uses the CAS public key
     RSA flow.  Both providers share the same university credentials.
     """
+    import asyncio
+
     from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
     from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 
@@ -192,13 +194,13 @@ def unified_login(request: UnifiedLoginRequest):
     zhiyun_error: str | None = None
     xuezai_error: str | None = None
     try:
-        zhiyun_status = ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
+        zhiyun_status = await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
         results["zhiyun"] = {"authenticated": True, "username": zhiyun_status.get("username", request.username)}
     except ZhiyunError as exc:
         zhiyun_error = str(exc)
         results["zhiyun"] = {"authenticated": False, "username": ""}
     try:
-        xuezai = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").login(request.username, request.password)
+        xuezai = await asyncio.to_thread(XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").login, request.username, request.password)
         results["xue_zai_zju"] = xuezai
     except XueZaiError as exc:
         xuezai_error = str(exc)
