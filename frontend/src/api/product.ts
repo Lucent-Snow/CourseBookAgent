@@ -5,11 +5,12 @@ import type {
   Dataset,
   DatasetDetail,
   InputSnapshot,
+  ProviderAuthStatus,
+  ProviderInspection,
   Resource,
   RunProjection,
   WorkflowPreset,
   ZhiyunCourse,
-  ZhiyunCourseInspection,
 } from '@/product-types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -39,9 +40,19 @@ export const productApi = {
     return request<Resource>(`/api/product/datasets/${datasetId}/resources`, { method: 'POST', body: data })
   },
   zhiyunCourses: async () => (await request<{ data: ZhiyunCourse[] }>('/api/product/imports/zhiyun/courses')).data,
-  inspectZhiyunCourse: (courseId: string) => request<ZhiyunCourseInspection>(`/api/product/imports/zhiyun/courses/${courseId}`),
+  inspectZhiyunCourse: (courseId: string) => request<ProviderInspection>(`/api/product/imports/zhiyun/courses/${courseId}`),
   importZhiyun: (datasetId: string, courseId: string, lectureIds: string[], contentTypes: Array<'transcript' | 'courseware'>) =>
     request<{ data: Resource[]; warnings: string[] }>(`/api/product/datasets/${datasetId}/imports/zhiyun`, json({ course_id: courseId, lecture_ids: lectureIds, content_types: contentTypes })),
+  xuezaiCourses: async () => (await request<{ data: Array<{ course_id: number; name: string; teacher: string | null; term: string | null }> }>('/api/product/imports/xuezai/courses')).data,
+  inspectXuezaiCourse: (courseId: number) => request<ProviderInspection>(`/api/product/imports/xuezai/courses/${courseId}`),
+  importXuezai: (datasetId: string, courseId: number, uploadIds: number[]) =>
+    request<{ data: Resource[]; warnings: string[] }>(`/api/product/datasets/${datasetId}/imports/xuezai`, json({ course_id: courseId, upload_ids: uploadIds })),
+  providerAuth: () => request<ProviderAuthStatus>('/api/product/auth/providers'),
+  unifiedLogin: (username: string, password: string, webvpn: boolean) =>
+    request<{ providers: ProviderAuthStatus; username: string; warnings?: string[] }>(
+      '/api/product/auth/login',
+      json({ username, password, webvpn }),
+    ),
   preview: (revisionId: string) => request<{ revision: Resource['current_revision']; text: string }>(`/api/product/resource-revisions/${revisionId}/preview`),
   createSnapshot: (datasetId: string, revisionIds: string[], label = '') =>
     request<InputSnapshot>(`/api/product/datasets/${datasetId}/snapshots`, json({ resource_revision_ids: revisionIds, label })),

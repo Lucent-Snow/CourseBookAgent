@@ -96,14 +96,17 @@ def inspect_zhiyun_course(course_id: str, refresh: bool = False):
         courses = source.list_courses(refresh=refresh)
         course = next((item for item in courses if item.course_id == course_id), None)
         lectures = source.list_lectures(course_id, refresh=refresh)
-        return {
-            "course": course or {"course_id": course_id, "name": f"课程 {course_id}"},
-            "lectures": lectures,
-            "content_types": [
+        return ProviderInspection(
+            provider="zhiyun",
+            course={"course_id": course_id, "name": course.name if course else f"课程 {course_id}",
+                    "teacher": course.teacher if course else None, "term": course.term if course else None},
+            lectures=[lecture.model_dump() for lecture in lectures],
+            uploads=[],
+            content_types=[
                 {"key": "transcript", "name": "课堂字幕", "description": "带时间点的课堂字幕文本"},
                 {"key": "courseware", "name": "智云课件页", "description": "课堂录制中的 PPT 页面图片与时间点，不是原始 PPTX"},
             ],
-        }
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
