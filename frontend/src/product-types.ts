@@ -1,6 +1,33 @@
 import type { CourseBook } from '@/types'
 
-export type ResourceKind = 'zhiyun_course' | 'transcript' | 'courseware' | 'pptx' | 'pdf' | 'docx' | 'markdown' | 'text'
+export type ResourceKind = 'zhiyun_course' | 'transcript' | 'courseware' | 'xuezai_upload' | 'pptx' | 'pdf' | 'docx' | 'markdown' | 'text'
+export type Provider = 'zhiyun' | 'xue_zai_zju'
+
+export interface ProviderCourse {
+  course_id: string
+  name: string
+  teacher: string | null
+  term: string | null
+}
+
+export interface ProviderInspection {
+  provider: Provider
+  course: ProviderCourse
+  lectures: ZhiyunLecture[]
+  uploads: Array<{
+    upload_id: number
+    reference_id: number
+    filename: string
+    size: number
+    module: string
+  }>
+  content_types: Array<{ key: string; name: string; description: string }>
+}
+
+export interface ProviderAuthStatus {
+  zhiyun: { authenticated: boolean; username: string }
+  xue_zai_zju: { authenticated: boolean; username: string }
+}
 
 export interface ZhiyunCourse {
   course_id: string
@@ -16,12 +43,6 @@ export interface ZhiyunLecture {
   index: number
   duration: number | null
   lecturer_name: string | null
-}
-
-export interface ZhiyunCourseInspection {
-  course: ZhiyunCourse
-  lectures: ZhiyunLecture[]
-  content_types: Array<{ key: 'transcript' | 'courseware'; name: string; description: string }>
 }
 export type ParseStatus = 'pending' | 'parsing' | 'ready' | 'failed'
 
@@ -57,6 +78,7 @@ export interface Resource {
   kind: ResourceKind
   title: string
   source_type: string
+  provider: Provider
   source_ref: string | null
   created_at: string
   updated_at: string
