@@ -11,6 +11,7 @@ from coursebook_agent.product.models import (
     ArtifactSummary,
     QualityReport,
     ResourceProjection,
+    RunEvent,
     RunProjection,
     StageProjection,
 )
@@ -397,6 +398,7 @@ def project_run(state: JobState) -> RunProjection:
         resources=resources,
         stage=stage,
         quality=quality,
+        events=[RunEvent.model_validate(event) for event in state.events[-80:]],
         artifact_available=state.book is not None,
     )
 
