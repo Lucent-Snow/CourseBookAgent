@@ -134,6 +134,52 @@ export interface AgentProjection {
   output_available: boolean
 }
 
+export interface ResourceProjection {
+  revision_id: string
+  resource_id: string
+  title: string
+  kind: string
+  provider: string
+  description_status: 'pending' | 'running' | 'done' | 'failed'
+  description_text: string
+  description_topic: string
+  description_scope: string
+  description_suggested_role: string
+  tag_kind: 'chapter' | 'global' | 'none'
+  tag_chapter_ids: string[]
+}
+
+export interface StageProjection {
+  parsed: number
+  parsed_total: number
+  described: number
+  described_total: number
+  planned: boolean
+  plan_summary: {
+    chapter_count: number
+    global_resource_count: number
+    chapter_resource_count: number
+    module_names: string[]
+  }
+  assembled: number
+  assembled_total: number
+  chapters_succeeded: number
+  chapters_failed: number
+  chapters_total: number
+  synthesized: boolean
+  rendered: boolean
+}
+
+export interface QualityReport {
+  chapter_id: string
+  title: string
+  section_count: number
+  source_revision_ids: string[]
+  missing_source_count: number
+  component_count: number
+  warnings: string[]
+}
+
 export interface RunProjection {
   run_id: string
   course_id: string
@@ -149,6 +195,9 @@ export interface RunProjection {
   failed_agents: number
   total_agents: number
   agents: AgentProjection[]
+  resources: ResourceProjection[]
+  stage: StageProjection
+  quality: QualityReport[]
   artifact_available: boolean
 }
 
