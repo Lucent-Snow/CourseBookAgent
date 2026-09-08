@@ -231,18 +231,24 @@ Tag 需要能表达资料与章节的关系，而不是只能给资料设置一�
 
 ## 12. 当前实现与目标的差距
 
-当前代码仍然是旧的“字幕讲次模型”：
+**v2 多资料工作流已落地**（`MultiResourceCourseBookPipeline.run`，详见 §1–§11）。已实现：
 
-- `product/parsers.py` 已支持 PPTX、PDF、DOCX、Markdown、TXT 的文本解析。
-- `product/service.py` 已保存资料、资料版本和输入快照，但解析文本还没有进入生成核心。
-- `pipeline.py` 会先按讲次生成全部 `LectureDigest`，再调用 `plan_book`。
-- `agent/editor.py` 只接收 `LectureDigest`，并要求章节数量与 digests 数量一致。
-- `models.py` 的 `ChapterInstruction` 使用 `lecture_id` 和 `index` 标识章节。
-- `agent/chapter.py` 只接收一个讲次的字幕 `TimedChunk[]`。
-- `generate_course()` 仍然按课程讲次并发生成章节。
-- 当前 preset 的步骤名称已经包含“整理课程资料”，但这只是产品层展示定义，不代表 description 和 Tag 已经实现。
+- `product/parsers.py` 支持 PPTX、PDF、DOCX、Markdown、TXT 的文本解析。
+- `product/service.py` 已保存资料、资料版本、输入快照；`MultiResourceCourseBookPipeline` 通过 `snapshot_id` 读取 `ParsedResource` 列表。
+- `agent/describe.py` 走 transcript 启发式、其他 LLM 失败 fallback，缓存到 `data/intermediate/descriptions/`。
+- `agent/editor.py::plan_book_v2` 接受 `ResourceDescription[]`，输出 `BookPlan v2`：章节由主题决定、`resource_tags / chapter_resources / global_resource_ids` 显式标记。
+- `agent/chapter.py::generate_chapter_v2` 接收 `ChapterContext`（chapter + global + chapter resources + 写作 prompt）。
+- `coursebook_agent/assembly/assemble.py` 按 Tag 装 `ChapterContext`。
+- `pipeline.py::MultiResourceCourseBookPipeline.run` 按 7 阶段跑：`description → 主 Agent 规划 → Tag 装配 → 章节生成 → 合成 → 渲染`，按 `snapshot_id` 缓存 BookPlan，章节缓存按 `chapter-{snapshot_id}-{chapter_id}.json` 分桶。
+- `agent/editor.py::heuristic_book_plan_v2` fallback **按主题关键词贪心合并**，不再 1 章 = 1 资料。
+- 前端：DatasetDetailPage 列出"第 N 次生成"，可点击进入 / 删除；RunProjection 暴露 dataset_id/dataset_name 给前端做资料集名主标题；per-resource / stage / quality 透明化。
 
-因此，目标实现不是简单调整当前步骤文字，而是要把资料描述、书籍章节实体、Tag 映射和按章节组装上下文接入生成核心，并让产品快照真正成为生成输入。
+**已知遗留**（详见 `docs/ISSUES.md`）：
+
+- B10：`get_ppt_timeline` 翻页硬上限已加 20 页。
+- B11：智云 / 学在浙大今天触发 CAS `loginView.sendsms.error`，SMS 二次验证是 ZJU 服务端策略，不在我们可控范围；端到端必须由浏览器手动登录一次保存 session cookie。
+- B12：webvpn 路径已留好入口（`via_webvpn=True`），但 webvpn 自己也要求登录，session cookie 复用是当下唯一可行路径。
+- 旧的 `generate_course()`（4 层流水线）和 `pipeline.compress_lecture` 仍保留向后兼容，但不再被新代码调用；保留用于 `tests/test_core.py` 等。
 
 ## 13. 不属于本次目标的内容
 

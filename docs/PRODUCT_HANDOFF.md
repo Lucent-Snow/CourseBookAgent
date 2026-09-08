@@ -215,23 +215,30 @@ coursebook_agent/
 
 ### 生成核心
 
+v2 多资料工作流按"资料 → description → 章节规划 → 上下文装配 → 章节生成 → 合成 → 渲染"7 阶段。**不再按讲次 1:1 切章节**。
+
 | 模型 | 层 | 用途 |
 |---|---|---|
-| `TimedChunk` | 0 | 分块后的字幕单元，带时间戳 |
-| `KnowledgePoint` / `LectureDigest` | 1 | 一讲的压缩知识点地图 |
-| `ComponentSpec` / `ChapterInstruction` / `BookPlan` | 2 | 主编的蓝图 |
-| `ChapterSection` / `LectureDraft` | 3 | 一章的产物 |
-| `CourseBook` | 4 | 全书产物 |
+| `ParsedResource` / `ParsedResourceUnit` / `ResourceLocation` | 0 | 解析后的资料单元。`ResourceLocation.kind` 区分 `transcript_segment / slide / page / section`。 |
+| `ResourceDescription` | 1 | 资料说明：topic / knowledge_topics / scope / suggested_role / summary。主 Agent 不读原文就能看到全局。 |
+| `ComponentSpec` / `ChapterInstruction` / `BookPlan` | 2 | 主编蓝图；`BookPlan.resource_tags / chapter_resources / global_resource_ids / snapshot_id` |
+| `ChapterContext` | 2.5 | 章节 Agent 输入，由 `assemble_chapter_contexts` 按 Tag 装配 |
+| `ChapterSection` / `ChapterComponent` | 3 | 小节 + 组件实例 |
+| `LectureDraft` | 3 | 章节产物；含 `chapter_id / used_resource_ids` |
+| `CourseBook` | 4 | 全书产物；`course.name` 取自资料集名 |
+
+**Tag 语义**：`BookPlan.resource_tags: dict[revision_id, list[str]]`，value 是 `chapter_id` 列表或 `"__global__"`。未列入 = 本次不参与生成。
 
 ### 产品工作台
 
 | 模型 | 用途 |
 |---|---|
-| `Dataset` | 资料集 |
-| `Resource` / `ResourceRevision` | 资料与其版本（按 SHA-256 内容寻址） |
+| `Dataset` | 资料集，**生成结果绑定到资料集而非课程** |
+| `Resource` / `ResourceRevision` | 资料与版本（SHA-256 内容寻址） |
 | `InputSnapshot` | 一次运行的资料版本快照 |
 | `WorkflowPreset` | 工作流预设（默认 `coursebook`） |
-| `AgentProjection` / `RunProjection` / `ArtifactSummary` | 运行与产物的结构化视图 |
+| `RunProjection` | 一次 Job 的结构化视图（`dataset_id / dataset_name` 是主标题，`course_id` 仅可选 metadata） |
+| `ResourceProjection` / `StageProjection` / `QualityReport` | 前端用的资料行、阶段计数、质量扫描 |
 
 ---
 
@@ -242,21 +249,24 @@ coursebook_agent/
 | 功能 | 说明 |
 |---|---|
 | 智云字幕获取 | 课程、讲次、带时间戳字幕，缓存可断点续跑 |
-| 学在浙大课件获取 | 我的课程、课件列表、原始文件下载 |
+| 学在浙大课件获取 | 我的课程、课件列表、原始文件下载（webvpn 路径已留好入口） |
 | 多格式上传 | PPTX、PDF、DOCX、Markdown、TXT 真实保存与解析 |
 | 字幕清洗分块 | 确定性逻辑 |
-| 字幕压缩 | 每讲 → 知识点地图 |
-| 全书规划 | 结构 + 组件规范 + 每章指令 + 系统 prompt |
-| 分章撰写 | 教辅章节，带时间戳链接和组件，**并发执行** |
-| 质量门禁 | 组件契约 + 例子清理（写盘前统一应用） |
+| 资料 description | 每份资料生成 topic / scope / suggested_role / summary；transcript 启发式、其他走 LLM 失败 fallback |
+| 主 Agent 全书规划 | 一次性看所有 description，按主题合并章节；输出 chapter_id 按阅读顺序 c1/c2/… |
+| 资料 Tag | `resource_tags: dict[revision_id, list[str]]` 决定资料进哪些章节 Agent；global / chapter / 无 |
+| 按 Tag 装配章节上下文 | `assemble_chapter_contexts` 按 plan.resource_tags 组装 ChapterContext |
+| 分章撰写 | 一个章节 Agent 负责一个 ChapterContext，**并发执行** |
 | 全书合成 | 前言 / 知识地图 / 术语表 / 要点索引，LLM 失败时有确定性回退 |
-| 资料集 | 长期容器，跨多个工作流 |
+| 质量门禁 | 组件契约 + 例子清理 + 确定性门禁 + LLM 审校 + 事实抽检（源自 main） |
+| 资料集 | 长期容器，跨多个工作流；生成结果绑定到资料集而非课程 |
 | 输入快照 | SHA-256 锁定的资料版本集合 |
-| 运行投影 | 阶段、章节 Agent 状态、失败任务可视化 |
-| 独立产物 | 按 Job ID 区分，同课程多次生成互不覆盖 |
+| 资料库（资料集）→生成记录 | DatasetDetailPage 列出该资料集的所有生成记录，按"第 N 次生成"编号，可点击进入运行或删除 |
+| 运行投影 | 阶段、章节 Agent 状态、失败任务可视化；前端展示 description / Tag / 质量报告 |
+| 独立产物 | 按 Job ID 区分，同资料集多次生成互不覆盖 |
 | 统一身份认证登录 | 一次登录同时取智云 + 学在浙大会话 |
 | 工作流预设 | 内置 `coursebook` preset，可扩展多 profile |
-| 前端 9 页 | 资料库 / 资料集详情 / 工作流配置 / 运行中心 / 运行详情 / 产物列表 / 产物阅读 / 系统设置 / 从平台导入对话框 |
+| 前端 9 页 | 资料库 / 资料集详情（含生成记录）/ 工作流配置 / 运行中心 / 运行详情 / 产物列表 / 产物阅读 / 系统设置 / 从平台导入对话框 |
 | 导出 | Markdown（按 Job ID 下载） |
 
 ### 8.2 当前缺口（不要当作已完成）
@@ -264,12 +274,10 @@ coursebook_agent/
 | 功能 | 说明 |
 |---|---|
 | 时间戳跳转 | 前端时间戳接智云播放器（可追溯卖点） |
-| 合成加速 | synthesize 单次大调用 JSON 不稳且慢，拆步骤或确定性回退 |
-| 全量质量门禁 | 确定性 + LLM 审校 + 修订循环接回 pipeline |
 | PDF 导出 | 尚未实现，属于后置能力 |
-| 工作流 profile 切换 | ADR 009 草案阶段，需要团队今晚会议决定 |
-| 多资料生成上下文 | 学在浙大课件、上传文件已下载并解析，但尚未进入生成核心的统一上下文；需要实现 description、主 Agent 章节规划与 Tag 映射 |
-| `tests/test_core.py::test_warning_render` | main 既有失败，需要队友在他们的分支修复 |
+| 工作流 profile 切换 | 多 profile 暂未实现，ADR 009 草案阶段 |
+| 学在浙大真实端到端 | CAS 网关触发 `loginView.sendsms.error`（ZJU SMS 二次验证），需要 SMS 或已登录 webvpn cookie；详见 `docs/ISSUES.md` B11/B12 |
+| `tests/test_core.py::test_warning_render` | main 既有失败，需要队友在他们的分支修复测试期望（emoji vs `【易错】`） |
 
 ### 8.3 不做
 
@@ -307,15 +315,15 @@ coursebook_agent/
 ### 10.1 演示脚本
 
 ```text
-1. 打开资料库，新建一个资料集。
+1. 打开资料库，新建一个资料集（命名："数据科学 · 全集"）。
 2. 选择智云课堂导入我的课程，挑一门真实课程，导入讲次字幕与课件页。
-3. 切到学在浙大，再导入一门课程的原始 PPTX 讲义到同一资料集（演示多 provider）。
+3. 切到学在浙大（如果今天该 provider 可登录），再导入另一门课程的原始 PPTX 到同一资料集（演示多 provider）。
 4. 上传一份学生笔记 PDF 或 Markdown 到资料集。
 5. 在资料集详情选择本次要用的资料版本，创建输入快照。
 6. 进入工作流配置页，确认内置"课程教辅书" preset 即可，无需调参。
-7. 启动运行；运行中心实时显示阶段、章节 Agent 状态、失败任务。
+7. 启动 v2 运行；运行中心实时显示阶段（解析 → description → 规划 → Tag 装配 → 章节生成 → 合成 → 渲染）、章节 Agent 状态、每份资料的 description 与 Tag、每章质量扫描。
 8. 打开产物阅读器，展示目录、重点、易错点、来源。
-9. 打开运行中心同课程的下一次生成（不同 Job ID），证明每次独立、互不覆盖。
+9. 在资料集详情页看到"第 N 次生成"，可再次运行或删除一条。
 10. 在系统设置切换统一身份认证登录，演示智云 + 学在浙大一次连上。
 ```
 

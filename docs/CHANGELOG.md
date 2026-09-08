@@ -1,5 +1,16 @@
 # CourseBookAgent Changelog
 
+## 2026-09-08 (合并 `42f2168`) — v2 多资料工作流合入 main
+
+合并 47 个新 commit 到 `origin/main`，关键变化：
+
+- **架构**：生成核心从"按讲次 1:1 切章节"改为 v2 多资料工作流：parse → description → 主 Agent 规划（按主题合并）→ Tag 装配上下文 → 章节生成 → 合成 → 渲染。`chapter_id` 不再绑定 `lecture_id`，按阅读顺序编号。
+- **产品形态**：资料集是真正的容器，生成绑定到资料集（`dataset_id`），不再绑定单一课程（`course_id` 是可选 metadata）。DatasetDetailPage 列出"第 N 次生成"，可删除。`/api/generate/v2` 取代 `/api/generate`。
+- **稳定性**：章节缓存按 `chapter-{snapshot_id}-{chapter_id}.json` 分桶（修了 65564 与 84213 之间 c1 内容互相污染的 bug）。`generation_lock` 现在真的阻塞而不是假装 queued。
+- **可观察性**：前端 RunDetailPage 显示 7 阶段进度、每份资料的 description / Tag、每章质量扫描，不再黑盒。
+- **ADR**：见 `docs/decisions/009-v2-multi-resource-workflow.md`。
+- **PR**：<https://github.com/Lucent-Snow/CourseBookAgent/pull/new/feat/multi-resource-workflow>
+
 ## 2026-09-08 — 多资料工作流 v2 端到端落地
 
 ### 新工作流
