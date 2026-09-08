@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import shutil
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -461,6 +462,9 @@ class ProductService:
         path = config.data_dir / "jobs" / f"{job_id}.json"
         if path.exists():
             path.unlink()
+        checkpoint_dir = config.data_dir / "jobs" / job_id
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
         return True
 
     def _resource_from_row(self, row: sqlite3.Row) -> Resource:

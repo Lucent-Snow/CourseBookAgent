@@ -59,28 +59,6 @@ export function WorkspacePage() {
   const mountedRef = useRef(true)
 
   useEffect(() => {
-    let disposed = false
-    mountedRef.current = true
-    void api.listCourses().then(setCourses).catch(() => {})
-    const saved = localStorage.getItem('coursebook-active-job')
-    if (saved) {
-      void api.job(saved).then(job => {
-        if (disposed) return
-        setActiveJob(job.job_id)
-        setCourseId(job.course_id)
-        setBusy(['queued', 'running'].includes(job.status))
-        poll(job.job_id, job.course_id)
-      }).catch(() => localStorage.removeItem('coursebook-active-job'))
-    }
-    return () => {
-      disposed = true
-      mountedRef.current = false
-      if (pollTimer.current) window.clearTimeout(pollTimer.current)
-      if (tickRef.current) window.clearInterval(tickRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
     if (!courseId) return
     void api.listLectures(courseId).then(setLectures).catch(() => setLectures([]))
   }, [courseId])
@@ -141,6 +119,28 @@ export function WorkspacePage() {
       }
     })()
   }, [navigate, recordTiming])
+
+  useEffect(() => {
+    let disposed = false
+    mountedRef.current = true
+    void api.listCourses().then(setCourses).catch(() => {})
+    const saved = localStorage.getItem('coursebook-active-job')
+    if (saved) {
+      void api.job(saved).then(job => {
+        if (disposed) return
+        setActiveJob(job.job_id)
+        setCourseId(job.course_id)
+        setBusy(['queued', 'running'].includes(job.status))
+        poll(job.job_id, job.course_id)
+      }).catch(() => localStorage.removeItem('coursebook-active-job'))
+    }
+    return () => {
+      disposed = true
+      mountedRef.current = false
+      if (pollTimer.current) window.clearTimeout(pollTimer.current)
+      if (tickRef.current) window.clearInterval(tickRef.current)
+    }
+  }, [poll])
 
   async function generate() {
     setBusy(true)

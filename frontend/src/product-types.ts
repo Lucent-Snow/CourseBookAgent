@@ -252,6 +252,9 @@ export interface ArtifactSummary {
   artifact_id: string
   run_id: string
   course_id: string
+  dataset_id: string
+  dataset_name: string
+  snapshot_id: string | null
   title: string
   kind: string
   status: 'ready' | 'partial'

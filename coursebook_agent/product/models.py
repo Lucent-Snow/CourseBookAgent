@@ -227,6 +227,9 @@ class ArtifactSummary(BaseModel):
     artifact_id: str
     run_id: str
     course_id: str
+    dataset_id: str = ""
+    dataset_name: str = ""
+    snapshot_id: str | None = None
     title: str
     kind: str = "coursebook"
     status: Literal["ready", "partial"]
