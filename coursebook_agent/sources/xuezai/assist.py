@@ -24,6 +24,9 @@ from coursebook_agent.storage import atomic_write_text
 
 CAS_LOGIN_URL = "https://zjuam.zju.edu.cn/cas/login"
 CAS_PUBKEY_URL = "https://zjuam.zju.edu.cn/cas/v2/getPubKey"
+WEBVPN_BASE = "https://webvpn.zju.edu.cn"
+WEBVPN_LOGIN_URL = "https://webvpn.zju.edu.cn/login"
+WEBVPN_CAS_LOGIN_URL = "https://webvpn.zju.edu.cn/cas/login"
 COURSE_TREE_URL = "https://courses.zju.edu.cn/user/courses"
 MY_COURSES_URL = "https://courses.zju.edu.cn/api/my-courses"
 COURSE_ACTIVITIES_URL = "https://courses.zju.edu.cn/api/courses/{course_id}/activities"
@@ -32,6 +35,27 @@ UPLOAD_BLOB_URL = "https://courses.zju.edu.cn/api/uploads/{id}/blob"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64; rv:88.0) Gecko/201001001 Firefox/88.0"
 )
+WEBVPN_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def webvpnify(url: str) -> str:
+    """Rewrite a courses.zju.edu.cn URL into its WebVPN tunnel form.
+
+    WebVPN exposes each upstream URL as either ``/cas/...`` (for CAS) or as
+    ``/https/<host>/<path>?<query>`` for the upstream HTTPS endpoints.
+    We only rewrite courses.zju.edu.cn URLs here.
+    """
+    if not url:
+        return url
+    if url.startswith(WEBVPN_BASE):
+        return url
+    if url.startswith("https://courses.zju.edu.cn/"):
+        suffix = url[len("https://courses.zju.edu.cn/"):]
+        return f"{WEBVPN_BASE}/https/courses.zju.edu.cn/{suffix}"
+    return url
 
 
 class XueZaiError(RuntimeError):
@@ -67,6 +91,7 @@ class XueZaiSource:
     cache_dir: Path
     username: str = ""
     session_file: Path = field(default_factory=lambda: Path("./data/xuezai/session.json"))
+    via_webvpn: bool = False
 
     def __post_init__(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -79,12 +104,16 @@ class XueZaiSource:
 
     def _ensure_client(self) -> httpx.Client:
         if self._client is None:
+            headers = {"User-Agent": WEBVPN_USER_AGENT if self.via_webvpn else DEFAULT_USER_AGENT}
             self._client = httpx.Client(
-                headers={"User-Agent": DEFAULT_USER_AGENT},
+                headers=headers,
                 follow_redirects=True,
                 timeout=30.0,
             )
         return self._client
+
+    def _resolve(self, url: str) -> str:
+        return webvpnify(url) if self.via_webvpn else url
 
     def _persist_session(self) -> None:
         cookies = []
@@ -129,16 +158,32 @@ class XueZaiSource:
             raise XueZaiError("请输入学号和密码")
         client = self._ensure_client()
         try:
-            login_page = client.get(CAS_LOGIN_URL)
+            if self.via_webvpn:
+                # WebVPN requires a pre-flight GET to establish its session
+                # cookie before the upstream CAS login is reachable through
+                # the tunnel.
+                try:
+                    preflight = client.get(WEBVPN_LOGIN_URL)
+                    if preflight.status_code >= 400:
+                        raise XueZaiError(f"WebVPN 入口不可用（HTTP {preflight.status_code}）")
+                except XueZaiError:
+                    raise
+                except Exception as exc:
+                    raise XueZaiError(f"WebVPN 入口访问失败：{exc}") from exc
+                cas_url = WEBVPN_CAS_LOGIN_URL
+            else:
+                cas_url = CAS_LOGIN_URL
+            login_page = client.get(cas_url)
             if "统一身份认证平台" not in login_page.text:
                 raise XueZaiError("无法访问统一身份认证平台")
             execution = re.search(r'name="execution" value="([^"]+)"', login_page.text)
             if not execution:
                 raise XueZaiError("登录页结构变化，无法识别登录参数")
-            pubkey = client.get(CAS_PUBKEY_URL).json()
+            pubkey_resp = client.get(cas_url.replace("/cas/login", "/cas/v2/getPubKey"))
+            pubkey = pubkey_resp.json()
             rsa_password = _rsa_encrypt(password, pubkey["modulus"], pubkey["exponent"])
             response = client.post(
-                CAS_LOGIN_URL,
+                cas_url,
                 data={
                     "username": username,
                     "password": rsa_password,
@@ -148,10 +193,16 @@ class XueZaiSource:
                 },
             )
             if "统一身份认证平台" in response.text:
+                # WebVPN + CAS will inject "loginView.sendsms.error" for
+                # unfamiliar devices/IPs; surface that explicitly so the
+                # caller knows they must complete an SMS challenge in the
+                # browser first.
+                if "sendsms.error" in response.text:
+                    raise XueZaiError("CAS 触发短信二次验证（sendsms.error）：请先在浏览器登录 webvpn 完成手机短信验证后重试")
                 raise XueZaiError("学号或密码错误")
             # Prime the courses.zju.edu.cn cookie store.  Any GET that returns
             # 200 is fine — we just need the auth flow to complete.
-            client.get(COURSE_TREE_URL)
+            client.get(self._resolve(COURSE_TREE_URL))
             self.username = username
             self._authenticated = True
             self._persist_session()
@@ -189,7 +240,7 @@ class XueZaiSource:
                 },
                 "showScorePassedStatus": False,
             }
-            response = client.post(MY_COURSES_URL, json=payload)
+            response = client.post(self._resolve(MY_COURSES_URL), json=payload)
             response.raise_for_status()
             data = response.json()
             items = data.get("courses", []) or []
@@ -214,7 +265,7 @@ class XueZaiSource:
                 pass
         client = self._ensure_client()
         try:
-            response = client.get(COURSE_ACTIVITIES_URL.format(course_id=course_id))
+            response = client.get(self._resolve(COURSE_ACTIVITIES_URL.format(course_id=course_id)))
             response.raise_for_status()
             data = response.json()
             activities = data.get("activities", []) or []
@@ -239,7 +290,7 @@ class XueZaiSource:
         client = self._ensure_client()
         # The reference endpoint serves the original file; fall back to the
         # per-upload blob endpoint when the teacher disabled direct downloads.
-        for url in (UPLOAD_REFERENCE_BLOB_URL.format(reference_id=upload.reference_id), UPLOAD_BLOB_URL.format(id=upload.upload_id)):
+        for url in (self._resolve(UPLOAD_REFERENCE_BLOB_URL.format(reference_id=upload.reference_id)), self._resolve(UPLOAD_BLOB_URL.format(id=upload.upload_id))):
             try:
                 response = client.get(url)
             except XueZaiError:
