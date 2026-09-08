@@ -1,4 +1,5 @@
 import tempfile
+import sqlite3
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -49,6 +50,13 @@ class ProductServiceTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_sqlite_connection_context_closes_file(self):
+        connection = self.service._connect()
+        with connection as db:
+            db.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
     def test_upload_preview_and_snapshot(self):
         dataset = self.service.create_dataset(DatasetCreate(name="统计学资料"))
         resource = self.service.add_file(dataset.dataset_id, "notes.md", b"# Notes\nHypothesis testing")
@@ -64,6 +72,11 @@ class ProductServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.resource_count, 1)
         self.assertEqual(snapshot.resource_revision_ids, [revision.revision_id])
         self.assertEqual(snapshot.sha256, self.service.get_snapshot(snapshot.snapshot_id).sha256)
+
+    def test_upload_title_is_persisted(self):
+        dataset = self.service.create_dataset(DatasetCreate(name="统计学资料"))
+        resource = self.service.add_file(dataset.dataset_id, "notes.md", b"content", title="课程提纲")
+        self.assertEqual(resource.title, "课程提纲")
 
     def test_snapshot_rejects_revision_from_another_dataset(self):
         first = self.service.create_dataset(DatasetCreate(name="First"))
@@ -229,6 +242,22 @@ class XueZaiAdapterTests(unittest.TestCase):
         self.assertFalse(source.session_file.exists())
         self.assertEqual(source.username, "")
         self.assertFalse(source._authenticated)
+
+    def test_webvpn_mode_is_restored_with_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session_file = root / "session.json"
+            source = XueZaiSource(cache_dir=root / "cache", session_file=session_file, via_webvpn=True)
+            client = source._ensure_client()
+            client.cookies.set("ticket", "demo", domain="webvpn.zju.edu.cn", path="/")
+            source.username = "demo"
+            source._authenticated = True
+            source._persist_session()
+
+            restored = XueZaiSource(cache_dir=root / "cache", session_file=session_file)
+            self.assertTrue(restored.via_webvpn)
+            self.assertEqual(restored._ensure_client().cookies.get("ticket"), "demo")
+            restored.logout()
 
 
 if __name__ == "__main__":

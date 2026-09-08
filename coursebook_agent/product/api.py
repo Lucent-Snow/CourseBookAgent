@@ -70,11 +70,9 @@ async def upload_resource(
     title: str = Form(default=""),
 ):
     content = await file.read()
-    resource = _call(lambda: service().add_file(dataset_id, file.filename or title, content, file.content_type))
-    if title.strip():
-        # Title editing is intentionally deferred; preserve the uploaded filename as source evidence.
-        resource.title = title.strip()
-    return resource
+    return _call(lambda: service().add_file(
+        dataset_id, file.filename or title, content, file.content_type, title=title,
+    ))
 
 
 @router.get("/imports/zhiyun/courses")

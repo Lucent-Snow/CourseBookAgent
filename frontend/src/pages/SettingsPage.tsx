@@ -26,15 +26,15 @@ export function SettingsPage() {
   const [providers, setProviders] = useState<ProviderAuthStatus | null>(null)
 
   function refresh() {
-    void productApi.providerAuth().then(setProviders).catch(() => undefined)
+    void productApi.providerAuth().then(setProviders).catch((err) => setError((err as Error).message))
   }
 
   useEffect(() => {
     void api.settings().then((value) => { setSettings(value); setBaseUrl(value.llm.base_url); setModel(value.llm.model) }).catch((err) => setError((err as Error).message))
     refresh()
   }, [])
-  async function execute(action: () => Promise<void>) { setBusy(true); setError(''); setMessage(''); try { await action() } finally { setBusy(false) } }
-  async function saveLlm() { await execute(async () => { const result = await api.saveLlm(baseUrl, model, apiKey); setBaseUrl(result.base_url); setApiKey(''); setSettings((current) => current ? { ...current, llm: { ...current.llm, base_url: result.base_url, model, configured: result.configured, api_key_set: current.llm.api_key_set || Boolean(apiKey) } } : current); setMessage('模型配置已保存'); refresh() }) }
+  async function execute(action: () => Promise<void>) { setBusy(true); setError(''); setMessage(''); try { await action() } catch (err) { setError((err as Error).message) } finally { setBusy(false) } }
+  async function saveLlm() { await execute(async () => { const result = await api.saveLlm(baseUrl, model, apiKey); setBaseUrl(result.base_url); setApiKey(''); setSettings((current) => current ? { ...current, llm: { ...current.llm, base_url: result.base_url, model, configured: result.configured, api_key_set: result.api_key_set } } : current); setMessage('模型配置已保存'); refresh() }) }
   async function login(event: FormEvent) {
     event.preventDefault()
     await execute(async () => {
