@@ -379,6 +379,8 @@ def project_run(state: JobState) -> RunProjection:
     return RunProjection(
         run_id=state.job_id,
         course_id=state.course_id,
+        dataset_id=state.dataset_id or state.request.get("dataset_id", ""),
+        dataset_name=state.dataset_name or state.request.get("dataset_name", ""),
         snapshot_id=state.request.get("snapshot_id"),
         preset_id=state.request.get("preset_id", "coursebook"),
         status=state.status,
