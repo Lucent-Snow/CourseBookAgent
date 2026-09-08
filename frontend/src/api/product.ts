@@ -62,12 +62,12 @@ export const productApi = {
   artifacts: async () => (await request<{ data: ArtifactSummary[] }>('/api/product/artifacts')).data,
   artifact: (artifactId: string) => request<ArtifactDetail>(`/api/product/artifacts/${artifactId}`),
   startRun: (courseId: string, snapshotId: string, lectureIndices: number[], concurrency: number, review: boolean) =>
-    request<JobState>('/api/generate', json({
+    request<JobState>('/api/generate/v2', json({
       course_id: courseId,
       snapshot_id: snapshotId,
-      preset_id: 'coursebook',
-      lecture_indices: lectureIndices,
-      concurrency,
+      regenerate: false,
       review,
+      concurrency,
+      chapter_indices: lectureIndices,
     })),
 }
