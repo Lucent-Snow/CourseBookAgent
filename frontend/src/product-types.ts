@@ -157,6 +157,7 @@ export interface StageProjection {
   planned: boolean
   plan_summary: {
     chapter_count: number
+    selected_chapter_count?: number
     global_resource_count: number
     chapter_resource_count: number
     module_names: string[]

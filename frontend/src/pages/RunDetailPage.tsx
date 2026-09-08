@@ -189,7 +189,7 @@ export function RunDetailPage() {
  <div className="mt-4 grid grid-cols-2 gap-3 text-[11px] text-[#718183] md:grid-cols-3">
  <span>已解析 {stage.parsed}/{stage.parsed_total} 份</span>
  <span>已描述 {stage.described}/{stage.described_total} 份 · {describedPercent}%</span>
- <span>{stage.planned ? `已规划 ${stage.plan_summary.chapter_count} 章` : '尚未规划'}</span>
+ <span>{stage.planned ? `全书规划 ${stage.plan_summary.chapter_count} 章 · 本次 ${stage.plan_summary.selected_chapter_count ?? stage.plan_summary.chapter_count} 章` : '尚未规划'}</span>
  <span>已组装 {stage.assembled}/{stage.assembled_total} 章上下文</span>
  <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} 完成 · {chapterPercent}%</span>
  <span>{stage.chapters_failed} 失败</span>

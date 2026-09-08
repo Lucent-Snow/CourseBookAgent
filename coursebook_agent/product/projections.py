@@ -295,6 +295,12 @@ def project_run(state: JobState) -> RunProjection:
             ))
 
     # Stage counters
+    selected_run = bool(state.request.get("chapter_indices"))
+    assembled_total = len(agents) if selected_run else len(plan_chapters)
+    assembled_count = min(
+        sum(1 for r in chapter_resources.values() if r),
+        assembled_total,
+    )
     stage = StageProjection(
         parsed=sum(1 for r in resources if r.description_status != "pending"),
         parsed_total=len(resources),
@@ -303,12 +309,13 @@ def project_run(state: JobState) -> RunProjection:
         planned=bool(plan_chapters),
         plan_summary={
             "chapter_count": len(plan_chapters),
+            "selected_chapter_count": len(agents) if selected_run else len(plan_chapters),
             "global_resource_count": len(global_resource_ids),
             "chapter_resource_count": sum(len(v) for v in chapter_resources.values()),
             "module_names": [m.get("name") for m in (plan.get("modules") or [])] if plan else [],
         } if plan else {},
-        assembled=sum(1 for r in chapter_resources.values() if r),
-        assembled_total=sum(1 for c in plan_chapters),
+        assembled=assembled_count,
+        assembled_total=assembled_total,
         chapters_succeeded=sum(1 for a in agents if a.status == "succeeded"),
         chapters_failed=sum(1 for a in agents if a.status == "failed"),
         chapters_total=len(agents),
