@@ -185,9 +185,6 @@ async def generate_v2(request: GenerateV2Request):
 
 async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
     state = jobs[job_id]
-    if generation_lock.locked():
-        state.status, state.step, state.message = "queued", "排队", "已有生成任务运行，等待执行"
-        _persist_job(state)
     async with generation_lock:
         state.status, state.step, state.message = "running", "读取快照", "v2 多资料工作流启动"
         _persist_job(state)
@@ -201,7 +198,12 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         except ZeroDivisionError:
             pct = 0
         state.progress = pct
-        state.step = message.split(" ", 1)[0]
+        # Use the first 1-2 Chinese characters (or first word) as a step
+        # label so the projection has something stable to map. Avoid
+        # truncating long descriptive messages into a single garbled
+        # token.
+        head = message.strip().split(" ", 1)[0]
+        state.step = head[:4] if len(head) > 4 else head
         state.message = message
         if chapter:
             cid = chapter.get("chapter_id") or chapter.get("index")
@@ -248,9 +250,8 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
 
 async def _run_job(job_id: str, request: GenerateRequest) -> None:
     state = jobs[job_id]
-    if generation_lock.locked():
-        state.status, state.step, state.message = "queued", "排队", "已有生成任务运行，等待执行"
-        _persist_job(state)
+    # Block on the lock so this task actually starts when the previous run
+    # releases; the lock-fair queueing keeps it serialised.
     async with generation_lock:
         state.status, state.step, state.message = "running", "获取字幕", "正在读取课程讲次和字幕"
         _persist_job(state)
@@ -260,7 +261,8 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
 async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
     def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
         state.progress = min(95, int(done / total * 95)) if total else 0
-        state.step = message.split(" ", 1)[0]
+        head = message.strip().split(" ", 1)[0]
+        state.step = head[:4] if len(head) > 4 else head
         state.message = message
         if chapter:
             idx = chapter.get("index")
