@@ -185,7 +185,9 @@ class QualityReport(BaseModel):
 
 class RunProjection(BaseModel):
     run_id: str
-    course_id: str
+    course_id: str = ""
+    dataset_id: str = ""
+    dataset_name: str = ""
     snapshot_id: str | None = None
     preset_id: str = "coursebook"
     status: str
