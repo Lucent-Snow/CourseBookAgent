@@ -125,7 +125,13 @@ def normalize_llm_base_url(value: str) -> str:
     return value
 
 
-def save_llm_settings(base_url: str, model: str, api_key: str) -> None:
+def save_llm_settings(
+    base_url: str,
+    model: str,
+    api_key: str,
+    input_price_per_million: float | None = None,
+    output_price_per_million: float | None = None,
+) -> None:
     """Persist LLM settings to .env and refresh the in-memory config.
 
     The existing .env is rewritten line-by-line so unrelated settings survive.
@@ -136,6 +142,10 @@ def save_llm_settings(base_url: str, model: str, api_key: str) -> None:
         "LLM_MODEL": model,
         "LLM_API_KEY": api_key,
     }
+    if input_price_per_million is not None:
+        updates["LLM_INPUT_PRICE_PER_MILLION"] = str(max(0.0, input_price_per_million))
+    if output_price_per_million is not None:
+        updates["LLM_OUTPUT_PRICE_PER_MILLION"] = str(max(0.0, output_price_per_million))
     lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
     seen: set[str] = set()
     out: list[str] = []
@@ -153,3 +163,7 @@ def save_llm_settings(base_url: str, model: str, api_key: str) -> None:
     config.llm.base_url = base_url
     config.llm.model = model
     config.llm.api_key = api_key
+    if input_price_per_million is not None:
+        config.llm.input_price_per_million = max(0.0, input_price_per_million)
+    if output_price_per_million is not None:
+        config.llm.output_price_per_million = max(0.0, output_price_per_million)

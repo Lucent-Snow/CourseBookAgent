@@ -129,6 +129,8 @@ export interface LLMSettings {
   model: string
   api_key_set: boolean
   configured: boolean
+  input_price_per_million: number | null
+  output_price_per_million: number | null
 }
 
 export interface DataStats {

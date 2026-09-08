@@ -141,6 +141,8 @@ class LLMSettingsRequest(BaseModel):
     base_url: str
     model: str
     api_key: str = ""
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
 
 
 class ConfirmRequest(BaseModel):
@@ -574,6 +576,8 @@ async def settings():
             "model": config.llm.model,
             "api_key_set": bool(config.llm.api_key),
             "configured": bool(config.llm.api_key and config.llm.base_url and config.llm.model),
+            "input_price_per_million": config.llm.input_price_per_million,
+            "output_price_per_million": config.llm.output_price_per_million,
         },
         "zhiyun": zhiyun,
         "data": {
@@ -590,12 +594,18 @@ async def update_llm_settings(request: LLMSettingsRequest):
     if not base_url or not model:
         raise HTTPException(status_code=400, detail="端点与模型名不能为空")
     api_key = request.api_key.strip() or config.llm.api_key
-    save_llm_settings(base_url, model, api_key)
+    save_llm_settings(
+        base_url, model, api_key,
+        request.input_price_per_million,
+        request.output_price_per_million,
+    )
     return {
         "ok": True,
         "configured": bool(config.llm.base_url and model and api_key),
         "api_key_set": bool(api_key),
         "base_url": config.llm.base_url,
+        "input_price_per_million": config.llm.input_price_per_million,
+        "output_price_per_million": config.llm.output_price_per_million,
     }
 
 
