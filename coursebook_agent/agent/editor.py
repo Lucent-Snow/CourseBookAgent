@@ -270,17 +270,33 @@ def load_plan(path: Path) -> BookPlan:
 # ── v2: main Agent consumes ResourceDescriptions ────────────────────────────
 
 
-V2_SYSTEM = """你是高校课程教辅书的主 Agent（主编 + 资料编排）。
+V2_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排）**。
 
-你会一次性看到本次运行所选快照中所有资料的描述（description）。你不需要也不应该逐份阅读原文。
+你的工作是把多份零散的课堂资料**重新组织成一本书**，不是按时间顺序把它们切成一节一节的概要。
 
-你的任务只有 4 件：
-1. 把整门课组织成一本书：书名、读者定位、整体风格、组件规范。
-2. 决定这本书有哪些章节。章节是书籍章节，不是一节课。多节课可以合并为一章，没有字幕的章节也可以由 PPT、讲义、教学大纲构成。
-3. 为每个章节写 ChapterInstruction：标题、模块、角色、学习目标、必须覆盖的内容、小节计划、深度、衔接、必须使用哪些组件、组件使用规范。
-4. 给每份资料打 Tag：chapter tag（进入哪几章的上下文，chapter_id 列表）、global tag（作为全局上下文供所有相关章节使用）、或无 tag（本次不使用）。
+你看到的资料可能来源不同（智云课堂字幕、学在浙大课件、上传的 PDF/PPT 等），也可能在时间上重叠或顺序颠倒。每份资料只是一堆原始素材，你需要**先消化、再聚合、最后重组**。
 
-Tag 不是流程控制。Tag 只决定一份资料进入哪些 Agent 的上下文。
+## 你必须遵循的几条硬约束
+
+1. **章节是书籍主题，不是讲次时间**。**绝不**因为"这门课有 15 讲"就分出 15 章。你要把多份资料按主题合并成若干章。一节课可能只撑起一章的某个小节；多节课可能共同构成一章；如果某份资料只重复了另一份的内容，可以合并甚至不单独成章。
+2. **章节数由主题决定，不由资料数决定**。一本书 6 章、9 章、12 章都是合理的。资料数 = 15 并不意味着章数 = 15。
+3. **章节顺序由主题逻辑决定，不是讲次时间**。"概念 → 方法 → 应用 → 拓展"这种教学顺序优先于"今天讲了什么"。
+4. **Tag 携带阅读顺序**。`chapter_id` 用 `c1 / c2 / c3 / …` 按书的阅读顺序递增；同时 `resource_tags[revision_id]` 的 value 是这份资料进入的章节列表（章节顺序即为阅读顺序）。
+5. **无主题理由不拆章节**。如果 16 份资料都在讲同一件事，就合成 1 章，宁可少而深。
+
+## 你输出的 BookPlan 字段
+
+- `book_title` / `audience` / `book_positioning`：整本书
+- `chapters[]`：每章写一份 `ChapterInstruction`，chapter_id 严格 `c1 / c2 / … / cN`，book_title 含主题不是讲次日期
+- `resource_tags`：每份资料的归属
+- `components / writer_system_prompt`：全书写作规范
+- `modules`：把章节再按主题分块（不是必须 1:1 跟讲次对应）
+
+## 你不做的事
+
+- 不按讲次时间排章节
+- 不为每份资料单独建一章
+- 不用讲次标题（"第 X 讲"）做章节标题
 
 只返回 JSON。"""
 
@@ -290,29 +306,35 @@ V2_USER_TEMPLATE = """课程信息：{course}
 所有资料描述（按 revision_id 列出）：
 {descriptions}
 
+请按"主题合并"重新组织成一本书。规划步骤：
+1. 通读所有 description，识别共同主题和边界（哪些资料属于同一主题？哪些资料只补充同一章？）。
+2. 决定 N 个章节（N 与资料数无关），给出主题型章节标题。
+3. 为每份资料打 Tag：进入哪一章（chapter_id 列表），还是 __global__，还是无 Tag。
+4. 章节顺序 `c1 / c2 / ...` 按主题教学逻辑排（概念 → 方法 → 应用 → 拓展），不要按讲次时间。
+
 请输出严格 JSON：
 {{
-  "book_title": "书名",
+  "book_title": "书名（主题型，不要含「第 X 讲」）",
   "audience": "目标读者",
   "book_positioning": "本书解决什么问题，2-4 句",
   "learning_path": ["复习路径"],
-  "modules": [{{"name": "模块名", "chapter_ids": ["c1", "c2"], "purpose": "模块目的"}}],
+  "modules": [{{"name": "模块名", "chapter_ids": ["c1", "c3"], "purpose": "模块目的"}}],
   "global_emphasis": ["全书反复强调的主线"],
   "canonical_glossary": ["术语：标准释义"],
   "components": [
-    {{"name": "worked_example", "description": "...", "fields": ["title", "problem", "steps", "conclusion", "source_ref"], "usage_instruction": "...", "example": "..."}},
-    {{"name": "tip_box", "description": "...", "fields": ["title", "body"], "usage_instruction": "...", "example": ""}},
-    {{"name": "warning", "description": "...", "fields": ["title", "body"], "usage_instruction": "...", "example": ""}}
+    {{"name": "worked_example", "description": "...", "fields": [...], "usage_instruction": "...", "example": "..."}},
+    {{"name": "tip_box", "description": "...", "fields": [...], "usage_instruction": "...", "example": ""}},
+    {{"name": "warning", "description": "...", "fields": [...], "usage_instruction": "...", "example": ""}}
   ],
   "writer_system_prompt": "给所有分章写作者的共享 prompt：风格、术语、禁忌、组件使用规范，200-400 字",
   "continuity_notes": ["衔接注意事项"],
   "chapters": [
     {{
       "chapter_id": "c1",
-      "book_title": "第 N 章：标题",
+      "book_title": "第 1 章：主题型标题（不要「第 X 讲」「2026-…」这类时间戳）",
       "module_name": "所属模块",
       "chapter_role": "core|review|guest|admin|mixed",
-      "narrative_purpose": "为什么存在",
+      "narrative_purpose": "为什么这章必须存在",
       "learning_goals": ["学完应能..."],
       "must_cover": ["不可省略的知识点"],
       "de_emphasize": ["应压缩的内容"],
@@ -328,22 +350,22 @@ V2_USER_TEMPLATE = """课程信息：{course}
     }}
   ],
   "resource_tags": {{
-     "<revision_id>": ["c1", "c2"],
+     "<revision_id>": ["c1", "c3"],
      "<revision_id>": ["__global__"]
   }},
   "warnings": ["规划不确定点"]
 }}
 
 约束：
-1. 章节数必须 > 0；与讲次数不必相等。多节课可以合成一章；没有字幕的章节也可以独立存在。
-2. chapter_id 用 "c1"、"c2"…稳定递增；同一章节可在多个 chapter_id 中出现（不能给同一 chapter_id 同一章节重复定义）。
-3. 每个 chapter 必须有 must_cover、section_plan（至少 1 个小节）、depth_guidance、component_usage。
-4. resource_tags 的 value 是字符串数组：要么是该章节的 chapter_id，要么是 "__global__"。__global__ 标签的资料会进入每个章节的全局上下文。未列入 resource_tags 的资料本次不进入生成。
+1. **章节数由你按主题决定**，与资料数无关；可能 5 章，也可能 12 章。绝不要 1 章对应 1 份资料。
+2. chapter_id 用 "c1"、"c2"…按阅读顺序稳定递增；同一份资料可以出现在多个章节（value 是数组）。
+3. 每个 chapter 必须有 must_cover、section_plan（≥1 小节）、depth_guidance、component_usage。
+4. resource_tags 的 value 是字符串数组：要么是 chapter_id（资料作为该章节的原始素材），要么是 "__global__"（资料作为全局上下文）。未列入 resource_tags 的资料本次不进入生成。
 5. 一份资料可以同时进入多个章节，也可以同时进入全局与某些章节。
 6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式。
 7. components 至少包含 worked_example、tip_box、warning 三种。
-8. sections 的 source_revision_ids 必须引用上面"所有资料描述"里出现的 revision_id 之一，否则视为错误。
-9. 资源支撑不足（description 中 suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
+8. section_plan 的 source_revision_ids 必须引用下面"所有资料描述"里出现的 revision_id 之一。
+9. 资料支撑不足（suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
 
 参考资料描述：
 {descriptions}
@@ -577,39 +599,77 @@ def heuristic_book_plan_v2(
     *,
     snapshot_id: str | None = None,
 ) -> BookPlan:
-    """Deterministic fallback for v2: one chapter per resource, all chapter-tagged.
+    """Deterministic fallback for v2.
 
-    This is intentionally minimal — used only when the main Agent is
-    unavailable.  It must satisfy: each description gets a chapter or
-    global tag, and at least one chapter is produced.
+    The main Agent is supposed to merge descriptions by theme.  When the
+    LLM is unavailable we still must NOT emit one chapter per resource
+    (that produced the 15-chapter/15-lecture artefact the user
+    complained about).  Instead, we greedily cluster descriptions by
+    shared ``knowledge_topics`` words and emit one chapter per cluster.
+    The order is by first-seen topic, the chapter title is the dominant
+    topic keyword.  This is intentionally coarse; the resulting plan
+    always carries a warning that the main Agent should re-plan it.
     """
 
+    # Greedy cluster: a description joins an existing chapter if it
+    # shares at least one keyword with the chapter's running topic set;
+    # otherwise it starts a new chapter.  This guarantees we collapse
+    # near-duplicate lectures that share a subject (the typical case
+    # for 16 transcript resources on the same course).
     chapters: list[ChapterInstruction] = []
     resource_tags: dict[str, list[str]] = {}
+    chapter_topics: list[set[str]] = []
 
-    for idx, d in enumerate(descriptions, start=1):
-        cid = f"c{idx}"
-        title = d.title or d.topic or f"第 {idx} 讲"
-        chapters.append(ChapterInstruction(
-            chapter_id=cid,
-            book_title=f"第 {idx} 章：{title[:60]}",
-            module_name="按资料分章（启发式）",
-            chapter_role="core",
-            narrative_purpose=d.summary[:200] or d.topic,
-            learning_goals=d.knowledge_topics[:4],
-            must_cover=d.knowledge_topics[:8],
-            de_emphasize=[],
-            prerequisite_concepts=[],
-            bridge_from_prev=f"本章来自资料《{d.title or d.revision_id}》。",
-            bridge_to_next="",
-            canonical_terms=d.knowledge_topics[:8],
-            common_mistakes=[],
-            section_plan=d.knowledge_topics[:6],
-            component_usage=["用 worked_example 展示典型内容"],
-            depth_guidance="概述即可",
-            must_verify=[] if d.suggested_role != "auxiliary" else [d.summary or d.topic],
-        ))
-        resource_tags[d.revision_id] = [cid]
+    def topic_set(d) -> set[str]:
+        ks = list(d.knowledge_topics or [])
+        # Title words are a fallback signal when the LLM didn't return
+        # knowledge_topics (deterministic description path).
+        if not ks and d.title:
+            ks = [w for w in d.title.split() if len(w) >= 2]
+        return {str(k).strip().lower() for k in ks if str(k).strip()}
+
+    for d in descriptions:
+        ts = topic_set(d)
+        chosen = -1
+        best_overlap = 0
+        for idx, ct in enumerate(chapter_topics):
+            overlap = len(ts & ct)
+            if overlap > best_overlap:
+                best_overlap = overlap
+                chosen = idx
+        if chosen < 0 or best_overlap == 0:
+            chosen = len(chapters)
+            chapter_topics.append(set(ts))
+            cid = f"c{chosen + 1}"
+            # Title is the first non-empty topic / title word so the
+            # chapter carries a real subject label, not a lecture index.
+            topic_word = next(iter(ts), None)
+            label = topic_word or (d.title or d.topic or cid)
+            # Capitalize for readability in Chinese titles.
+            display = label if (label and label[:1].isupper() or any('\u4e00' <= ch <= '\u9fff' for ch in label)) else label
+            chapters.append(ChapterInstruction(
+                chapter_id=cid,
+                book_title=f"第 {chosen + 1} 章：{display[:60]}",
+                module_name="按主题分章（启发式）",
+                chapter_role="core",
+                narrative_purpose=d.summary[:200] or d.topic,
+                learning_goals=d.knowledge_topics[:4],
+                must_cover=d.knowledge_topics[:8],
+                de_emphasize=[],
+                prerequisite_concepts=[],
+                bridge_from_prev="全书从本资料集开始。" if chosen == 0 else f"本章承接上一章《{chapters[chosen - 1].book_title}》。",
+                bridge_to_next="",
+                canonical_terms=d.knowledge_topics[:8],
+                common_mistakes=[],
+                section_plan=d.knowledge_topics[:6],
+                component_usage=["用 worked_example 展示典型内容"],
+                depth_guidance="概述即可",
+                must_verify=[] if d.suggested_role != "auxiliary" else [d.summary or d.topic],
+            ))
+            chapter_topics[chosen] |= ts
+        else:
+            chapter_topics[chosen] |= ts
+        resource_tags.setdefault(d.revision_id, []).append(chapters[chosen].chapter_id)
 
     default_components = [
         ComponentSpec(name="worked_example", description="课堂例题展示", fields=["title", "problem", "steps", "conclusion", "source_ref"], usage_instruction="每章至少 1 个"),
@@ -619,7 +679,7 @@ def heuristic_book_plan_v2(
 
     return BookPlan(
         course_id=course.course_id,
-        book_title=f"{course.name}：课堂精讲与复习教辅",
+        book_title=f"{course.name}：课堂精讲与复习教辅（启发式）",
         audience="正在修读本课、需要复习的学生",
         book_positioning="把课堂推理压缩成可连续阅读的复习教辅。",
         learning_path=["按章节顺序阅读"],
@@ -631,7 +691,7 @@ def heuristic_book_plan_v2(
         chapters=chapters,
         writer_system_prompt="你是教辅书分章写作者。只用资料内容，不编造。术语统一。每个例题和重点标注来源。",
         render_config={"web_timestamp_links": True, "pdf_omit_timestamp_links": True},
-        warnings=["启发式回退：主 Agent 不可用，每份资料单独成章"],
+        warnings=["启发式回退：主 Agent 不可用，按主题关键词贪心合并；如需更细粒度请让主 Agent 可用后重跑"],
         resource_tags=resource_tags,
         chapter_resources=_derive_chapter_resources(resource_tags, chapters),
         global_resource_ids=[],
