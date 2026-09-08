@@ -248,6 +248,47 @@ class PlanBookV2SignatureTests(unittest.IsolatedAsyncioTestCase):
             plan = heuristic_book_plan_v2(course, descriptions, snapshot_id=None)
         self.assertGreater(len(plan.chapters), 0)
 
+    def test_heuristic_fallback_merges_by_topic(self):
+        """The fallback must NOT emit one chapter per resource.
+
+        Two resources sharing the same ``knowledge_topics`` should land
+        in the same chapter; the resulting plan must carry a warning
+        that this is a fallback so the front-end can surface it.
+        """
+        from coursebook_agent.agent.editor import heuristic_book_plan_v2
+        from coursebook_agent.models import Course, ResourceDescription
+
+        course = Course(course_id="c1", name="示例")
+        descriptions = [
+            ResourceDescription(
+                revision_id="r1", resource_id="res1", kind="transcript",
+                source_type="zhiyun", provider="zhiyun", title="Regression basics",
+                topic="线性回归", knowledge_topics=["回归", "OLS", "系数"], scope="lecture",
+            ),
+            ResourceDescription(
+                revision_id="r2", resource_id="res2", kind="transcript",
+                source_type="zhiyun", provider="zhiyun", title="Regression diagnostics",
+                topic="线性回归", knowledge_topics=["回归", "残差", "异方差"], scope="lecture",
+            ),
+            ResourceDescription(
+                revision_id="r3", resource_id="res3", kind="transcript",
+                source_type="zhiyun", provider="zhiyun", title="t-test intro",
+                topic="假设检验", knowledge_topics=["t 检验", "p 值"], scope="lecture",
+            ),
+            ResourceDescription(
+                revision_id="r4", resource_id="res4", kind="transcript",
+                source_type="zhiyun", provider="zhiyun", title="t-test extension",
+                topic="假设检验", knowledge_topics=["t 检验", "配对"], scope="lecture",
+            ),
+        ]
+        plan = heuristic_book_plan_v2(course, descriptions)
+        self.assertLessEqual(len(plan.chapters), 2, f"expected <= 2 chapters, got {len(plan.chapters)}")
+        self.assertEqual(plan.resource_tags["r1"], plan.resource_tags["r2"])
+        self.assertEqual(plan.resource_tags["r3"], plan.resource_tags["r4"])
+        first = plan.chapters[0]
+        self.assertNotIn("第 X 讲", first.book_title)
+        self.assertTrue(any("启发式" in w for w in plan.warnings))
+
 
 if __name__ == "__main__":
     unittest.main()
