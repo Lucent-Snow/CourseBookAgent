@@ -27,6 +27,16 @@ from coursebook_agent.sources.zhiyun import ZhiyunSource
 from coursebook_agent.storage import atomic_write_text
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """SQLite context manager that also releases the Windows file handle."""
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -47,7 +57,7 @@ class ProductService:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path)
+        connection = sqlite3.connect(self.db_path, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -160,7 +170,7 @@ class ProductService:
             if not result.rowcount:
                 raise KeyError("资料集不存在")
 
-    def add_file(self, dataset_id: str, filename: str, content: bytes, mime_type: str | None = None) -> Resource:
+    def add_file(self, dataset_id: str, filename: str, content: bytes, mime_type: str | None = None, title: str = "") -> Resource:
         self.get_dataset(dataset_id)
         if not filename or not content:
             raise ValueError("文件不能为空")
@@ -184,7 +194,7 @@ class ProductService:
         with self._connect() as db:
             db.execute(
                 "INSERT INTO resources (resource_id, dataset_id, kind, title, source_type, provider, source_ref, created_at, updated_at) VALUES (?, ?, ?, ?, 'upload', 'zhiyun', NULL, ?, ?)",
-                (resource_id, dataset_id, kind, Path(filename).stem, now, now),
+                (resource_id, dataset_id, kind, title.strip() or Path(filename).stem, now, now),
             )
             db.execute(
                 "INSERT INTO revisions VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

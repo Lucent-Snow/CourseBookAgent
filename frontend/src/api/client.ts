@@ -71,7 +71,7 @@ export const api = {
   // 设置
   settings: () => request<Settings>('/api/settings'),
   saveLlm: (base_url: string, model: string, api_key: string) =>
-    request<{ ok: boolean; configured: boolean; base_url: string }>('/api/settings/llm', {
+    request<{ ok: boolean; configured: boolean; api_key_set: boolean; base_url: string }>('/api/settings/llm', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ base_url, model, api_key }),

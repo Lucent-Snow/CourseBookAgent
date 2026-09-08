@@ -7,7 +7,7 @@
 - **后端** FastAPI + Python + SQLite：
  - 生成核心（`agent/` + `pipeline.py`）：字幕压缩 → 全书规划 → 分章撰写（并发）→ 质量门禁 → 全书合成
  - 产品工作台（`product/`）：资料集、资源版本、输入快照、工作流预设、结构化运行与独立产物
- - 数据源适配（`sources/zhiyun.py` + `sources/xuezai/assist.py`）：智云课堂字幕/课件页、学在浙大原始课件下载
+ - 数据源适配（`sources/zhiyun.py` + `sources/xuezai/assist.py`）：智云课堂字幕/课件页、学在浙大原始课件下载；学在浙大会话保存在 `XUEZAI_SESSION_FILE` 指定的位置
 - **前端** React 19 + TypeScript + Vite + Tailwind 4 + shadcn/ui：9 页产品工作台（资料库、资料集详情、工作流配置、运行中心、运行详情、产物列表、产物阅读、系统设置）+ 旧兼容页（书架 / 工作台 / 阅读器）
 - **质量门禁** `agent/quality.py`：组件契约、例子清理、确定性门禁、可选 LLM 审校
 - **开发交接** `AGENTS.md` 是文档入口，`docs/DEVELOPMENT.md` 是协作与验证协议

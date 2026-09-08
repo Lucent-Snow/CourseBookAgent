@@ -11,10 +11,11 @@ documented contract.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import unquote
 
 import httpx
@@ -90,7 +91,7 @@ class XueZaiSource:
 
     cache_dir: Path
     username: str = ""
-    session_file: Path = field(default_factory=lambda: Path("./data/xuezai/session.json"))
+    session_file: Path = field(default_factory=lambda: Path(os.getenv("XUEZAI_SESSION_FILE", "./data/xuezai/session.json")).expanduser())
     via_webvpn: bool = False
 
     def __post_init__(self) -> None:
@@ -119,7 +120,11 @@ class XueZaiSource:
         cookies = []
         for cookie in self._client.cookies.jar:
             cookies.append({"name": cookie.name, "value": cookie.value, "domain": cookie.domain, "path": cookie.path})
-        atomic_write_text(self.session_file, _encode_json({"username": self.username, "cookies": cookies}))
+        atomic_write_text(self.session_file, _encode_json({
+            "username": self.username,
+            "via_webvpn": self.via_webvpn,
+            "cookies": cookies,
+        }))
 
     def _restore_session(self) -> None:
         if not self.session_file.exists():
@@ -132,6 +137,8 @@ class XueZaiSource:
         cookies = payload.get("cookies", []) if isinstance(payload, dict) else []
         if not cookies:
             return
+        if isinstance(payload, dict) and "via_webvpn" in payload:
+            self.via_webvpn = bool(payload["via_webvpn"])
         client = self._ensure_client()
         for item in cookies:
             client.cookies.set(item["name"], item["value"], domain=item.get("domain", "zju.edu.cn"), path=item.get("path", "/"))
@@ -202,7 +209,9 @@ class XueZaiSource:
                 raise XueZaiError("学号或密码错误")
             # Prime the courses.zju.edu.cn cookie store.  Any GET that returns
             # 200 is fine — we just need the auth flow to complete.
-            client.get(self._resolve(COURSE_TREE_URL))
+            prime = client.get(self._resolve(COURSE_TREE_URL))
+            if prime.status_code in {401, 403} or "统一身份认证平台" in prime.text:
+                raise XueZaiError("学在浙大会话未建立，请确认网络路径或完成 WebVPN 短信验证后重试")
             self.username = username
             self._authenticated = True
             self._persist_session()
@@ -241,6 +250,8 @@ class XueZaiSource:
                 "showScorePassedStatus": False,
             }
             response = client.post(self._resolve(MY_COURSES_URL), json=payload)
+            if response.status_code in {401, 403}:
+                raise XueZaiError("学在浙大登录会话已失效，请重新连接账号")
             response.raise_for_status()
             data = response.json()
             items = data.get("courses", []) or []
@@ -266,6 +277,8 @@ class XueZaiSource:
         client = self._ensure_client()
         try:
             response = client.get(self._resolve(COURSE_ACTIVITIES_URL.format(course_id=course_id)))
+            if response.status_code in {401, 403}:
+                raise XueZaiError("学在浙大登录会话已失效，请重新连接账号")
             response.raise_for_status()
             data = response.json()
             activities = data.get("activities", []) or []
@@ -297,6 +310,8 @@ class XueZaiSource:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise XueZaiError(f"下载课件失败：{exc}") from exc
+            if response.status_code in {401, 403}:
+                raise XueZaiError("学在浙大登录会话已失效，请重新连接账号")
             if response.status_code == httpx.codes.OK:
                 content = response.content
                 if content:
@@ -350,6 +365,6 @@ def _rsa_encrypt(password: str, modulus: str, exponent: str) -> str:
     return encoded
 
 
-def _encode_json(items: Iterable[Any]) -> str:
+def _encode_json(items: Any) -> str:
     import json as _json
-    return _json.dumps(list(items), ensure_ascii=False, indent=2)
+    return _json.dumps(items, ensure_ascii=False, indent=2)

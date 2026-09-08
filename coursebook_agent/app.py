@@ -534,7 +534,12 @@ async def update_llm_settings(request: LLMSettingsRequest):
         raise HTTPException(status_code=400, detail="端点与模型名不能为空")
     api_key = request.api_key.strip() or config.llm.api_key
     save_llm_settings(base_url, model, api_key)
-    return {"ok": True, "configured": bool(config.llm.base_url and model and api_key), "base_url": config.llm.base_url}
+    return {
+        "ok": True,
+        "configured": bool(config.llm.base_url and model and api_key),
+        "api_key_set": bool(api_key),
+        "base_url": config.llm.base_url,
+    }
 
 
 @app.post("/api/settings/llm/test")
