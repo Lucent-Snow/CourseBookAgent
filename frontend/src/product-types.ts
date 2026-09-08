@@ -183,6 +183,8 @@ export interface QualityReport {
 export interface RunProjection {
   run_id: string
   course_id: string
+  dataset_id: string
+  dataset_name: string
   snapshot_id: string | null
   preset_id: string
   status: string
@@ -199,6 +201,21 @@ export interface RunProjection {
   stage: StageProjection
   quality: QualityReport[]
   artifact_available: boolean
+}
+
+export interface DatasetRunSummary {
+  job_id: string
+  status: string | null
+  phase: string | null
+  progress: number
+  message: string
+  course_id: string | null
+  snapshot_id: string | null
+  preset_id: string
+  dataset_id: string
+  artifact_available: boolean
+  updated_at: string | null
+  created_at: string | null
 }
 
 export interface ArtifactSummary {
