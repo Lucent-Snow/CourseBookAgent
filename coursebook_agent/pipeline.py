@@ -669,13 +669,15 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         if not parsed:
             raise ValueError("本次运行没有任何可解析的资料")
 
+        # Stage 1: parse already done (load_snapshot / load_course_resources_from_zhiyun).
         if progress:
-            progress(0, 5, f"描述 {len(parsed)} 份资料")
+            progress(0, 7, f"已解析 {len(parsed)} 份资料")
 
+        # Stage 2: per-resource description.
         descriptions = await self._describe_all(parsed)
 
         if progress:
-            progress(1, 5, f"主 Agent 规划全书（{len(descriptions)} 份资料）")
+            progress(1, 7, f"已生成 {len(descriptions)} 份 description")
 
         plan_path = self._plan_path_for(snapshot_id) if snapshot_id else self.plan_path(course.course_id)
         if plan_path.exists() and not regenerate:
@@ -701,8 +703,15 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         selected_contexts = [c for i, c in enumerate(plan.chapters, start=1) if i in selected]
         plan_chapter_ids = [c.chapter_id for c in plan.chapters]
 
+        # Stage 3: main Agent has planned (caller-visible message carries the
+        # chapter count so the operator can verify Tag semantics).
         if progress:
-            progress(2, 5, f"按 Tag 组装 {len(selected_contexts)} 个章节上下文")
+            n_global = len(plan.global_resource_ids)
+            n_chapter_total = sum(len(v) for v in plan.chapter_resources.values())
+            progress(
+                2, 7,
+                f"主 Agent 规划 {len(plan.chapters)} 章（{n_global} 份全局、{n_chapter_total} 份章节资料）",
+            )
 
         contexts = assemble_chapter_contexts(
             plan, parsed, course=course, snapshot_id=snapshot_id,
@@ -712,8 +721,9 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         contexts.sort(key=lambda c: order_index.get(c.chapter.chapter_id, 1_000_000))
         contexts = [c for c in contexts if c.chapter.chapter_id in {sc.chapter_id for sc in selected_contexts}]
 
+        # Stage 4: assemble chapter contexts by Tag.
         if progress:
-            progress(3, 5, f"并发生成 {len(contexts)} 个章节")
+            progress(3, 7, f"已按 Tag 组装 {len(contexts)} 个章节上下文")
 
         sem = asyncio.Semaphore(max(1, concurrency))
         results: list[LectureDraft] = []
@@ -766,14 +776,15 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
             results.append(draft)
             done += 1
             if progress:
-                progress(3 + done / total, 5, f"已生成 {done}/{total} 章", _chapter_progress_summary(draft))
+                progress(4 + done / total, 7, f"已生成 {done}/{total} 章", _chapter_progress_summary(draft))
 
         # Order results by chapter order in the plan.
         order = {c.chapter_id: i for i, c in enumerate(plan.chapters)}
         results.sort(key=lambda d: order.get(d.chapter_id, 1_000_000))
 
+        # Stage 6: synthesise full book.
         if progress:
-            progress(4, 5, "全书合成与渲染")
+            progress(6, 7, "全书合成中")
 
         book = await synthesize_book(
             course, results, plan=plan, client=LLMClient(max_retries=2, timeout=180),
@@ -787,6 +798,7 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         atomic_write_text(book_path, book.model_dump_json(indent=2))
         atomic_write_text(config.output_dir / f"coursebook-{course.course_id}.md", render_coursebook(book))
 
+        # Stage 7: render complete.
         if progress:
-            progress(5, 5, "课程教辅生成完成")
+            progress(7, 7, "课程教辅生成完成")
         return book
