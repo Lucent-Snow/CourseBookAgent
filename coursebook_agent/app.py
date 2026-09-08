@@ -746,12 +746,17 @@ async def _run_single_lecture(job_id: str, course_id: str, index: int) -> None:
     async with generation_lock:
         state.status, state.step, state.message = "running", "生成", f"正在生成第 {index} 讲"
         _persist_job(state)
+        metrics = _new_job_metrics(state)
+        _attach_job_metrics(state, metrics)
+        state.metrics = metrics.snapshot()
+        _persist_job(state)
         try:
             pipeline = CourseBookPipeline()
-            book = await asyncio.wait_for(
-                pipeline.generate_single_lecture(course_id, index, review=True),
-                timeout=3600,
-            )
+            with usage_tracking(metrics):
+                book = await asyncio.wait_for(
+                    pipeline.generate_single_lecture(course_id, index, review=True),
+                    timeout=3600,
+                )
             state.book = book
             lectures = await asyncio.to_thread(pipeline.source.list_lectures, course_id)
             target_id = lectures[index - 1].lecture_id
@@ -766,7 +771,12 @@ async def _run_single_lecture(job_id: str, course_id: str, index: int) -> None:
             }]
             state.status, state.progress, state.step, state.message = "completed", 100, "完成", f"第 {index} 讲已生成"
             _persist_job(state)
+        except asyncio.CancelledError:
+            state.status, state.step, state.message = "interrupted", "中断", "单讲生成中断，可手动恢复"
+            _persist_job(state)
+            raise
         except Exception as exc:
+            state.error_code = getattr(exc, "code", "generation_error")
             state.status, state.step, state.error, state.message = "failed", "失败", str(exc), f"第 {index} 讲生成失败"
             _persist_job(state)
 
