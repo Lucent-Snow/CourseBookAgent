@@ -15,6 +15,9 @@
 | B7 | `synthesize_book` 单次大调用（14 章摘要喂给 LLM），JSON 返回不稳触发 repair 重试 | 合成阶段慢（约 2-3 分钟） | 待拆分或确定性回退 |
 | B8 | `tests/test_core.py::test_warning_render` 断言 `⚠️` emoji，但 `fix: 修复quality.py` 把渲染输出改为 `【易错】` | 测试在 main 上持续失败 | 待队友在他们的分支同步测试断言 |
 | B9 | 智云课件页只保存 PPT 时间轴图片元数据，未真正保存为可复用文件 | 无法离线重看 | 待评估（学在浙大已支持原始文件下载） |
+| B10 | `ZhiyunApi.get_ppt_timeline` 用 `while True` 翻页 `search-ppt`，无上限 | 上端曾观察到一门 16 讲的课被同一会话拉到 `page=26445`（远超真实规模），形成对智云 API 的无界翻页 | ✅ 已修（vendor/zhiyun/client.py：增加 `max_pages=20`，空 list 立刻 break） |
+| B11 | 智云 CAS `loginView.sendsms.error` 触发 SMS 二次验证（2026-09） | 无法用账号密码登录智云 / 学在浙大，需要短信码；服务端策略问题 | 未解决；当前用浏览器手登的 session 文件 `data/zhiyun/session.json` / `data/xuezai/session.json` 复用 cookie |
+| B12 | 学在浙大（Courses.zju.edu.cn）从这台机器公网 IP 直接访问失败，必须走 webvpn 或校园网；webvpn 入口又强制 SMS 二次验证 | 今天无法做学在浙大真实端到端 | 已留 webvpn 代码路径（`XueZaiSource(via_webvpn=True)`），但因 webvpn 自身需要 SMS 验证而无法直接走通；后续若拿到已登录的 webvpn cookie 可绕过 |
 
 ## 前端
 
@@ -66,3 +69,4 @@
 - [ ] P4 学在浙大课件接入生成上下文
 
 > B1/F6 的机器残留修复已在当前代码和测试中体现；不要把它们继续列为未完成任务。
+| B10 | `ZhiyunApi.get_ppt_timeline` 用 `while True` 翻页 `search-ppt`，无上限 | 上端曾观察到一门 16 讲的课被同一会话拉到 `page=26445`（远超真实规模），形成对智云 API 的无界翻页 | ✅ 已修（vendor/zhiyun/client.py：增加 `max_pages=20`，空 list 立刻 break） |

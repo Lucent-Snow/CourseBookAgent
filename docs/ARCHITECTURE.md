@@ -21,8 +21,8 @@ CourseBookAgent 的核心是**课堂资料 → 教辅书的生成工作流**，�
 coursebook_agent/
 ├── app.py                  # FastAPI 入口；同时挂载 /api/courses、/api/jobs 等旧路由与 /api/product/*
 ├── config.py               # 配置（LLM / 智云 / 路径）
-├── models.py               # 生成核心数据模型（Course / Lecture / TimedChunk / LectureDigest / BookPlan / LectureDraft / CourseBook）
-├── pipeline.py             # 生成工作流编排（并发章节 Agent）
+├── models.py               # 生成核心数据模型（资料描述 / Tag / BookPlan / ChapterDraft / CourseBook 等）
+├── pipeline.py             # 固定阶段编排；按主 Agent 章节规划与 Tag 组装上下文
 ├── sources/
 │   ├── zhiyun.py           # 智云课堂适配器：课程列表、讲次、字幕、PPT 时间轴
 │   └── xuezai/
@@ -31,9 +31,10 @@ coursebook_agent/
 │   ├── transcript.py       # 字幕清洗 + 分块
 │   └── teaching_signals.py # 教学信号预处理
 ├── agent/
-│   ├── digest.py           # 字幕压缩
-│   ├── editor.py           # 全书规划（主编）
-│   ├── chapter.py          # 分章撰写
+│   ├── describe.py         # 逐份资料 description
+│   ├── digest.py           # 需要时整理字幕内容
+│   ├── editor.py           # 主 Agent 全书规划、章节划分与 Tag
+│   ├── chapter.py          # 按章节上下文撰写
 │   ├── synthesize.py       # 全书合成（终审）
 │   ├── quality.py          # 质量门禁（组件契约 / 例子清理 / 确定性门禁 / LLM 审校）
 │   ├── style_rules.py      # 写作风格规则
@@ -187,9 +188,11 @@ data/
 
 ## 7. 关键设计决策
 
-### 7.1 压缩 vs 完整的分层
+### 7.1 Description、章节规划与 Tag
 
-主编只看压缩摘要（~2 万字），不看完整字幕（~30 万字）。写作者看完整字幕。这解决了上下文限制问题，同时保留了主编的全局视角。
+新的目标工作流先解析每份资料并生成 description。主 Agent 一次性查看所有资料的 description，确定全书章节、章节范围和整体写作风格，并给资料打 Tag。Tag 是资料上下文归属分类：章节 Tag 将资料送入对应章节 Agent，全局 Tag 将资料作为全书范围资料提供给相关 Agent，无 Tag 表示本次生成不使用该资料。
+
+章节不是讲次的同义词。一章可以合并多节课，也可以组合字幕、PPT、PDF、DOCX 等多种资料；一个章节 Agent 负责一个主 Agent 规划出的章节。字幕压缩可以作为某类资料的整理手段，但不再假设所有字幕必须先按讲次压缩后才能规划全书。
 
 ### 7.2 组件化输出
 
@@ -217,6 +220,6 @@ Web 版当前保留时间链接字段，但尚未真正接入智云播放器跳�
 - 输入快照是某次运行所引用的资源版本集合，按 SHA-256 锁定，避免"资料被改但运行引用了旧版本"的隐性 bug。
 - 同一课程多次运行产生不同 job_id，从而不同 `ArtifactSummary`，互不覆盖。
 
-### 7.8 生成核心零侵入
+### 7.8 生成核心与资料工作台的新对接方向
 
-`product/` 不修改 `pipeline.py`、`agent/quality.py`、`renderer/markdown.py`。两者通过 `preset_id` / `snapshot_id` / `lecture_indices` / `concurrency` 四个扩展参数对接。`pipeline.py` 已接受 `only_indices` 和 `concurrency`，其余透传。
+现有 `product/` 与生成核心的薄适配只透传 `preset_id` / `snapshot_id` / `lecture_indices` / `concurrency`，因此当前上传资料尚未进入生成 prompt。下一阶段需要在保持资料快照边界的前提下，向生成核心提供快照资料的解析内容与来源元数据，并持久化 description、BookPlan 章节映射和 Tag 结果。生成核心仍负责 Agent 与 pipeline；产品层仍负责资料、版本、快照和运行可见性。
