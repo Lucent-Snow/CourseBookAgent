@@ -190,6 +190,9 @@ class RunEvent(BaseModel):
     progress: int = 0
     message: str = ""
     at: str | None = None
+    error_code: str | None = None
+    retryable: bool = False
+    attempt: int = 1
 
 
 class RunProjection(BaseModel):
@@ -203,6 +206,10 @@ class RunProjection(BaseModel):
     phase: str
     progress: int
     message: str
+    error_code: str | None = None
+    error: str | None = None
+    retry_count: int = 0
+    metrics: dict = Field(default_factory=dict)
     created_at: str | None = None
     updated_at: str | None = None
     active_agents: int = 0

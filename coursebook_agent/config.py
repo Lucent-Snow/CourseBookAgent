@@ -18,6 +18,17 @@ logger = logging.getLogger("coursebook_agent")
 logger.setLevel(logging.DEBUG if os.getenv("DEBUG", "false").lower() == "true" else logging.INFO)
 
 
+def _optional_float_env(name: str) -> float | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        logger.warning("忽略无效的价格配置 %s", name)
+        return None
+
+
 class LLMConfig(BaseModel):
     """LLM API 配置。端点和 key 必须由使用者通过环境变量提供。"""
 
@@ -25,6 +36,8 @@ class LLMConfig(BaseModel):
     base_url: str = os.getenv("LLM_BASE_URL", "")
     model: str = os.getenv("LLM_MODEL", "")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "120"))
+    input_price_per_million: float | None = _optional_float_env("LLM_INPUT_PRICE_PER_MILLION")
+    output_price_per_million: float | None = _optional_float_env("LLM_OUTPUT_PRICE_PER_MILLION")
 
 
 class ServerConfig(BaseModel):

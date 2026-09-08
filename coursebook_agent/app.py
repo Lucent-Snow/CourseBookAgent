@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from coursebook_agent.agent.llm import LLMClient, LLMError
+from coursebook_agent.agent.llm import LLMClient, LLMError, UsageMetrics, usage_tracking
 from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
 from coursebook_agent.models import CourseBook, JobState, LectureDraft
 from coursebook_agent.pipeline import CourseBookPipeline, MultiResourceCourseBookPipeline
@@ -45,10 +45,34 @@ def _persist_job(state: JobState) -> None:
     """Persist job state atomically so status survives an app restart."""
     path = _job_path(state.job_id)
     event = {"status": state.status, "step": state.step, "progress": state.progress,
-             "message": state.message, "at": datetime.now(timezone.utc).isoformat()}
+             "message": state.message, "at": datetime.now(timezone.utc).isoformat(),
+             "error_code": state.error_code, "retryable": state.status in {"failed", "partial", "interrupted"},
+             "attempt": state.retry_count + 1}
     if not state.events or any(state.events[-1].get(k) != event[k] for k in ("status", "step", "progress", "message")):
         state.events.append(event)
     atomic_write_text(path, state.model_dump_json(indent=2))
+
+
+def _update_job_metrics(state: JobState, snapshot: dict) -> None:
+    """Make model accounting visible while a run is still in progress."""
+    state.metrics = snapshot
+    _persist_job(state)
+
+
+def _new_job_metrics(state: JobState) -> UsageMetrics:
+    """Create accounting for this attempt while retaining prior retries."""
+    metrics = UsageMetrics(
+        input_price_per_million=config.llm.input_price_per_million,
+        output_price_per_million=config.llm.output_price_per_million,
+    )
+    previous = state.metrics or {}
+    for field_name in (
+        "request_count", "successful_requests", "failed_requests", "retry_count",
+        "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms",
+    ):
+        setattr(metrics, field_name, int(previous.get(field_name) or 0))
+    metrics.models = [str(item) for item in previous.get("models", [])]
+    return metrics
 
 
 def _load_jobs() -> None:
@@ -229,18 +253,23 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
             )
         _persist_job(state)
 
+    metrics = _new_job_metrics(state)
+    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    state.metrics = metrics.snapshot()
+    _persist_job(state)
     try:
         pipeline = MultiResourceCourseBookPipeline()
-        book = await asyncio.wait_for(pipeline.run(
-            snapshot_id=request.snapshot_id,
-            course_id=request.course_id,
-            dataset_name=state.dataset_name,
-            regenerate=request.regenerate,
-            review=request.review,
-            concurrency=request.concurrency,
-            progress=progress,
-            chapter_indices=request.chapter_indices,
-        ), timeout=5400)
+        with usage_tracking(metrics):
+            book = await asyncio.wait_for(pipeline.run(
+                snapshot_id=request.snapshot_id,
+                course_id=request.course_id,
+                dataset_name=state.dataset_name,
+                regenerate=request.regenerate,
+                review=request.review,
+                concurrency=request.concurrency,
+                progress=progress,
+                chapter_indices=request.chapter_indices,
+            ), timeout=5400)
         if any(c.get("status") == "failed" for c in state.chapters):
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分章节生成失败，可重试失败章节", book
         else:
@@ -284,18 +313,23 @@ async def _generate_locked(state: JobState, request: GenerateRequest, only_indic
             )
         _persist_job(state)
 
+    metrics = _new_job_metrics(state)
+    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    state.metrics = metrics.snapshot()
+    _persist_job(state)
     try:
         pipeline = CourseBookPipeline()
-        book = await asyncio.wait_for(pipeline.generate_course(
-            request.course_id,
-            refresh_source=request.refresh_source,
-            regenerate=request.regenerate,
-            review=request.review,
-            progress=progress,
-            only_indices=only_indices,
-            checkpoint_dir=JOB_DIR / state.job_id,
-            concurrency=request.concurrency,
-        ), timeout=3600)
+        with usage_tracking(metrics):
+            book = await asyncio.wait_for(pipeline.generate_course(
+                request.course_id,
+                refresh_source=request.refresh_source,
+                regenerate=request.regenerate,
+                review=request.review,
+                progress=progress,
+                only_indices=only_indices,
+                checkpoint_dir=JOB_DIR / state.job_id,
+                concurrency=request.concurrency,
+            ), timeout=3600)
         if any(c.get("status") == "failed" for c in state.chapters):
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book
         else:
@@ -334,6 +368,7 @@ async def retry_failed_job(job_id: str):
         raise HTTPException(status_code=409, detail="任务缺少课程信息，无法重试")
     if not failed_indices and state.status == "partial":
         raise HTTPException(status_code=409, detail="没有可重试的失败章节")
+    state.retry_count += 1
     state.status = "queued"
     state.step = "排队"
     state.progress = 0
@@ -547,13 +582,23 @@ async def test_llm_connection():
     if not (config.llm.base_url and config.llm.model and config.llm.api_key):
         raise HTTPException(status_code=400, detail="请先完成大模型配置")
     start = time.monotonic()
+    metrics = UsageMetrics(
+        input_price_per_million=config.llm.input_price_per_million,
+        output_price_per_million=config.llm.output_price_per_million,
+    )
     try:
-        await LLMClient(max_retries=1, timeout=30).complete(
-            "你是连接测试助手。", "请只回复两个字符：OK", max_tokens=8, temperature=0
-        )
+        with usage_tracking(metrics):
+            await LLMClient(max_retries=1, timeout=30).complete(
+                "你是连接测试助手。", "请只回复两个字符：OK", max_tokens=8, temperature=0
+            )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=f"连接失败：{exc}") from exc
-    return {"ok": True, "model": config.llm.model, "latency_ms": int((time.monotonic() - start) * 1000)}
+    return {
+        "ok": True,
+        "model": config.llm.model,
+        "latency_ms": int((time.monotonic() - start) * 1000),
+        "usage": metrics.snapshot(),
+    }
 
 
 @app.delete("/api/cache")

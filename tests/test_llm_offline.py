@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 import httpx
-from coursebook_agent.agent.llm import LLMClient, LLMError
+from coursebook_agent.agent.llm import LLMClient, LLMError, UsageMetrics, usage_tracking
 from coursebook_agent.config import config
 
 
@@ -64,3 +64,40 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LLMError) as ctx:
             await LLMClient(max_retries=1, transport=httpx.MockTransport(handler)).complete("s", "u")
         self.assertEqual(ctx.exception.code, "empty_response")
+
+    async def test_usage_is_collected_without_exposing_response_body(self):
+        def handler(request):
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": "OK"}}],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            })
+
+        metrics = UsageMetrics(input_price_per_million=1, output_price_per_million=2)
+        with usage_tracking(metrics):
+            result = await LLMClient(transport=httpx.MockTransport(handler)).complete("s", "u")
+        self.assertEqual(result, "OK")
+        snapshot = metrics.snapshot()
+        self.assertEqual(snapshot["total_tokens"], 20)
+        self.assertEqual(snapshot["request_count"], 1)
+        self.assertEqual(snapshot["estimated_cost"], 0.000028)
+
+    async def test_usage_counts_retry_attempts(self):
+        calls = []
+        def handler(request):
+            calls.append(request)
+            if len(calls) == 1:
+                return httpx.Response(429)
+            return httpx.Response(200, json={
+                "choices": [{"message": {"content": "OK"}}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+            })
+
+        metrics = UsageMetrics()
+        with patch("coursebook_agent.agent.llm.asyncio.sleep", AsyncMock()):
+            with usage_tracking(metrics):
+                await LLMClient(transport=httpx.MockTransport(handler)).complete("s", "u")
+        snapshot = metrics.snapshot()
+        self.assertEqual(snapshot["request_count"], 2)
+        self.assertEqual(snapshot["failed_requests"], 1)
+        self.assertEqual(snapshot["retry_count"], 1)
+        self.assertEqual(snapshot["total_tokens"], 5)

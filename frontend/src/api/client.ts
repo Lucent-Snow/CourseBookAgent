@@ -77,7 +77,7 @@ export const api = {
       body: JSON.stringify({ base_url, model, api_key }),
     }),
   testLlm: () =>
-    request<{ ok: boolean; model: string; latency_ms: number }>('/api/settings/llm/test', {
+    request<{ ok: boolean; model: string; latency_ms: number; usage?: { total_tokens?: number } }>('/api/settings/llm/test', {
       method: 'POST',
     }),
   clearCache: () => request<{ ok: boolean; removed: string[] }>('/api/cache', { method: 'DELETE' }),

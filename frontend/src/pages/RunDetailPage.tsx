@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowLeft, Bot, Clock3, FileText, Layers, Pause, RefreshCw, ShieldAlert, Tag } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Bot, Clock3, FileText, Gauge, Layers, Pause, RefreshCw, ShieldAlert, Tag } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
@@ -67,6 +67,24 @@ function eventLabel(event: { status: string; step: string; message: string }): s
  return `${status}${event.step ? ` · ${event.step}` : ''}`
 }
 
+function formatTokens(value: number | undefined): string {
+ if (value === undefined || value === null) return '—'
+ if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K`
+ return String(value)
+}
+
+function formatLatency(value: number | undefined): string {
+ if (value === undefined || value === null) return '—'
+ if (value >= 60000) return `${(value / 60000).toFixed(1)} 分钟`
+ return `${(value / 1000).toFixed(1)} 秒`
+}
+
+const errorLabel: Record<string, string> = {
+ configuration: '模型配置不完整', authentication: '模型认证失败', rate_limit: '触发限流',
+ service: '模型服务暂时不可用', timeout: '模型请求超时', network: '网络连接失败',
+ invalid_json: '模型返回内容无法解析', task_timeout: '任务运行超时',
+}
+
 const agentTone = { pending: 'text-[#829092] bg-[#f1f3f3]', running: 'text-[#147d86] bg-[#e6f3f3]', succeeded: 'text-[#27774a] bg-[#e9f5ee]', failed: 'text-red-700 bg-red-50', blocked: 'text-amber-700 bg-amber-50' }
 const agentLabel: Record<keyof typeof agentTone, string> = {
  pending: '等待中', running: '生成中', succeeded: '已完成', failed: '失败', blocked: '已阻塞',
@@ -115,6 +133,8 @@ export function RunDetailPage() {
  const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
  const chapterDone = stage.chapters_succeeded + stage.chapters_failed
  const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
+ const metrics = run.metrics || {}
+ const hasTokenData = (metrics.total_tokens ?? 0) > 0
 
  return (
  <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-8">
@@ -175,14 +195,39 @@ export function RunDetailPage() {
  </div>
  </section>
 
- <section className="grid gap-3 sm:grid-cols-4">
- {[['整体进度', `${run.progress}%`, phaseLabel[run.phase] || '运行中'], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数']].map(([label, value, hint]) => (
+ {['failed', 'partial', 'interrupted'].includes(run.status) && (
+ <section className="rounded-lg border border-red-200 bg-red-50 p-5">
+ <div className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertTriangle size={16} />运行需要处理</div>
+ <p className="mt-2 text-xs text-red-700/80">{errorLabel[run.error_code || ''] || run.error_code || '生成过程中出现异常'}</p>
+ {run.error && <p className="mt-2 rounded-md bg-white/70 p-3 text-xs leading-5 text-red-800 break-words">{run.error}</p>}
+ <p className="mt-2 text-[11px] text-red-700/70">已恢复/重试 {run.retry_count} 次；可以复用已完成章节继续运行。</p>
+ </section>
+ )}
+
+ <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+ {[['整体进度', `${run.progress}%`, phaseLabel[run.phase] || '运行中'], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '供应商未返回'], ['模型耗时', formatLatency(metrics.latency_ms), metrics.retry_count ? `重试 ${metrics.retry_count} 次` : '无重试']].map(([label, value, hint]) => (
  <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
  <p className="text-[11px] text-[#718183]">{label}</p>
  <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>
  <p className="mt-1 text-[10px] text-[#819092]">{hint}</p>
  </div>
  ))}
+ </section>
+
+ <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
+ <div className="flex items-center justify-between">
+ <h2 className="flex items-center gap-2 text-base font-semibold"><Gauge size={16} />模型调用统计</h2>
+ <span className="text-xs text-[#718183]">实时累计</span>
+ </div>
+ <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+ {[['输入 Token', formatTokens(metrics.prompt_tokens)], ['输出 Token', formatTokens(metrics.completion_tokens)], ['请求失败', String(metrics.failed_requests ?? 0)], ['估算成本', metrics.cost_configured && metrics.estimated_cost !== null && metrics.estimated_cost !== undefined ? `${metrics.estimated_cost} ${metrics.cost_currency || 'CNY'}` : '未配置单价']].map(([label, value]) => (
+ <div key={label} className="rounded-md bg-[#f7f9f9] p-3">
+ <p className="text-[11px] text-[#718183]">{label}</p>
+ <p className="mt-1 text-lg font-semibold text-[#172426]">{value}</p>
+ </div>
+ ))}
+ </div>
+ <p className="mt-3 text-[11px] leading-5 text-[#819092]">Token 以模型接口返回的 usage 为准；部分中转站不返回 usage 时只展示请求次数和耗时。成本需要在本地配置输入/输出单价后计算。</p>
  </section>
 
  {/* ── Per-resource transparency ─────────────────────────────── */}
@@ -304,7 +349,7 @@ export function RunDetailPage() {
  <p className="text-xs font-medium text-[#334547]">{eventLabel(event)}</p>
  <time className="shrink-0 text-[10px] text-[#9aa7a8]">{event.at ? new Date(event.at).toLocaleTimeString() : '—'}</time>
  </div>
- <p className="mt-1 text-[11px] leading-5 text-[#718183]">{event.message || '状态已更新'}</p>
+ <p className="mt-1 text-[11px] leading-5 text-[#718183]">{event.message || '状态已更新'}{event.error_code ? ` · ${errorLabel[event.error_code] || event.error_code}` : ''}{event.attempt && event.attempt > 1 ? ` · 第 ${event.attempt} 次运行` : ''}</p>
  </div>
  </div>
  ))}
@@ -313,7 +358,7 @@ export function RunDetailPage() {
 
  <section className="rounded-lg bg-[#eef6f6] p-4 text-xs leading-5 text-[#657678]">
  <Clock3 size={15} className="mb-2 text-[#147d86]" />
- 运行状态每 1.2 秒刷新一次；事件轨迹最多保留最近 80 条。后续可继续接入 Token、成本和中间草稿指标。
+ 运行状态每 1.2 秒刷新一次；事件轨迹最多保留最近 80 条。异常会保留错误类型、重试次数和恢复入口。
  </section>
  </aside>
  </div>

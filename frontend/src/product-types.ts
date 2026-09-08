@@ -186,6 +186,9 @@ export interface RunEvent {
   progress: number
   message: string
   at: string | null
+  error_code?: string | null
+  retryable?: boolean
+  attempt?: number
 }
 
 export interface RunProjection {
@@ -199,6 +202,23 @@ export interface RunProjection {
   phase: string
   progress: number
   message: string
+  error_code: string | null
+  error: string | null
+  retry_count: number
+  metrics: {
+    request_count?: number
+    successful_requests?: number
+    failed_requests?: number
+    retry_count?: number
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    latency_ms?: number
+    models?: string[]
+    estimated_cost?: number | null
+    cost_currency?: string | null
+    cost_configured?: boolean
+  }
   created_at: string | null
   updated_at: string | null
   active_agents: number
