@@ -188,6 +188,7 @@ def project_run(state: JobState) -> RunProjection:
             status=status,
             step="quality" if status == "succeeded" else "write",
             message=chapter.get("error") or ("章节已生成" if status == "succeeded" else "等待章节生成"),
+            attempt=state.retry_count + 1,
             retryable=status == "failed",
             error=chapter.get("error"),
             output_available=status == "succeeded",

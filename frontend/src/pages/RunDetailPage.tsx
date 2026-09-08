@@ -31,7 +31,7 @@ function stageIndex(stage: StageProjection, phase: string, status: string): numb
 
 const statusLabel: Record<string, string> = {
  queued: '排队中', running: '运行中', completed: '已完成', partial: '部分完成',
- failed: '失败', interrupted: '已中断', cancelled: '已取消',
+ failed: '失败', retrying: '重试中', interrupted: '已中断', cancelled: '已取消',
 }
 
 const phaseLabel: Record<string, string> = {
@@ -59,6 +59,7 @@ function eventTone(status: string): string {
  if (status === 'completed') return 'bg-[#27774a]'
  if (status === 'failed' || status === 'interrupted') return 'bg-red-500'
  if (status === 'running') return 'bg-[#147d86]'
+ if (status === 'retrying') return 'bg-amber-500'
  return 'bg-[#a6b3b4]'
 }
 

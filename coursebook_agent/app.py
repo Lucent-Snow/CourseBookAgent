@@ -59,6 +59,23 @@ def _update_job_metrics(state: JobState, snapshot: dict) -> None:
     _persist_job(state)
 
 
+def _record_model_event(state: JobState, event: dict) -> None:
+    """Persist provider-level failures without recording response contents."""
+    code = event.get("error_code") or "model_error"
+    retryable = bool(event.get("retryable"))
+    action = "准备重试" if retryable else "不会自动重试"
+    state.events.append({
+        "status": "retrying" if retryable else "failed",
+        "step": "模型调用",
+        "progress": state.progress,
+        "message": f"模型请求失败：{code}，{action}",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "error_code": code,
+        "retryable": retryable,
+        "attempt": int(event.get("attempt") or 1),
+    })
+
+
 def _new_job_metrics(state: JobState) -> UsageMetrics:
     """Create accounting for this attempt while retaining prior retries."""
     metrics = UsageMetrics(
@@ -73,6 +90,11 @@ def _new_job_metrics(state: JobState) -> UsageMetrics:
         setattr(metrics, field_name, int(previous.get(field_name) or 0))
     metrics.models = [str(item) for item in previous.get("models", [])]
     return metrics
+
+
+def _attach_job_metrics(state: JobState, metrics: UsageMetrics) -> None:
+    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    metrics.on_event = lambda event: _record_model_event(state, event)
 
 
 def _load_jobs() -> None:
@@ -254,7 +276,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         _persist_job(state)
 
     metrics = _new_job_metrics(state)
-    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    _attach_job_metrics(state, metrics)
     state.metrics = metrics.snapshot()
     _persist_job(state)
     try:
@@ -314,7 +336,7 @@ async def _generate_locked(state: JobState, request: GenerateRequest, only_indic
         _persist_job(state)
 
     metrics = _new_job_metrics(state)
-    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    _attach_job_metrics(state, metrics)
     state.metrics = metrics.snapshot()
     _persist_job(state)
     try:

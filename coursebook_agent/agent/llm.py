@@ -48,9 +48,11 @@ class UsageMetrics:
     input_price_per_million: float | None = None
     output_price_per_million: float | None = None
     on_update: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
+    on_event: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
 
     def record(self, *, model: str, latency_ms: int, usage: dict[str, Any] | None,
-               success: bool, retried: bool = False) -> None:
+               success: bool, retried: bool = False, error_code: str | None = None,
+               retryable: bool = False) -> None:
         self.request_count += 1
         self.successful_requests += int(success)
         self.failed_requests += int(not success)
@@ -59,6 +61,13 @@ class UsageMetrics:
         if model and model not in self.models:
             self.models.append(model)
         if not usage:
+            if self.on_event and not success:
+                self.on_event({
+                    "error_code": error_code,
+                    "retryable": retryable,
+                    "latency_ms": max(0, int(latency_ms)),
+                    "attempt": self.request_count,
+                })
             if self.on_update:
                 self.on_update(self.snapshot())
             return
@@ -70,6 +79,13 @@ class UsageMetrics:
         self.total_tokens += total or prompt + completion
         if self.on_update:
             self.on_update(self.snapshot())
+        if self.on_event and not success:
+            self.on_event({
+                "error_code": error_code,
+                "retryable": retryable,
+                "latency_ms": max(0, int(latency_ms)),
+                "attempt": self.request_count,
+            })
 
     def snapshot(self) -> dict[str, Any]:
         cost = None
@@ -185,6 +201,8 @@ class LLMClient:
                         usage=None,
                         success=False,
                         retried=attempt > 1,
+                        error_code=last_error.code,
+                        retryable=last_error.retryable,
                     )
                 logger.warning("LLM attempt %s/%s failed: %s", attempt, self.max_retries, last_error.code)
                 if not last_error.retryable:
