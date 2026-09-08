@@ -7,17 +7,21 @@ Outputs: BookPlan with structure + components + per-chapter instructions + share
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
-from coursebook_agent.agent.llm import LLMClient, LLMError
+from coursebook_agent.agent.llm import LLMClient, LLMError, extract_json_object
 from coursebook_agent.config import config
-from coursebook_agent.models import (
+from coursebook_agent.models import (  # noqa: E402
     BookPlan,
     ChapterInstruction,
     ComponentSpec,
     Course,
     LectureDigest,
+    ResourceDescription,
 )
+
+logger = logging.getLogger(__name__)
 
 SYSTEM = """你是高校课程教辅书的总编辑。
 
@@ -261,6 +265,378 @@ def save_plan(plan: BookPlan, path: Path) -> None:
 
 def load_plan(path: Path) -> BookPlan:
     return BookPlan.model_validate_json(path.read_text(encoding="utf-8"))
+
+
+# ── v2: main Agent consumes ResourceDescriptions ────────────────────────────
+
+
+V2_SYSTEM = """你是高校课程教辅书的主 Agent（主编 + 资料编排）。
+
+你会一次性看到本次运行所选快照中所有资料的描述（description）。你不需要也不应该逐份阅读原文。
+
+你的任务只有 4 件：
+1. 把整门课组织成一本书：书名、读者定位、整体风格、组件规范。
+2. 决定这本书有哪些章节。章节是书籍章节，不是一节课。多节课可以合并为一章，没有字幕的章节也可以由 PPT、讲义、教学大纲构成。
+3. 为每个章节写 ChapterInstruction：标题、模块、角色、学习目标、必须覆盖的内容、小节计划、深度、衔接、必须使用哪些组件、组件使用规范。
+4. 给每份资料打 Tag：chapter tag（进入哪几章的上下文，chapter_id 列表）、global tag（作为全局上下文供所有相关章节使用）、或无 tag（本次不使用）。
+
+Tag 不是流程控制。Tag 只决定一份资料进入哪些 Agent 的上下文。
+
+只返回 JSON。"""
+
+
+V2_USER_TEMPLATE = """课程信息：{course}
+
+所有资料描述（按 revision_id 列出）：
+{descriptions}
+
+请输出严格 JSON：
+{{
+  "book_title": "书名",
+  "audience": "目标读者",
+  "book_positioning": "本书解决什么问题，2-4 句",
+  "learning_path": ["复习路径"],
+  "modules": [{{"name": "模块名", "chapter_ids": ["c1", "c2"], "purpose": "模块目的"}}],
+  "global_emphasis": ["全书反复强调的主线"],
+  "canonical_glossary": ["术语：标准释义"],
+  "components": [
+    {{"name": "worked_example", "description": "...", "fields": ["title", "problem", "steps", "conclusion", "source_ref"], "usage_instruction": "...", "example": "..."}},
+    {{"name": "tip_box", "description": "...", "fields": ["title", "body"], "usage_instruction": "...", "example": ""}},
+    {{"name": "warning", "description": "...", "fields": ["title", "body"], "usage_instruction": "...", "example": ""}}
+  ],
+  "writer_system_prompt": "给所有分章写作者的共享 prompt：风格、术语、禁忌、组件使用规范，200-400 字",
+  "continuity_notes": ["衔接注意事项"],
+  "chapters": [
+    {{
+      "chapter_id": "c1",
+      "book_title": "第 N 章：标题",
+      "module_name": "所属模块",
+      "chapter_role": "core|review|guest|admin|mixed",
+      "narrative_purpose": "为什么存在",
+      "learning_goals": ["学完应能..."],
+      "must_cover": ["不可省略的知识点"],
+      "de_emphasize": ["应压缩的内容"],
+      "prerequisite_concepts": ["前置概念"],
+      "bridge_from_prev": "承上",
+      "bridge_to_next": "启下",
+      "canonical_terms": ["本章标准术语"],
+      "common_mistakes": ["本章应点破的易错点"],
+      "section_plan": [{{"heading": "小节标题", "knowledge_points": ["..."], "source_revision_ids": ["rev-1"], "writing_focus": "..."}}],
+      "component_usage": ["用 procedure 展示..."],
+      "depth_guidance": "本章需要逐步演示 / 概述即可",
+      "must_verify": ["资料支撑不足须谨慎处理的内容"]
+    }}
+  ],
+  "resource_tags": {{
+     "<revision_id>": ["c1", "c2"],
+     "<revision_id>": ["__global__"]
+  }},
+  "warnings": ["规划不确定点"]
+}}
+
+约束：
+1. 章节数必须 > 0；与讲次数不必相等。多节课可以合成一章；没有字幕的章节也可以独立存在。
+2. chapter_id 用 "c1"、"c2"…稳定递增；同一章节可在多个 chapter_id 中出现（不能给同一 chapter_id 同一章节重复定义）。
+3. 每个 chapter 必须有 must_cover、section_plan（至少 1 个小节）、depth_guidance、component_usage。
+4. resource_tags 的 value 是字符串数组：要么是该章节的 chapter_id，要么是 "__global__"。__global__ 标签的资料会进入每个章节的全局上下文。未列入 resource_tags 的资料本次不进入生成。
+5. 一份资料可以同时进入多个章节，也可以同时进入全局与某些章节。
+6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式。
+7. components 至少包含 worked_example、tip_box、warning 三种。
+8. sections 的 source_revision_ids 必须引用上面"所有资料描述"里出现的 revision_id 之一，否则视为错误。
+9. 资源支撑不足（description 中 suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
+
+参考资料描述：
+{descriptions}
+"""
+
+
+async def plan_book_v2(
+    course: Course,
+    descriptions: list,
+    client: LLMClient | None = None,
+    *,
+    snapshot_id: str | None = None,
+) -> BookPlan:
+    """v2 main Agent: ingest resource descriptions, output BookPlan with resource_tags."""
+    if not descriptions:
+        raise ValueError("没有任何资料描述可用于规划")
+
+    llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
+    # Keep payload small enough to leave room for reasoning + JSON.
+    compact_descriptions = []
+    for d in descriptions:
+        topic = d.topic or d.title or ""
+        summary = d.summary or topic
+        compact_descriptions.append({
+            "revision_id": d.revision_id,
+            "kind": d.kind,
+            "provider": d.provider,
+            "title": (d.title or "")[:80],
+            "topic": topic[:120],
+            "knowledge_topics": [str(k)[:24] for k in (d.knowledge_topics or [])][:8],
+            "scope": d.scope,
+            "usable_content_kinds": list(d.usable_content_kinds or [])[:5],
+            "suggested_role": d.suggested_role,
+            "summary": summary[:160],
+        })
+    payload = {"course": course.model_dump(), "descriptions": compact_descriptions}
+    prompt = V2_USER_TEMPLATE.format(
+        course=json.dumps(course.model_dump(), ensure_ascii=False),
+        descriptions=json.dumps(payload, ensure_ascii=False),
+    )
+    raw = await llm.complete(V2_SYSTEM, prompt, max_tokens=24000, temperature=0.2)
+    try:
+        data = extract_json_object(raw)
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.warning("plan_book_v2: failed to extract JSON: %s", exc)
+        data = {}
+    if (not isinstance(data, dict)) or not data.get("chapters"):
+        # Retry once with a tighter, JSON-only instruction; do not waste tokens.
+        repair_user = (
+            "把下面的模型输出整理为一个合法 JSON 对象，字段必须包含 chapters / resource_tags / components / writer_system_prompt。"
+            "只输出 JSON，不要任何解释或 Markdown。\n\n"
+            f"原始任务：\n{prompt[:12000]}\n\n模型输出：\n{raw[:18000]}"
+        )
+        try:
+            repair = await llm.complete(
+                "你是 JSON 生成器。只输出一个合法 JSON 对象，不解释。",
+                repair_user,
+                max_tokens=20000, temperature=0,
+            )
+            data = extract_json_object(repair)
+            if not isinstance(data, dict) or not data.get("chapters"):
+                logger.warning("plan_book_v2 repair returned no chapters: %s", str(data)[:200])
+        except (LLMError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("plan_book_v2 repair failed: %s", exc)
+            data = {}
+    plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=snapshot_id)
+    return plan
+
+
+def _coerce_plan_v2(
+    course: Course,
+    descriptions: list,
+    data: dict,
+    *,
+    snapshot_id: str | None,
+) -> BookPlan:
+    """Coerce + sanitise LLM output into a BookPlan v2.
+
+    If the LLM produced no chapters (model failure / truncated output),
+    fall back to a minimal-but-correct v2 plan: each description gets its
+    own chapter; resources with scope=course are tagged __global__.
+    """
+    components: list[ComponentSpec] = []
+    for item in (data.get("components") or []):
+        if not isinstance(item, dict):
+            continue
+        components.append(ComponentSpec(
+            name=str(item.get("name") or ""),
+            description=str(item.get("description") or ""),
+            fields=[str(f) for f in (item.get("fields") or [])],
+            usage_instruction=str(item.get("usage_instruction") or ""),
+            example=str(item.get("example") or ""),
+        ))
+    existing_names = {c.name for c in components}
+    defaults = {
+        "worked_example": ("课堂例题展示", ["title", "problem", "steps", "conclusion", "source_ref"], "每章至少 1 个"),
+        "tip_box": ("补充说明", ["title", "body"], "每章 1-3 个"),
+        "warning": ("易错警告", ["title", "body"], "每章 2-4 个"),
+    }
+    for name, (desc, fields, usage) in defaults.items():
+        if name not in existing_names:
+            components.append(ComponentSpec(name=name, description=desc, fields=fields, usage_instruction=usage))
+
+    raw_chapters = [item for item in (data.get("chapters") or []) if isinstance(item, dict)]
+    chapters: list[ChapterInstruction] = []
+    seen_chapter_ids: set[str] = set()
+    for idx, raw in enumerate(raw_chapters, start=1):
+        cid = str(raw.get("chapter_id") or f"c{idx}")
+        unique = cid
+        suffix = 2
+        while unique in seen_chapter_ids:
+            unique = f"{cid}-{suffix}"
+            suffix += 1
+        seen_chapter_ids.add(unique)
+        chapters.append(ChapterInstruction(
+            chapter_id=unique,
+            lecture_id=str(raw.get("lecture_id") or ""),
+            index=int(raw.get("index") or idx),
+            book_title=str(raw.get("book_title") or f"第 {idx} 章"),
+            module_name=str(raw.get("module_name") or ""),
+            chapter_role=str(raw.get("chapter_role") or "core"),
+            narrative_purpose=str(raw.get("narrative_purpose") or ""),
+            learning_goals=_str_list(raw.get("learning_goals")),
+            must_cover=_str_list(raw.get("must_cover")),
+            de_emphasize=_str_list(raw.get("de_emphasize")),
+            prerequisite_concepts=_str_list(raw.get("prerequisite_concepts")),
+            bridge_from_prev=str(raw.get("bridge_from_prev") or ""),
+            bridge_to_next=str(raw.get("bridge_to_next") or ""),
+            canonical_terms=_str_list(raw.get("canonical_terms")),
+            common_mistakes=_str_list(raw.get("common_mistakes")),
+            section_plan=_section_plan_list(raw.get("section_plan")),
+            component_usage=_str_list(raw.get("component_usage")),
+            depth_guidance=str(raw.get("depth_guidance") or ""),
+            must_verify=_str_list(raw.get("must_verify")),
+        ))
+
+    # ── Fallback: derive a minimal plan from the descriptions themselves ──
+    if not chapters:
+        logger.warning("plan_book_v2: empty chapters after coerce; using descriptions-only fallback")
+        for idx, d in enumerate(descriptions, start=1):
+            cid = f"c{idx}"
+            chapters.append(ChapterInstruction(
+                chapter_id=cid,
+                book_title=f"第 {idx} 章：{(d.title or d.topic or d.revision_id)[:60]}",
+                module_name="按资料分章",
+                chapter_role="core",
+                narrative_purpose=d.summary[:200] or d.topic,
+                learning_goals=d.knowledge_topics[:4],
+                must_cover=d.knowledge_topics[:8],
+                depth_guidance="概述即可",
+                component_usage=["用 worked_example 展示典型内容"],
+                section_plan=d.knowledge_topics[:6],
+                must_verify=[] if d.suggested_role != "auxiliary" else [d.summary or d.topic],
+            ))
+
+    known_revs = {d.revision_id for d in descriptions}
+    known_chapters = {c.chapter_id for c in chapters}
+    raw_tags = data.get("resource_tags") if isinstance(data.get("resource_tags"), dict) else {}
+    resource_tags: dict[str, list[str]] = {}
+    for rev, tags in raw_tags.items():
+        if rev not in known_revs:
+            continue
+        if not isinstance(tags, list):
+            continue
+        cleaned: list[str] = []
+        for tag in tags:
+            s = str(tag).strip()
+            if not s:
+                continue
+            if s == "__global__" or s in known_chapters:
+                cleaned.append(s)
+        if cleaned:
+            resource_tags[rev] = cleaned
+
+    # ── Fallback tags: every description is chapter-tagged; scope=course goes global. ──
+    if not resource_tags:
+        for idx, d in enumerate(descriptions, start=1):
+            cid = f"c{idx}"
+            tags: list[str] = []
+            if d.scope == "course":
+                tags.append("__global__")
+            if cid in known_chapters:
+                tags.append(cid)
+            if tags:
+                resource_tags[d.revision_id] = tags
+
+    chapter_resources = _derive_chapter_resources(resource_tags, chapters)
+
+    warnings = _str_list(data.get("warnings"))
+    if not isinstance(data, dict) or not data.get("chapters"):
+        warnings.append("主 Agent 未产出章节，已按资料自动分章")
+
+    return BookPlan(
+        course_id=course.course_id,
+        book_title=str(data.get("book_title") or f"{course.name}：课堂精讲与复习教辅"),
+        audience=str(data.get("audience") or ""),
+        book_positioning=str(data.get("book_positioning") or ""),
+        learning_path=_str_list(data.get("learning_path")),
+        modules=list(data.get("modules") or []) if isinstance(data.get("modules"), list) else [],
+        global_emphasis=_str_list(data.get("global_emphasis")),
+        canonical_glossary=_str_list(data.get("canonical_glossary")),
+        continuity_notes=_str_list(data.get("continuity_notes")),
+        components=components,
+        chapters=chapters,
+        writer_system_prompt=str(data.get("writer_system_prompt") or ""),
+        render_config=dict(data.get("render_config") or {}),
+        warnings=warnings,
+        resource_tags=resource_tags,
+        chapter_resources=chapter_resources,
+        global_resource_ids=sorted([rev for rev, tags in resource_tags.items() if "__global__" in tags]),
+        snapshot_id=snapshot_id,
+    )
+
+
+def _derive_chapter_resources(
+    resource_tags: dict[str, list[str]],
+    chapters: list[ChapterInstruction],
+) -> dict[str, list[str]]:
+    mapping: dict[str, list[str]] = {c.chapter_id: [] for c in chapters}
+    for rev, tags in resource_tags.items():
+        for tag in tags:
+            if tag in mapping:
+                if rev not in mapping[tag]:
+                    mapping[tag].append(rev)
+    return mapping
+
+
+def heuristic_book_plan_v2(
+    course: Course,
+    descriptions: list,
+    *,
+    snapshot_id: str | None = None,
+) -> BookPlan:
+    """Deterministic fallback for v2: one chapter per resource, all chapter-tagged.
+
+    This is intentionally minimal — used only when the main Agent is
+    unavailable.  It must satisfy: each description gets a chapter or
+    global tag, and at least one chapter is produced.
+    """
+
+    chapters: list[ChapterInstruction] = []
+    resource_tags: dict[str, list[str]] = {}
+
+    for idx, d in enumerate(descriptions, start=1):
+        cid = f"c{idx}"
+        title = d.title or d.topic or f"第 {idx} 讲"
+        chapters.append(ChapterInstruction(
+            chapter_id=cid,
+            book_title=f"第 {idx} 章：{title[:60]}",
+            module_name="按资料分章（启发式）",
+            chapter_role="core",
+            narrative_purpose=d.summary[:200] or d.topic,
+            learning_goals=d.knowledge_topics[:4],
+            must_cover=d.knowledge_topics[:8],
+            de_emphasize=[],
+            prerequisite_concepts=[],
+            bridge_from_prev=f"本章来自资料《{d.title or d.revision_id}》。",
+            bridge_to_next="",
+            canonical_terms=d.knowledge_topics[:8],
+            common_mistakes=[],
+            section_plan=d.knowledge_topics[:6],
+            component_usage=["用 worked_example 展示典型内容"],
+            depth_guidance="概述即可",
+            must_verify=[] if d.suggested_role != "auxiliary" else [d.summary or d.topic],
+        ))
+        resource_tags[d.revision_id] = [cid]
+
+    default_components = [
+        ComponentSpec(name="worked_example", description="课堂例题展示", fields=["title", "problem", "steps", "conclusion", "source_ref"], usage_instruction="每章至少 1 个"),
+        ComponentSpec(name="tip_box", description="补充说明", fields=["title", "body"], usage_instruction="每章 1-3 个"),
+        ComponentSpec(name="warning", description="易错警告", fields=["title", "body"], usage_instruction="每章 2-4 个"),
+    ]
+
+    return BookPlan(
+        course_id=course.course_id,
+        book_title=f"{course.name}：课堂精讲与复习教辅",
+        audience="正在修读本课、需要复习的学生",
+        book_positioning="把课堂推理压缩成可连续阅读的复习教辅。",
+        learning_path=["按章节顺序阅读"],
+        modules=[{"name": "按资料分章（启发式）", "chapter_ids": [c.chapter_id for c in chapters], "purpose": "主 Agent 不可用时的回退"}],
+        global_emphasis=[],
+        canonical_glossary=[],
+        continuity_notes=[],
+        components=default_components,
+        chapters=chapters,
+        writer_system_prompt="你是教辅书分章写作者。只用资料内容，不编造。术语统一。每个例题和重点标注来源。",
+        render_config={"web_timestamp_links": True, "pdf_omit_timestamp_links": True},
+        warnings=["启发式回退：主 Agent 不可用，每份资料单独成章"],
+        resource_tags=resource_tags,
+        chapter_resources=_derive_chapter_resources(resource_tags, chapters),
+        global_resource_ids=[],
+        snapshot_id=snapshot_id,
+    )
 
 
 # ── Heuristic fallback (deterministic, no LLM) ──────────────────────────────
