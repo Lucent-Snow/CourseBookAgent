@@ -435,6 +435,397 @@ def _collect_ranges(sections: list[ChapterSection], chunks: list[TimedChunk]) ->
     return result
 
 
+# ── v2: chapter Agent that consumes a ChapterContext ──────────────────────
+
+
+async def generate_chapter_v2(
+    context: "ChapterContext",
+    *,
+    previous_draft: "LectureDraft | None" = None,
+    client: LLMClient | None = None,
+    review: bool = True,
+) -> "LectureDraft":
+    """Generate one chapter from a tag-assembled ChapterContext."""
+    instruction = context.chapter
+    if not context.chapter_resources and not context.global_resources:
+        raise ValueError(f"chapter {instruction.chapter_id} has no resources")
+
+    llm = client or LLMClient(max_retries=3, timeout=180)
+    payload = _build_context_payload(context)
+    prompt = _build_v2_prompt(context, payload, previous_draft)
+    try:
+        data = await llm.complete_json(V2_SYSTEM, prompt, max_tokens=20000)
+    except LLMError as exc:
+        # Retry with a tighter contract on JSON failure.
+        narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
+        data = await LLMClient(max_retries=3, timeout=180).complete_json(V2_SYSTEM, narrow, max_tokens=16000)
+
+    # If sections are missing, retry once with a tighter instruction.
+    if review and isinstance(data, dict) and len(data.get("sections") or []) < 2:
+        try:
+            retry_data = await LLMClient(max_retries=1, timeout=180).complete_json(
+                V2_SYSTEM,
+                prompt + "\n\n务必填写 3 个 sections，每节 content ≥ 2 段。不要省略 sections。",
+                max_tokens=16000,
+            )
+            if isinstance(retry_data, dict) and len(retry_data.get("sections") or []) >= len(data.get("sections") or []):
+                data = retry_data
+        except LLMError:
+            pass
+
+    if review and isinstance(data, dict):
+        data = await _review_pass_v2(llm, data, instruction)
+
+    data = _normalize_v2(data, instruction)
+    draft = _validate_and_fix_v2(data, context, previous_draft)
+    return draft
+
+
+def _build_context_payload(context: "ChapterContext") -> str:
+    """Serialise ChapterContext into the prompt payload."""
+    chapter_lines = [
+        f"### 全局资料（{len(context.global_resources)} 份）",
+    ]
+    for r in context.global_resources:
+        chapter_lines.append(
+            f"- [{r.revision_id}] {r.title} ({r.kind}/{r.provider})"
+            + (f" — {r.meta.get('filename','')}" if r.meta.get('filename') else "")
+        )
+    chapter_lines.append("")
+    chapter_lines.append(f"### 本章资料（{len(context.chapter_resources)} 份）")
+    chapter_lines.extend(
+        f"- [{r.revision_id}] {r.title} ({r.kind}/{r.provider})" for r in context.chapter_resources
+    )
+    chapter_lines.append("")
+
+    def render(parsed: "ParsedResource") -> str:
+        lines = [f"[{parsed.revision_id}] {parsed.title} ({parsed.kind})"]
+        if parsed.meta.get("filename"):
+            lines.append(f"  file: {parsed.meta['filename']}")
+        for unit in parsed.units[:24]:
+            loc = unit.location
+            label = ""
+            if loc is not None:
+                if loc.kind == "transcript_segment" and loc.start is not None and loc.end is not None:
+                    label = f"字幕 {format_timestamp(loc.start)}–{format_timestamp(loc.end)}"
+                elif loc.label:
+                    label = loc.label
+                elif loc.start is not None:
+                    label = f"{loc.start}"
+            if label:
+                lines.append(f"  ({label})")
+            lines.append(f"  {unit.text}")
+        return "\n".join(lines)
+
+    if context.global_resources:
+        chapter_lines.append("\n=== 全局资料原文（按 revision_id 列出）===")
+        for r in context.global_resources:
+            chapter_lines.append(render(r))
+    if context.chapter_resources:
+        chapter_lines.append("\n=== 本章资料原文（按 revision_id 列出）===")
+        for r in context.chapter_resources:
+            chapter_lines.append(render(r))
+
+    return "\n".join(chapter_lines)
+
+
+V2_SYSTEM = """你是高校课程教辅书的分章写作者。
+
+你的输入：
+- 全局写作提示词和全书组件规范
+- 该章节的 ChapterInstruction
+- 该章节的"全局资料"原文（每份都标了 revision_id）
+- 该章节的"本章资料"原文（每份都标了 revision_id）
+
+你的任务：用这些资料组织成一个完整、可独立阅读的章节。允许合并多份资料。不要使用资料里没有的内容；不确定的内容写 [不确定：…] 并加入 warnings。
+
+只返回 JSON。"""
+
+
+def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
+    instruction = context.chapter
+    component_specs = "\n".join(
+        f"- {c.name}：{c.description}（字段：{', '.join(c.fields)}）"
+        for c in context.component_specs
+    ) or "(无组件规范)"
+    prev_summary = ""
+    if previous_draft:
+        prev_summary = (
+            f"【上一章摘要】title={previous_draft.title}\n"
+            f"bridge_to_next={previous_draft.bridge_to_next}\n"
+            f"key_points={previous_draft.key_points[:5]}"
+        )
+
+    return (
+        f"【全局写作规范】\n{context.global_writing_prompt}\n\n"
+        f"【本章指令】\n{json.dumps(instruction.model_dump(), ensure_ascii=False)}\n\n"
+        f"{prev_summary}\n\n"
+        f"【组件规范】\n{component_specs}\n\n"
+        f"【章节内容】\n{payload}\n\n"
+        "请按以下 JSON 结构返回：\n"
+        "{\n"
+        '  "chapter_id": "...",\n'
+        '  "title": "...",\n'
+        '  "chapter_role": "...",\n'
+        '  "module_name": "...",\n'
+        '  "overview": "150-240字，先定位本章在全书中的位置，再概括内容",\n'
+        '  "learning_goals": [...],\n'
+        '  "key_points": [...],\n'
+        '  "common_mistakes": [...],\n'
+        '  "bridge_from_prev": "...",\n'
+        '  "bridge_to_next": "...",\n'
+        '  "prerequisite_concepts": [...],\n'
+        '  "concepts": [...],\n'
+        '  "sections": [\n'
+        '    {"heading": "...", "content": "...", "source_revision_ids": ["rev-..."], "source_labels": ["字幕 03:20-05:40"], "emphasis": "key|normal|review", "components": [...]}\n'
+        '  ],\n'
+        '  "examples": ["..."],\n'
+        '  "summary": [...],\n'
+        '  "warnings": [...]\n'
+        "}\n\n"
+        "规则：\n"
+        "1. source_revision_ids 必须从本章或全局资料的 revision_id 中选取，不要编造。\n"
+        "2. 每个 section 的 content 必须充实，禁止空洞过渡句。\n"
+        "3. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。\n"
+        "4. examples 只能是人可读字符串，绝不能输出对象/字典/JSON。\n"
+        "5. components 的 component_type 只能从 worked_example、tip_box、warning、side_note、procedure 中选取。\n"
+    )
+
+
+async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
+    must_cover = instruction.must_cover if instruction else []
+    try:
+        review_result = await LLMClient(max_retries=1, timeout=min(60, llm.timeout)).complete_json(
+            V2_SYSTEM,
+            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
+            max_tokens=2000,
+        )
+        warnings = list(data.get("warnings") or [])
+        for issue in review_result.get("issues") or []:
+            if isinstance(issue, dict):
+                warnings.append(f"审校：{issue.get('section', '整体')}：{issue.get('suggestion', issue.get('problem', ''))}")
+        for item in review_result.get("missing_must_cover") or []:
+            if str(item).strip():
+                warnings.append(f"可能遗漏必覆盖点：{item}")
+        data["warnings"] = warnings
+    except LLMError:
+        data.setdefault("warnings", []).append("自动审校超时，建议人工复核。")
+    return data
+
+
+def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
+    if not isinstance(data, dict):
+        raise LLMError("章节结果不是对象")
+    data.setdefault("chapter_id", instruction.chapter_id)
+    data.setdefault("lecture_id", instruction.lecture_id)
+    data.setdefault("title", instruction.book_title)
+    data.setdefault("chapter_role", instruction.chapter_role)
+    data.setdefault("module_name", instruction.module_name)
+    data.setdefault("overview", "")
+    data.setdefault("sections", [])
+    data.setdefault("summary", [])
+    data.setdefault("concepts", [])
+    data.setdefault("examples", [])
+    data.setdefault("warnings", [])
+    data.setdefault("learning_goals", instruction.learning_goals)
+    data.setdefault("key_points", [])
+    data.setdefault("common_mistakes", instruction.common_mistakes)
+    data.setdefault("bridge_from_prev", instruction.bridge_from_prev)
+    data.setdefault("bridge_to_next", instruction.bridge_to_next)
+    data.setdefault("prerequisite_concepts", instruction.prerequisite_concepts)
+    data.setdefault("transcript_links", [])
+
+    sections = []
+    for item in data.get("sections") or []:
+        if not isinstance(item, dict):
+            continue
+        sections.append({
+            "heading": str(item.get("heading") or "未命名小节"),
+            "content": str(item.get("content") or ""),
+            "source_chunk_ids": [str(x) for x in (item.get("source_revision_ids") or item.get("source_chunk_ids") or [])],
+            "emphasis": str(item.get("emphasis") or "normal"),
+            "time_links": [str(x) for x in (item.get("time_links") or item.get("source_labels") or [])],
+            "components": [dict(c) for c in (item.get("components") or []) if isinstance(c, dict)],
+        })
+    data["sections"] = sections
+
+    for key in ("learning_goals", "key_points", "common_mistakes", "concepts", "summary", "warnings", "prerequisite_concepts"):
+        value = data.get(key)
+        if isinstance(value, str):
+            data[key] = [value]
+        elif not isinstance(value, list):
+            data[key] = []
+        else:
+            data[key] = [str(x) for x in value if str(x).strip()]
+
+    examples = data.get("examples")
+    if isinstance(examples, str):
+        data["examples"] = [examples]
+    elif isinstance(examples, list):
+        out = []
+        for item in examples:
+            if isinstance(item, dict):
+                title = str(item.get("title") or item.get("example") or "课堂例子").strip()
+                body = str(item.get("description") or item.get("body") or item.get("problem") or "").strip()
+                out.append("：".join(x for x in (title, body) if x))
+            elif str(item).strip():
+                out.append(str(item))
+        data["examples"] = out
+    else:
+        data["examples"] = []
+    return data
+
+
+def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) -> "LectureDraft":
+    instruction = context.chapter
+    used_ids = {r.revision_id for r in context.chapter_resources} | {r.revision_id for r in context.global_resources}
+    try:
+        draft = LectureDraft.model_validate(data)
+    except ValidationError as exc:
+        raise LLMError(f"讲义 JSON 结构不符合约定: {exc}") from exc
+    if len(draft.sections) < 2:
+        raise LLMError(f"讲义小节数量异常: {len(draft.sections)}")
+    if len(draft.overview.strip()) < 60:
+        draft.warnings.append("本章导读偏短。")
+    if not draft.chapter_id:
+        draft.chapter_id = instruction.chapter_id
+
+    for section in draft.sections:
+        # Strip invalid source_chunk_ids and fall back to first chapter revision.
+        valid = [x for x in section.source_chunk_ids if x in used_ids]
+        if valid:
+            section.source_chunk_ids = valid
+        else:
+            fallback = context.chapter_resources[0].revision_id if context.chapter_resources else (
+                context.global_resources[0].revision_id if context.global_resources else None
+            )
+            section.source_chunk_ids = [fallback] if fallback else []
+            draft.warnings.append(f"小节《{section.heading}》原引用无效，已回退。")
+        if section.emphasis not in {"normal", "key", "review"}:
+            section.emphasis = "normal"
+
+    if not draft.key_points:
+        draft.key_points = draft.summary[:5]
+    if not draft.learning_goals and instruction:
+        draft.learning_goals = instruction.learning_goals
+    if not draft.bridge_from_prev and previous_draft and previous_draft.bridge_to_next:
+        draft.bridge_from_prev = previous_draft.bridge_to_next
+    if not draft.bridge_from_prev and instruction:
+        draft.bridge_from_prev = instruction.bridge_from_prev
+    if not draft.bridge_to_next and instruction:
+        draft.bridge_to_next = instruction.bridge_to_next
+
+    draft.used_resource_ids = sorted(used_ids)
+    draft.source_ranges = [
+        f"{s.heading}：{', '.join(s.source_chunk_ids)}" for s in draft.sections if s.source_chunk_ids
+    ]
+    return draft
+
+
+async def generate_chapter_v2_with_fallback(
+    context: "ChapterContext",
+    *,
+    previous_draft: "LectureDraft | None" = None,
+    client: LLMClient | None = None,
+    review: bool = True,
+    fallback_llm_budget: int = 2,
+) -> "LectureDraft":
+    """Generate one chapter; on LLM failure, fall back to a deterministic
+    chapter built directly from the resource units.
+
+    This guarantees the v2 pipeline always produces a chapter draft for
+    every chapter in the plan, even when the model is flaky.
+    """
+    try:
+        return await generate_chapter_v2(
+            context,
+            previous_draft=previous_draft,
+            client=client,
+            review=review,
+        )
+    except Exception as exc:
+        # One last LLM retry with a tighter prompt + smaller scope.
+        if fallback_llm_budget > 0:
+            try:
+                return await generate_chapter_v2(
+                    context,
+                    previous_draft=previous_draft,
+                    client=LLMClient(max_retries=2, timeout=120),
+                    review=False,
+                )
+            except Exception:
+                pass
+        return _deterministic_chapter_v2(context, previous_draft, reason=str(exc))
+
+
+def _deterministic_chapter_v2(
+    context: "ChapterContext",
+    previous_draft: "LectureDraft | None",
+    *,
+    reason: str,
+) -> "LectureDraft":
+    """Build a chapter draft from the resource units alone (no LLM).
+
+    Each source unit becomes one section heading, with the unit's text as
+    body.  Sources are grouped by resource; the first 4 units per resource
+    become sections so the chapter is non-empty.
+    """
+    instruction = context.chapter
+    sections: list[ChapterSection] = []
+    used_ids: list[str] = []
+    section_index = 0
+    for parsed in list(context.chapter_resources) + list(context.global_resources):
+        used_ids.append(parsed.revision_id)
+        for unit in parsed.units[:6]:
+            section_index += 1
+            heading = ""
+            if unit.location and unit.location.kind == "transcript_segment" and unit.location.label:
+                heading = f"{parsed.title[:20]} · {unit.location.label}"
+            else:
+                heading = f"{parsed.title[:24]} · {unit.unit_id[-6:]}"
+            body = unit.text.strip()
+            sections.append(ChapterSection(
+                heading=heading[:80] or f"小节 {section_index}",
+                content=body[:1500],
+                source_chunk_ids=[parsed.revision_id],
+                emphasis="normal",
+                time_links=[unit.location.label] if unit.location and unit.location.label else [],
+                components=[],
+            ))
+    if not sections:
+        sections.append(ChapterSection(
+            heading=instruction.book_title[:60],
+            content="（资料为空）",
+            source_chunk_ids=[],
+            emphasis="normal",
+            time_links=[],
+            components=[],
+        ))
+
+    draft = LectureDraft(
+        chapter_id=instruction.chapter_id,
+        lecture_id=instruction.lecture_id,
+        title=instruction.book_title,
+        overview=f"本章由 {len(sections)} 个资料片段汇总生成。\n{reason[:200]}",
+        concepts=[],
+        sections=sections,
+        examples=[],
+        summary=[s.heading for s in sections[:5]],
+        source_ranges=[],
+        warnings=[f"LLM 不可用，已使用确定性回退：{reason[:300]}"],
+        chapter_role=instruction.chapter_role,
+        learning_goals=instruction.learning_goals,
+        key_points=[],
+        common_mistakes=instruction.common_mistakes,
+        bridge_from_prev=instruction.bridge_from_prev or (previous_draft.bridge_to_next if previous_draft else ""),
+        bridge_to_next=instruction.bridge_to_next,
+        prerequisite_concepts=instruction.prerequisite_concepts,
+        module_name=instruction.module_name,
+        used_resource_ids=sorted(set(used_ids)),
+    )
+    return draft
+
+
 def _build_transcript_links(sections: list[ChapterSection], chunks: list[TimedChunk]) -> list[dict]:
     by_id = {c.chunk_id: c for c in chunks}
     links = []
