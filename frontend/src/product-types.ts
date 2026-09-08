@@ -157,6 +157,7 @@ export interface StageProjection {
   planned: boolean
   plan_summary: {
     chapter_count: number
+    selected_chapter_count?: number
     global_resource_count: number
     chapter_resource_count: number
     module_names: string[]
@@ -193,6 +194,9 @@ export interface RunEvent {
   progress: number
   message: string
   at: string | null
+  error_code?: string | null
+  retryable?: boolean
+  attempt?: number
 }
 
 export interface RunProjection {
@@ -206,6 +210,23 @@ export interface RunProjection {
   phase: string
   progress: number
   message: string
+  error_code: string | null
+  error: string | null
+  retry_count: number
+  metrics: {
+    request_count?: number
+    successful_requests?: number
+    failed_requests?: number
+    retry_count?: number
+    prompt_tokens?: number
+    completion_tokens?: number
+    total_tokens?: number
+    latency_ms?: number
+    models?: string[]
+    estimated_cost?: number | null
+    cost_currency?: string | null
+    cost_configured?: boolean
+  }
   created_at: string | null
   updated_at: string | null
   active_agents: number
@@ -238,6 +259,9 @@ export interface ArtifactSummary {
   artifact_id: string
   run_id: string
   course_id: string
+  dataset_id: string
+  dataset_name: string
+  snapshot_id: string | null
   title: string
   kind: string
   status: 'ready' | 'partial'

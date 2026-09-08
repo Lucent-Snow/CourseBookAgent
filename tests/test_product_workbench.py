@@ -12,10 +12,17 @@ from coursebook_agent.models import Course, CourseBook, JobState, Lecture, Trans
 from coursebook_agent.product.models import DatasetCreate, SnapshotCreate
 from coursebook_agent.product.parsers import parse_document
 from coursebook_agent.product.service import ProductService
+from coursebook_agent.product.projections import _phase
 from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource, _rsa_encrypt
 
 
 class DocumentParserTests(unittest.TestCase):
+    def test_run_phase_recognizes_description_stage(self):
+        self.assertEqual(
+            _phase(JobState(job_id="phase", status="running", step="已生成", message="已生成 1 份 description")),
+            "describe",
+        )
+
     def test_docx_and_pptx_extract_structure(self):
         from docx import Document
         from pptx import Presentation

@@ -70,14 +70,14 @@ export const api = {
 
   // 设置
   settings: () => request<Settings>('/api/settings'),
-  saveLlm: (base_url: string, model: string, api_key: string) =>
-    request<{ ok: boolean; configured: boolean; api_key_set: boolean; base_url: string }>('/api/settings/llm', {
+  saveLlm: (base_url: string, model: string, api_key: string, input_price_per_million?: number, output_price_per_million?: number) =>
+    request<{ ok: boolean; configured: boolean; api_key_set: boolean; base_url: string; input_price_per_million: number | null; output_price_per_million: number | null }>('/api/settings/llm', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, model, api_key }),
+      body: JSON.stringify({ base_url, model, api_key, input_price_per_million, output_price_per_million }),
     }),
   testLlm: () =>
-    request<{ ok: boolean; model: string; latency_ms: number }>('/api/settings/llm/test', {
+    request<{ ok: boolean; model: string; latency_ms: number; usage?: { total_tokens?: number } }>('/api/settings/llm/test', {
       method: 'POST',
     }),
   clearCache: () => request<{ ok: boolean; removed: string[] }>('/api/cache', { method: 'DELETE' }),

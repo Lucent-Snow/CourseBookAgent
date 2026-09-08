@@ -322,14 +322,12 @@ def list_dataset_runs(dataset_id: str):
 @router.delete("/runs/{run_id}", status_code=204)
 def delete_run(run_id: str):
     """Remove a run's on-disk artefacts and clear it from the in-memory map."""
-    from coursebook_agent.app import jobs
+    from coursebook_agent.app import _get_job, jobs
 
+    state = _call(lambda: _get_job(run_id))
+    if state.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="运行中不能删除，请先停止运行")
     jobs.pop(run_id, None)
-    # Also clear any in-flight asyncio task for this job.
-    from coursebook_agent.app import tasks
-    task = tasks.pop(run_id, None)
-    if task and not task.done():
-        task.cancel()
     service().delete_run(run_id)
     return None
 

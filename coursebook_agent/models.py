@@ -270,6 +270,8 @@ class JobState(BaseModel):
     chapters: list[dict] = Field(default_factory=list)  # 每讲生成摘要，实时更新
     # From main branch
     error_code: str | None = None
+    retry_count: int = 0
+    metrics: dict = Field(default_factory=dict)
     request: dict = Field(default_factory=dict)
     events: list[dict] = Field(default_factory=list)
 

@@ -7,7 +7,11 @@ import json
 import logging
 import random
 import re
-from typing import Any
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import httpx
 
@@ -21,6 +25,109 @@ class LLMError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+
+
+@dataclass
+class UsageMetrics:
+    """Run-level accounting for OpenAI-compatible model calls.
+
+    Providers are allowed to omit ``usage``.  In that case the request and
+    latency still remain visible, while token totals and estimated cost stay
+    unavailable instead of being guessed.
+    """
+
+    request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    retry_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_ms: int = 0
+    models: list[str] = field(default_factory=list)
+    input_price_per_million: float | None = None
+    output_price_per_million: float | None = None
+    on_update: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
+    on_event: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False, compare=False)
+
+    def record(self, *, model: str, latency_ms: int, usage: dict[str, Any] | None,
+               success: bool, retried: bool = False, error_code: str | None = None,
+               retryable: bool = False) -> None:
+        self.request_count += 1
+        self.successful_requests += int(success)
+        self.failed_requests += int(not success)
+        self.retry_count += int(retried)
+        self.latency_ms += max(0, int(latency_ms))
+        if model and model not in self.models:
+            self.models.append(model)
+        if not usage:
+            if self.on_event and not success:
+                self.on_event({
+                    "error_code": error_code,
+                    "retryable": retryable,
+                    "latency_ms": max(0, int(latency_ms)),
+                    "attempt": self.request_count,
+                })
+            if self.on_update:
+                self.on_update(self.snapshot())
+            return
+        prompt = _usage_int(usage, "prompt_tokens", "input_tokens")
+        completion = _usage_int(usage, "completion_tokens", "output_tokens")
+        total = _usage_int(usage, "total_tokens")
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_tokens += total or prompt + completion
+        if self.on_update:
+            self.on_update(self.snapshot())
+        if self.on_event and not success:
+            self.on_event({
+                "error_code": error_code,
+                "retryable": retryable,
+                "latency_ms": max(0, int(latency_ms)),
+                "attempt": self.request_count,
+            })
+
+    def snapshot(self) -> dict[str, Any]:
+        cost = None
+        if self.input_price_per_million is not None or self.output_price_per_million is not None:
+            cost = (
+                self.prompt_tokens * (self.input_price_per_million or 0) / 1_000_000
+                + self.completion_tokens * (self.output_price_per_million or 0) / 1_000_000
+            )
+        return {
+            "request_count": self.request_count,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "retry_count": self.retry_count,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "latency_ms": self.latency_ms,
+            "models": self.models,
+            "estimated_cost": round(cost, 6) if cost is not None else None,
+            "cost_currency": "CNY" if cost is not None else None,
+            "cost_configured": cost is not None,
+        }
+
+
+_usage_context: ContextVar[UsageMetrics | None] = ContextVar("llm_usage_context", default=None)
+
+
+@contextmanager
+def usage_tracking(metrics: UsageMetrics):
+    token = _usage_context.set(metrics)
+    try:
+        yield metrics
+    finally:
+        _usage_context.reset(token)
+
+
+def _usage_int(usage: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, (int, float)):
+            return max(0, int(value))
+    return 0
 
 
 _THINK_PATTERNS = [
@@ -52,6 +159,7 @@ class LLMClient:
         headers = {"Authorization": f"Bearer {config.llm.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
+            started = time.perf_counter()
             try:
                 async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
                     response = await asyncio.wait_for(client.post(url, json=payload, headers=headers), timeout=self.timeout)
@@ -66,6 +174,15 @@ class LLMClient:
                 content = _strip_reasoning_blocks(content)
                 if not content.strip():
                     raise LLMError("模型未返回最终内容", "empty_response", True)
+                tracker = _usage_context.get()
+                if tracker is not None:
+                    tracker.record(
+                        model=config.llm.model,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        usage=body.get("usage") if isinstance(body, dict) else None,
+                        success=True,
+                        retried=attempt > 1,
+                    )
                 return content.strip()
             except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError, AttributeError, LLMError) as exc:
                 if isinstance(exc, LLMError):
@@ -76,6 +193,17 @@ class LLMClient:
                     last_error = LLMError("模型网络连接失败", "network", True)
                 else:
                     last_error = LLMError("模型响应格式无效", "response_format", True)
+                tracker = _usage_context.get()
+                if tracker is not None:
+                    tracker.record(
+                        model=config.llm.model,
+                        latency_ms=int((time.perf_counter() - started) * 1000),
+                        usage=None,
+                        success=False,
+                        retried=attempt > 1,
+                        error_code=last_error.code,
+                        retryable=last_error.retryable,
+                    )
                 logger.warning("LLM attempt %s/%s failed: %s", attempt, self.max_retries, last_error.code)
                 if not last_error.retryable:
                     raise last_error from exc

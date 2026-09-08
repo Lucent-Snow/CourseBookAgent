@@ -91,7 +91,7 @@ def _phase(state: JobState) -> str:
         if getattr(stage, "described_total", 0) and getattr(stage, "described", 0) < getattr(stage, "described_total", 0):
             return "describe"
     message = f"{state.step} {state.message}"
-    if "解析" in message or "描述" in message:
+    if "解析" in message or "描述" in message or "description" in message.lower():
         return "describe"
     if "规划" in message or "Tag" in message or "组装" in message:
         return "plan"
@@ -189,6 +189,7 @@ def project_run(state: JobState) -> RunProjection:
             status=status,
             step="quality" if status == "succeeded" else "write",
             message=chapter.get("error") or ("章节已生成" if status == "succeeded" else "等待章节生成"),
+            attempt=state.retry_count + 1,
             retryable=status == "failed",
             error=chapter.get("error"),
             output_available=status == "succeeded",
@@ -295,6 +296,12 @@ def project_run(state: JobState) -> RunProjection:
             ))
 
     # Stage counters
+    selected_run = bool(state.request.get("chapter_indices"))
+    assembled_total = len(agents) if selected_run else len(plan_chapters)
+    assembled_count = min(
+        sum(1 for r in chapter_resources.values() if r),
+        assembled_total,
+    )
     stage = StageProjection(
         parsed=sum(1 for r in resources if r.description_status != "pending"),
         parsed_total=len(resources),
@@ -303,12 +310,13 @@ def project_run(state: JobState) -> RunProjection:
         planned=bool(plan_chapters),
         plan_summary={
             "chapter_count": len(plan_chapters),
+            "selected_chapter_count": len(agents) if selected_run else len(plan_chapters),
             "global_resource_count": len(global_resource_ids),
             "chapter_resource_count": sum(len(v) for v in chapter_resources.values()),
             "module_names": [m.get("name") for m in (plan.get("modules") or [])] if plan else [],
         } if plan else {},
-        assembled=sum(1 for r in chapter_resources.values() if r),
-        assembled_total=sum(1 for c in plan_chapters),
+        assembled=assembled_count,
+        assembled_total=assembled_total,
         chapters_succeeded=sum(1 for a in agents if a.status == "succeeded"),
         chapters_failed=sum(1 for a in agents if a.status == "failed"),
         chapters_total=len(agents),
@@ -391,6 +399,10 @@ def project_run(state: JobState) -> RunProjection:
         phase=_phase(state),
         progress=state.progress,
         message=state.message,
+        error_code=state.error_code,
+        error=state.error,
+        retry_count=state.retry_count,
+        metrics=state.metrics,
         created_at=created_at,
         updated_at=updated_at,
         active_agents=sum(agent.status == "running" for agent in agents),
@@ -413,6 +425,9 @@ def project_artifact(state: JobState) -> ArtifactSummary | None:
         artifact_id=state.job_id,
         run_id=state.job_id,
         course_id=state.course_id,
+        dataset_id=state.dataset_id or state.request.get("dataset_id", ""),
+        dataset_name=state.dataset_name or state.request.get("dataset_name", ""),
+        snapshot_id=state.request.get("snapshot_id"),
         title=state.book.title,
         status="partial" if state.status == "partial" else "ready",
         chapter_count=len(state.book.chapters),
