@@ -167,8 +167,12 @@ class GenerateV2Request(BaseModel):
 
 @app.post("/api/generate/v2", status_code=202)
 async def generate_v2(request: GenerateV2Request):
-    if not request.snapshot_id and not request.course_id:
-        raise HTTPException(status_code=400, detail="snapshot_id 或 course_id 必须提供其一")
+    if not request.snapshot_id:
+        raise HTTPException(status_code=400, detail="snapshot_id 必须提供；系统不再以课程为主键。")
+    # Resolve dataset_id from snapshot so the run is bound to its source
+    # dataset instead of a course.
+    from coursebook_agent.product.service import ProductService
+    snapshot_obj = ProductService().get_snapshot(request.snapshot_id)
     job_id = uuid.uuid4().hex[:12]
     job_state = JobState(
         job_id=job_id,
@@ -177,6 +181,9 @@ async def generate_v2(request: GenerateV2Request):
         status="queued", step="排队", progress=0,
         message="v2 多资料工作流准备",
     )
+    # Dataset binding lives in request so projections can find it.
+    job_state.request["dataset_id"] = snapshot_obj.dataset_id
+    job_state.request["dataset_name"] = ProductService().get_dataset(snapshot_obj.dataset_id).name
     jobs[job_id] = job_state
     _persist_job(job_state)
     _schedule(job_id, _run_job_v2(job_id, request))
@@ -192,6 +199,10 @@ async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
 
 
 async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> None:
+    # Promote dataset binding to top-level fields so projection can render it.
+    state.dataset_id = state.request.get("dataset_id", state.dataset_id)
+    state.dataset_name = state.request.get("dataset_name", state.dataset_name)
+
     def progress(done: float, total: float, message: str, chapter: dict | None = None) -> None:
         try:
             pct = int(min(done / total, 1.0) * 95)
@@ -223,6 +234,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         book = await asyncio.wait_for(pipeline.run(
             snapshot_id=request.snapshot_id,
             course_id=request.course_id,
+            dataset_name=state.dataset_name,
             regenerate=request.regenerate,
             review=request.review,
             concurrency=request.concurrency,

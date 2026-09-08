@@ -654,6 +654,7 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         *,
         snapshot_id: str | None = None,
         course_id: str | None = None,
+        dataset_name: str = "",
         regenerate: bool = False,
         review: bool = True,
         concurrency: int = 3,
@@ -676,7 +677,24 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         if loaded is None:
             assert course_id is not None
             loaded = await asyncio.to_thread(load_course_resources_from_zhiyun, course_id)
-        course = loaded.course or (Course(course_id=course_id, name=f"课程 {course_id}") if course_id else Course(course_id="unknown", name="未命名课程"))
+        # Prefer the dataset name (product workbench metadata) over the
+        # legacy Zhiyun course name. course_id is only preserved when the
+        # caller actually supplied one.
+        course = loaded.course
+        if course is None:
+            course = Course(course_id="", name=dataset_name or "未命名资料集")
+        else:
+            # Re-label Zhiyun course names with the dataset name so the
+            # front-end never binds itself to a single course identity.
+            if dataset_name and dataset_name != course.name:
+                course = Course(
+                    course_id=course.course_id if course_id else "",
+                    name=dataset_name or course.name,
+                    teacher=course.teacher,
+                    term=course.term,
+                )
+            if not course_id:
+                course = Course(course_id="", name=course.name, teacher=course.teacher, term=course.term)
         parsed = loaded.resources
         if not parsed:
             raise ValueError("本次运行没有任何可解析的资料")
