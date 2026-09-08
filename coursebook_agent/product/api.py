@@ -200,7 +200,10 @@ async def unified_login(request: UnifiedLoginRequest):
         zhiyun_error = str(exc)
         results["zhiyun"] = {"authenticated": False, "username": ""}
     try:
-        xuezai = await asyncio.to_thread(XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai").login, request.username, request.password)
+        xuezai = await asyncio.to_thread(
+            XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai", via_webvpn=request.webvpn).login,
+            request.username, request.password,
+        )
         results["xue_zai_zju"] = xuezai
     except XueZaiError as exc:
         xuezai_error = str(exc)
