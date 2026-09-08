@@ -183,6 +183,15 @@ class QualityReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class RunEvent(BaseModel):
+    """A persisted state transition shown in the run activity timeline."""
+    status: str = ""
+    step: str = ""
+    progress: int = 0
+    message: str = ""
+    at: str | None = None
+
+
 class RunProjection(BaseModel):
     run_id: str
     course_id: str = ""
@@ -203,6 +212,7 @@ class RunProjection(BaseModel):
     resources: list[ResourceProjection] = Field(default_factory=list)
     stage: StageProjection = Field(default_factory=StageProjection)
     quality: list[QualityReport] = Field(default_factory=list)
+    events: list[RunEvent] = Field(default_factory=list)
     artifact_available: bool = False
 
 

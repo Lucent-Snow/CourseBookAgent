@@ -55,6 +55,18 @@ function elapsedSince(createdAt: string | null, now: number): string {
  return hours > 0 ? `${hours}小时 ${minutes}分` : `${minutes}分 ${String(rest).padStart(2, '0')}秒`
 }
 
+function eventTone(status: string): string {
+ if (status === 'completed') return 'bg-[#27774a]'
+ if (status === 'failed' || status === 'interrupted') return 'bg-red-500'
+ if (status === 'running') return 'bg-[#147d86]'
+ return 'bg-[#a6b3b4]'
+}
+
+function eventLabel(event: { status: string; step: string; message: string }): string {
+ const status = statusLabel[event.status] || event.status
+ return `${status}${event.step ? ` · ${event.step}` : ''}`
+}
+
 const agentTone = { pending: 'text-[#829092] bg-[#f1f3f3]', running: 'text-[#147d86] bg-[#e6f3f3]', succeeded: 'text-[#27774a] bg-[#e9f5ee]', failed: 'text-red-700 bg-red-50', blocked: 'text-amber-700 bg-amber-50' }
 const agentLabel: Record<keyof typeof agentTone, string> = {
  pending: '等待中', running: '生成中', succeeded: '已完成', failed: '失败', blocked: '已阻塞',
@@ -275,9 +287,33 @@ export function RunDetailPage() {
  </section>
  )}
 
+ <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
+ <div className="flex items-center justify-between">
+ <h2 className="text-sm font-semibold">运行轨迹</h2>
+ <span className="text-[10px] text-[#819092]">自动刷新</span>
+ </div>
+ <div className="mt-4 max-h-72 space-y-0 overflow-auto pr-1">
+ {run.events.length === 0 ? <p className="py-5 text-xs text-[#819092]">暂无状态事件</p> : [...run.events].reverse().map((event, index) => (
+ <div key={`${event.at}-${index}`} className="relative flex gap-3 pb-4 last:pb-0">
+ <div className="flex w-3 shrink-0 justify-center">
+ <span className={`mt-1.5 size-2 rounded-full ${eventTone(event.status)}`} />
+ {index < run.events.length - 1 && <span className="absolute top-4 bottom-0 w-px bg-[#e3eaea]" />}
+ </div>
+ <div className="min-w-0 flex-1">
+ <div className="flex items-start justify-between gap-2">
+ <p className="text-xs font-medium text-[#334547]">{eventLabel(event)}</p>
+ <time className="shrink-0 text-[10px] text-[#9aa7a8]">{event.at ? new Date(event.at).toLocaleTimeString() : '—'}</time>
+ </div>
+ <p className="mt-1 text-[11px] leading-5 text-[#718183]">{event.message || '状态已更新'}</p>
+ </div>
+ </div>
+ ))}
+ </div>
+ </section>
+
  <section className="rounded-lg bg-[#eef6f6] p-4 text-xs leading-5 text-[#657678]">
  <Clock3 size={15} className="mb-2 text-[#147d86]" />
- 当前版本展示章节级 Agent。更细的实时步骤和中间草稿将在生成核心提供结构化回调后自动扩展。
+ 运行状态每 1.2 秒刷新一次；事件轨迹最多保留最近 80 条。后续可继续接入 Token、成本和中间草稿指标。
  </section>
  </aside>
  </div>

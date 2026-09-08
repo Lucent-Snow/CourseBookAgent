@@ -180,6 +180,14 @@ export interface QualityReport {
   warnings: string[]
 }
 
+export interface RunEvent {
+  status: string
+  step: string
+  progress: number
+  message: string
+  at: string | null
+}
+
 export interface RunProjection {
   run_id: string
   course_id: string
@@ -200,6 +208,7 @@ export interface RunProjection {
   resources: ResourceProjection[]
   stage: StageProjection
   quality: QualityReport[]
+  events: RunEvent[]
   artifact_available: boolean
 }
 
