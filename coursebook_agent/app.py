@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from coursebook_agent.agent.llm import LLMClient, LLMError
 from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
 from coursebook_agent.models import CourseBook, JobState, LectureDraft
-from coursebook_agent.pipeline import CourseBookPipeline
+from coursebook_agent.pipeline import CourseBookPipeline, MultiResourceCourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
@@ -154,6 +154,96 @@ async def generate(request: GenerateRequest):
     _persist_job(jobs[job_id])
     _schedule(job_id, _run_job(job_id, request))
     return jobs[job_id].model_dump()
+
+
+class GenerateV2Request(BaseModel):
+    course_id: str | None = None
+    snapshot_id: str | None = None
+    regenerate: bool = False
+    review: bool = True
+    concurrency: int = Field(default=3, ge=1, le=8)
+    chapter_indices: list[int] | None = None
+
+
+@app.post("/api/generate/v2", status_code=202)
+async def generate_v2(request: GenerateV2Request):
+    if not request.snapshot_id and not request.course_id:
+        raise HTTPException(status_code=400, detail="snapshot_id 或 course_id 必须提供其一")
+    job_id = uuid.uuid4().hex[:12]
+    job_state = JobState(
+        job_id=job_id,
+        course_id=request.course_id or "",
+        request=request.model_dump(),
+        status="queued", step="排队", progress=0,
+        message="v2 多资料工作流准备",
+    )
+    jobs[job_id] = job_state
+    _persist_job(job_state)
+    _schedule(job_id, _run_job_v2(job_id, request))
+    return job_state.model_dump()
+
+
+async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
+    state = jobs[job_id]
+    if generation_lock.locked():
+        state.status, state.step, state.message = "queued", "排队", "已有生成任务运行，等待执行"
+        _persist_job(state)
+    async with generation_lock:
+        state.status, state.step, state.message = "running", "读取快照", "v2 多资料工作流启动"
+        _persist_job(state)
+        await _generate_locked_v2(state, request)
+
+
+async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> None:
+    def progress(done: float, total: float, message: str, chapter: dict | None = None) -> None:
+        try:
+            pct = int(min(done / total, 1.0) * 95)
+        except ZeroDivisionError:
+            pct = 0
+        state.progress = pct
+        state.step = message.split(" ", 1)[0]
+        state.message = message
+        if chapter:
+            cid = chapter.get("chapter_id") or chapter.get("index")
+            # v2 sends chapter_id only; legacy sends index. Mirror an "index"
+            # field so the projection can sort by either.
+            if chapter.get("chapter_id") and "index" not in chapter:
+                # Try to preserve explicit index from caller; otherwise assign by order.
+                chapter = {**chapter, "index": chapter.get("index", len(state.chapters) + 1)}
+            state.chapters = sorted(
+                [c for c in state.chapters if c.get("chapter_id", c.get("index")) != cid] + [chapter],
+                key=lambda c: c.get("index", 0),
+            )
+        _persist_job(state)
+
+    try:
+        pipeline = MultiResourceCourseBookPipeline()
+        book = await asyncio.wait_for(pipeline.run(
+            snapshot_id=request.snapshot_id,
+            course_id=request.course_id,
+            regenerate=request.regenerate,
+            review=request.review,
+            concurrency=request.concurrency,
+            progress=progress,
+            chapter_indices=request.chapter_indices,
+        ), timeout=5400)
+        if any(c.get("status") == "failed" for c in state.chapters):
+            state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分章节生成失败，可重试失败章节", book
+        else:
+            state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程讲义已生成", book
+        _persist_job(state)
+    except asyncio.TimeoutError:
+        state.error_code = "task_timeout"
+        state.status, state.step, state.error, state.message = "failed", "超时", "任务超过 90 分钟", "生成超时，可恢复已完成章节"
+        _persist_job(state)
+    except Exception as exc:
+        state.error_code = getattr(exc, "code", "generation_error")
+        state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "生成失败"
+        _persist_job(state)
+    except asyncio.CancelledError:
+        state.status, state.step, state.message = "interrupted", "中断", "生成中断，可手动恢复"
+        _persist_job(state)
+        raise
 
 
 async def _run_job(job_id: str, request: GenerateRequest) -> None:
