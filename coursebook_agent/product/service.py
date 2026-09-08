@@ -183,7 +183,7 @@ class ProductService:
             atomic_write_text(text_path, text)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO resources VALUES (?, ?, ?, ?, 'upload', 'zhiyun', NULL, ?, ?)",
+                "INSERT INTO resources (resource_id, dataset_id, kind, title, source_type, provider, source_ref, created_at, updated_at) VALUES (?, ?, ?, ?, 'upload', 'zhiyun', NULL, ?, ?)",
                 (resource_id, dataset_id, kind, Path(filename).stem, now, now),
             )
             db.execute(
@@ -271,7 +271,7 @@ class ProductService:
         atomic_write_text(text_path, text)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO resources VALUES (?, ?, ?, ?, 'zhiyun', 'zhiyun', ?, ?, ?)",
+                "INSERT INTO resources (resource_id, dataset_id, kind, title, source_type, provider, source_ref, created_at, updated_at) VALUES (?, ?, ?, ?, 'zhiyun', 'zhiyun', ?, ?, ?)",
                 (resource_id, dataset_id, kind, title, source_ref, now, now),
             )
             db.execute(
@@ -292,15 +292,22 @@ class ProductService:
         from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
 
         source = XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai")
+        imported: list[Resource] = []
+        warnings: list[str] = []
+        # Probe the source first. If login is not valid we surface the
+        # message as a warning instead of silently returning an empty list,
+        # so the operator knows why no uploads came back.
         try:
             courses = source.list_my_courses(refresh=refresh)
-        except XueZaiError:
+        except XueZaiError as exc:
+            warnings.append(f"学在浙大未登录或会话失效：{exc}")
             courses = []
         course = next((item for item in courses if item.course_id == int(course_id)), None)
         try:
             uploads = source.list_course_uploads(int(course_id), refresh=refresh)
         except XueZaiError as exc:
-            raise exc
+            warnings.append(f"学在浙大课件列表读取失败：{exc}")
+            uploads = []
         if course is None:
             from coursebook_agent.sources.xuezai.assist import XueZaiCourse
             course = XueZaiCourse(course_id=int(course_id), name=f"课程 {course_id}")
@@ -311,8 +318,8 @@ class ProductService:
             if missing:
                 raise ValueError(f"所选课件不存在：{', '.join(str(item) for item in sorted(missing))}")
             uploads = [upload for upload in uploads if upload.upload_id in selected]
-        imported: list[Resource] = []
-        warnings: list[str] = []
+        if not uploads:
+            return imported, warnings
         for upload in uploads:
             try:
                 content = source.download_upload(upload)
@@ -354,7 +361,7 @@ class ProductService:
             atomic_write_text(text_path, text)
         with self._connect() as db:
             db.execute(
-                "INSERT INTO resources VALUES (?, ?, ?, ?, 'xuezai', 'xue_zai_zju', ?, ?, ?)",
+                "INSERT INTO resources (resource_id, dataset_id, kind, title, source_type, provider, source_ref, created_at, updated_at) VALUES (?, ?, ?, ?, 'xuezai', 'xue_zai_zju', ?, ?, ?)",
                 (resource_id, dataset_id, kind, upload.filename, f"{course.course_id}:{upload.upload_id}", now, now),
             )
             db.execute(
@@ -378,10 +385,56 @@ class ProductService:
             raise KeyError("资料不存在")
         return self._resource_from_row(row)
 
+    def get_revision(self, revision_id: str) -> ResourceRevision:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
+        if not row:
+            raise KeyError("资料版本不存在")
+        return self._revision_from_row(row)
+
+    def text_path_for(self, revision: ResourceRevision) -> Path | None:
+        """Resolve the parsed-text path for a revision from its metadata."""
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT text_path FROM revisions WHERE revision_id = ?",
+                (revision.revision_id,),
+            ).fetchone()
+        if not row or not row["text_path"]:
+            return None
+        return Path(row["text_path"])
+
+    def blob_path_for(self, revision: ResourceRevision) -> Path | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT blob_path FROM revisions WHERE revision_id = ?",
+                (revision.revision_id,),
+            ).fetchone()
+        if not row or not row["blob_path"]:
+            return None
+        return Path(row["blob_path"])
+
     def _resource_from_row(self, row: sqlite3.Row) -> Resource:
         with self._connect() as db:
             revision = db.execute("SELECT * FROM revisions WHERE resource_id = ? ORDER BY version DESC LIMIT 1", (row["resource_id"],)).fetchone()
-        return Resource(**dict(row), current_revision=self._revision_from_row(revision) if revision else None)
+        keys = row.keys() if hasattr(row, "keys") else []
+        provider = row["provider"] if "provider" in keys else None
+        # If the column was migrated late and existing rows have corrupt
+        # values (e.g. an ISO timestamp stored there), fall back to the
+        # legacy "zhiyun" default.
+        if provider not in {"zhiyun", "xue_zai_zju"}:
+            provider = "zhiyun"
+        data = {
+            "resource_id": row["resource_id"],
+            "dataset_id": row["dataset_id"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "source_type": row["source_type"],
+            "provider": provider,
+            "source_ref": row["source_ref"] if "source_ref" in keys else None,
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        return Resource(**data, current_revision=self._revision_from_row(revision) if revision else None)
 
     def _revision_from_row(self, row: sqlite3.Row) -> ResourceRevision:
         data = dict(row)
