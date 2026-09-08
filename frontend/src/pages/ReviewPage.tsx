@@ -3,6 +3,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
 import type { RunReport, RunSummary } from '@/types'
+import { Link } from 'react-router-dom'
 
 function IssueRow({ tag, tone, text }: { tag: string; tone: string; text: string }) {
   return (
@@ -82,6 +83,10 @@ export function ReviewPage() {
 
   return (
     <div>
+      <div className="mb-5 flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+        <span>这是旧版质量报告入口；新版本的运行状态和质量信息集中在运行详情中。</span>
+        <Link to="/runs" className="shrink-0 font-medium underline">打开运行中心</Link>
+      </div>
       <h2 className="text-2xl font-bold">质量报告</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         查看来源校验与审校状态。来源覆盖率仅表示引用可定位，不代表内容准确率。

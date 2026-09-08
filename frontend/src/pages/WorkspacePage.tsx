@@ -213,6 +213,10 @@ export function WorkspacePage() {
       <Link to="/" className="text-sm text-muted-foreground hover:text-foreground">
         ← 返回书架
       </Link>
+      <div className="mt-4 flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+        <span>这是旧版按课程/讲次生成的兼容工作台；新版本请使用资料集、输入快照和运行中心。</span>
+        <Link to="/datasets" className="shrink-0 font-medium underline">打开新工作流</Link>
+      </div>
       <h2 className="mt-4 text-2xl font-bold">生成讲义</h2>
       <p className="mt-1 text-sm text-muted-foreground">
         选择一门课程，系统自动获取字幕并整理成教辅书。

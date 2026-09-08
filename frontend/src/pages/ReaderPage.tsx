@@ -59,6 +59,10 @@ export function ReaderPage() {
           </Button>
         </div>
       </div>
+      <div className="mb-6 flex items-start justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+        <span>这是旧版课程讲义阅读器；新版本的生成记录和产物请从运行中心进入。</span>
+        <Link to="/runs" className="shrink-0 font-medium underline">打开运行中心</Link>
+      </div>
       {actionMessage && <p className="mb-4 rounded-md bg-emerald-50 p-3 text-sm text-emerald-800">{actionMessage}</p>}
       <BookReader book={book} onRegenerate={(index) => {
         setActionMessage(`正在提交第 ${index} 讲的重新生成任务…`)
