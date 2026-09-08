@@ -625,6 +625,18 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
     def _plan_path_for(self, snapshot_id: str) -> Path:
         return self.plans_dir / f"bookplan-{snapshot_id}.json"
 
+    def _chapter_cache_path(self, course_id: str, snapshot_id: str | None, chapter_id: str) -> Path:
+        """Resolve the chapter cache file, scoped per snapshot when known.
+
+        chapter_id alone is not unique across runs of different courses or
+        snapshots, so the legacy ``chapter-{cid}.json`` filename can leak
+        one course's content into another's UI. Scope by snapshot when
+        available; fall back to course_id; fall back to chapter_id.
+        """
+        if snapshot_id:
+            return self.intermediate_dir / f"chapter-{snapshot_id}-{chapter_id}.json"
+        return self.intermediate_dir / f"chapter-{course_id}-{chapter_id}.json"
+
     async def _describe_all(
         self, parsed: list[ParsedResource]
     ) -> list[ResourceDescription]:
@@ -734,7 +746,7 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
         async def gen_one(ctx) -> LectureDraft:
             async with sem:
                 chapter_id = ctx.chapter.chapter_id
-                draft_path = self.intermediate_dir / f"chapter-{chapter_id}.json"
+                draft_path = self._chapter_cache_path(course.course_id, snapshot_id, chapter_id)
                 if draft_path.exists() and not regenerate:
                     try:
                         existing = LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
@@ -746,7 +758,7 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
                 idx = next((i for i, c in enumerate(contexts) if c.chapter.chapter_id == chapter_id), None)
                 if idx is not None and idx > 0:
                     prev_id = contexts[idx - 1].chapter.chapter_id
-                    prev_path = self.intermediate_dir / f"chapter-{prev_id}.json"
+                    prev_path = self._chapter_cache_path(course.course_id, snapshot_id, prev_id)
                     if prev_path.exists():
                         try:
                             prev_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
