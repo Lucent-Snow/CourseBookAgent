@@ -313,6 +313,29 @@ def get_run_projection(run_id: str):
     return _call(lambda: project_run(_get_job(run_id)))
 
 
+@router.get("/datasets/{dataset_id}/runs")
+def list_dataset_runs(dataset_id: str):
+    """All generation runs produced from this dataset, newest first."""
+    detail = service().get_dataset(dataset_id)
+    runs = service().list_runs_by_dataset(dataset_id)
+    return {"data": runs, "dataset": detail.model_dump()}
+
+
+@router.delete("/runs/{run_id}", status_code=204)
+def delete_run(run_id: str):
+    """Remove a run's on-disk artefacts and clear it from the in-memory map."""
+    from coursebook_agent.app import jobs
+
+    jobs.pop(run_id, None)
+    # Also clear any in-flight asyncio task for this job.
+    from coursebook_agent.app import tasks
+    task = tasks.pop(run_id, None)
+    if task and not task.done():
+        task.cancel()
+    service().delete_run(run_id)
+    return None
+
+
 @router.get("/artifacts")
 def list_artifacts():
     from coursebook_agent.app import jobs

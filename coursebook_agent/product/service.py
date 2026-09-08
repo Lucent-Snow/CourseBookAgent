@@ -413,6 +413,46 @@ class ProductService:
             return None
         return Path(row["blob_path"])
 
+    # ── run lifecycle ─────────────────────────────────────────────
+    # Runs are stored on disk in data/jobs/{run_id}.json; the API deletes
+    # them so the front-end can clean up. We don't store them in SQLite
+    # because the generation pipeline already owns the file.
+
+    def list_runs_by_dataset(self, dataset_id: str) -> list[dict]:
+        runs: list[dict] = []
+        job_dir = config.data_dir / "jobs"
+        if not job_dir.exists():
+            return runs
+        for path in job_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if data.get("dataset_id") != dataset_id:
+                continue
+            runs.append({
+                "job_id": data.get("job_id") or path.stem,
+                "status": data.get("status"),
+                "phase": data.get("step"),
+                "progress": data.get("progress", 0),
+                "message": data.get("message", ""),
+                "course_id": data.get("course_id") or None,
+                "snapshot_id": (data.get("request") or {}).get("snapshot_id"),
+                "preset_id": (data.get("request") or {}).get("preset_id") or "coursebook",
+                "dataset_id": dataset_id,
+                "artifact_available": data.get("book") is not None,
+                "updated_at": data.get("events", [{}])[-1].get("at") if data.get("events") else None,
+                "created_at": data.get("events", [{}])[0].get("at") if data.get("events") else None,
+            })
+        runs.sort(key=lambda r: (r.get("created_at") or ""), reverse=True)
+        return runs
+
+    def delete_run(self, job_id: str) -> bool:
+        path = config.data_dir / "jobs" / f"{job_id}.json"
+        if path.exists():
+            path.unlink()
+        return True
+
     def _resource_from_row(self, row: sqlite3.Row) -> Resource:
         with self._connect() as db:
             revision = db.execute("SELECT * FROM revisions WHERE resource_id = ? ORDER BY version DESC LIMIT 1", (row["resource_id"],)).fetchone()
