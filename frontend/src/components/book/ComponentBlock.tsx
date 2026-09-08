@@ -1,4 +1,5 @@
 import { Badge } from '@/components/ui/badge'
+import { MathText } from '@/components/math/MathText'
 import type { ChapterComponent } from '@/types'
 
 interface ComponentConfig {
@@ -41,38 +42,74 @@ const FALLBACK: ComponentConfig = {
   badge: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
 }
 
+const FIELD_LABELS: Record<string, string> = {
+  title: '标题',
+  problem: '题目',
+  problem_statement: '问题陈述',
+  goal: '目标',
+  key_inequality: '关键不等式',
+  'δ_or_N_choice': 'δ/N 的选取',
+  delta_or_N_choice: 'δ/N 的选取',
+  verification_step: '验证步骤',
+  common_fallacy: '常见误区',
+  context: '语境',
+  tip: '提示',
+  why_it_works: '原理',
+  mistake_pattern: '错误模式',
+  why_wrong: '错误原因',
+  correct_pattern: '正确写法',
+  evidence_from_class: '课堂证据',
+  body: '说明',
+  steps: '步骤',
+  conclusion: '结论',
+  source_ref: '来源',
+  when_to_use: '适用场景',
+}
+
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : String(value ?? '')
 }
 
-/**
- * 组件 body 的健壮解析：
- * - 优先取 steps 数组（V2 结构）
- * - 其次取 body 字符串
- * - 兜底处理后端曾把 steps 数组误 stringify 成 Python list 的情况
- */
-function bodyLines(data: Record<string, unknown>): string[] {
-  if (Array.isArray(data.steps)) {
-    return data.steps.map(asString).filter((s) => s.trim().length > 0)
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map(asString).filter((s) => s.trim().length > 0)
   }
-  const body = asString(data.body).trim()
-  if (!body) return []
-  if (body.startsWith("['") && body.endsWith("']")) {
-    return body
-      .slice(2, -2)
-      .split("', '")
-      .map((s) => s.trim())
-      .filter(Boolean)
+  const raw = asString(value).trim()
+  if (!raw) return []
+  if (raw.startsWith('[') && raw.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return asStringList(parsed)
+    } catch {
+      // fall through to a python-list-ish split below
+    }
+    const inner = raw.slice(1, -1).trim()
+    if (inner) {
+      return inner
+        .split(',')
+        .map((s) => s.trim().replace(/^["']|["']$/g, '').trim())
+        .filter(Boolean)
+    }
   }
-  return [body]
+  return [raw]
 }
 
 export function ComponentBlock({ component }: { component: ChapterComponent }) {
   const config = CONFIG[component.component_type] ?? FALLBACK
-  const title = asString(component.data.title)
-  const lines = bodyLines(component.data)
-  const sourceRef = asString(component.data.source_ref)
-  const whenToUse = asString(component.data.when_to_use)
+  const data = (component.data ?? {}) as Record<string, unknown>
+  const title = asString(data.title)
+  const sourceRef = asString(data.source_ref)
+  const whenToUse = asString(data.when_to_use)
+  const steps = asStringList(data.steps)
+  const body = asStringList(data.body)
+
+  const skip = new Set(['title', 'body', 'steps', 'source_ref', 'when_to_use'])
+  const detailFields = Object.entries(data)
+    .filter(
+      ([key, value]) =>
+        !skip.has(key) && value !== undefined && value !== null && asString(value).trim() !== '',
+    )
+    .map(([key, value]) => ({ label: FIELD_LABELS[key] ?? key, value: asString(value) }))
 
   return (
     <div className={`my-3 rounded-r-md border border-l-4 bg-muted/40 p-4 ${config.accent}`}>
@@ -80,18 +117,47 @@ export function ComponentBlock({ component }: { component: ChapterComponent }) {
         <Badge variant="secondary" className={`${config.badge} border-0 font-semibold`}>
           {config.label}
         </Badge>
-        {title && <span className="text-sm font-semibold">{title}</span>}
+        {title && (
+          <span className="text-sm font-semibold">
+            <MathText text={title} />
+          </span>
+        )}
       </div>
-      {lines.length > 0 && (
+      {steps.length > 0 && (
+        <ol className="mt-2 list-decimal space-y-1.5 pl-5">
+          {steps.map((line, i) => (
+            <li key={i} className="text-sm leading-relaxed">
+              <MathText text={line} />
+            </li>
+          ))}
+        </ol>
+      )}
+      {body.length > 0 && (
         <div className="mt-2 space-y-1.5">
-          {lines.map((line, i) => (
-            <p key={i} className="whitespace-pre-wrap text-sm leading-relaxed">
-              {line}
+          {body.map((line, i) => (
+            <p key={i} className="text-sm leading-relaxed whitespace-pre-wrap">
+              <MathText text={line} />
             </p>
           ))}
         </div>
       )}
-      {whenToUse && <p className="mt-2 text-xs text-muted-foreground">适用：{whenToUse}</p>}
+      {detailFields.length > 0 && (
+        <dl className="mt-2 space-y-1.5">
+          {detailFields.map((field, i) => (
+            <div key={i} className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 text-sm font-medium text-muted-foreground">{field.label}</dt>
+              <dd className="min-w-0 text-sm leading-relaxed">
+                <MathText text={field.value} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {whenToUse && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          适用：<MathText text={whenToUse} />
+        </p>
+      )}
       {sourceRef && <p className="mt-2 text-xs text-muted-foreground">来源：{sourceRef}</p>}
     </div>
   )

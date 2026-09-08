@@ -152,11 +152,11 @@ async def describe_resource(
         except (LLMError, ValueError, KeyError, TypeError) as exc:
             logger.warning("describe_resource(%s) LLM failed: %s; using heuristic", parsed.revision_id, exc)
     if not isinstance(data, dict):
-        data = _heuristic_description(parsed)
+        data = _heuristic_description(parsed, reason="llm_failed")
     return _coerce(parsed, data)
 
 
-def _heuristic_description(parsed: ParsedResource) -> dict:
+def _heuristic_description(parsed: ParsedResource, reason: str = "llm_failed") -> dict:
     text = parsed.raw_text or " ".join(u.text for u in parsed.units[:20])
     topic = (parsed.title or "").strip()
     if not topic and text:
@@ -186,14 +186,15 @@ def _heuristic_description(parsed: ParsedResource) -> dict:
         "suggested_role": suggested_role,
         "summary": (
             f"{parsed.kind} 资料，共 {len(parsed.units)} 个结构单元，"
-            f"约 {len(text)} 字符。无法调用大模型，已使用基于解析文本与标题的启发式描述。"
+            f"约 {len(text)} 字符。"
+            + ("" if reason == "transcript_fast_path" else "（本描述由本地规则生成，因模型调用失败）")
         ),
         "overlap_notes": [],
     }
 
 
 def _heuristic_description_obj(parsed: ParsedResource) -> ResourceDescription:
-    return _coerce(parsed, _heuristic_description(parsed))
+    return _coerce(parsed, _heuristic_description(parsed, reason="transcript_fast_path"))
 
 
 def _coerce(parsed: ParsedResource, data: dict) -> ResourceDescription:

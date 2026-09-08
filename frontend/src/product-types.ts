@@ -170,6 +170,12 @@ export interface StageProjection {
   rendered: boolean
 }
 
+export interface WarningGroup {
+  category: string
+  label: string
+  items: string[]
+}
+
 export interface QualityReport {
   chapter_id: string
   title: string
@@ -178,6 +184,7 @@ export interface QualityReport {
   missing_source_count: number
   component_count: number
   warnings: string[]
+  warning_groups: WarningGroup[]
 }
 
 export interface RunEvent {

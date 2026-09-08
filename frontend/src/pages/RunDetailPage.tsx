@@ -72,6 +72,15 @@ const agentLabel: Record<keyof typeof agentTone, string> = {
  pending: '等待中', running: '生成中', succeeded: '已完成', failed: '失败', blocked: '已阻塞',
 }
 
+const warningTone: Record<string, string> = {
+ uncertainty: 'text-amber-700',
+ coverage: 'text-red-700',
+ review: 'text-blue-700',
+ structure: 'text-purple-700',
+ process: 'text-slate-600',
+ other: 'text-slate-600',
+}
+
 const tagTone: Record<ResourceProjection['tag_kind'], string> = {
  chapter: 'text-[#147d86] bg-[#e6f3f3] border-[#b8dadb]',
  global: 'text-[#27774a] bg-[#e9f5ee] border-[#b6d8c6]',
@@ -247,11 +256,24 @@ export function RunDetailPage() {
  <span className={`rounded-full px-2 py-0.5 text-[10px] ${q.warnings.length === 0 ? 'bg-[#e9f5ee] text-[#27774a]' : 'bg-amber-50 text-amber-700'}`}>{q.warnings.length === 0 ? '通过' : `${q.warnings.length} 警告`}</span>
  </div>
  <p className="mt-1 text-[11px] text-[#718183]">{q.section_count} 个小节 · {q.component_count} 个组件 · 来源 {q.source_revision_ids.length} 处（未在范围内 {q.missing_source_count}）</p>
- {q.warnings.length > 0 && (
+ {q.warning_groups.length > 0 ? (
+ <div className="mt-3 space-y-3">
+ {q.warning_groups.map((g) => (
+ <div key={g.category}>
+ <p className={`text-[11px] font-semibold ${warningTone[g.category] ?? 'text-slate-600'}`}>
+ {g.label} · {g.items.length}
+ </p>
+ <ul className="mt-1 space-y-1 text-[11px] text-amber-800/90">
+ {g.items.map((w, i) => <li key={i}>· {w}</li>)}
+ </ul>
+ </div>
+ ))}
+ </div>
+ ) : q.warnings.length > 0 ? (
  <ul className="mt-2 space-y-1 text-[11px] text-amber-700">
  {q.warnings.map((w, i) => <li key={i}>· {w}</li>)}
  </ul>
- )}
+ ) : null}
  </div>
  ))}
  </div>

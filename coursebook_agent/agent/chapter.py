@@ -6,7 +6,9 @@ Output: LectureDraft with time links, components, and source grounding.
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 
 from pydantic import ValidationError
 
@@ -49,6 +51,142 @@ SYSTEM = """你是高校课程教辅书的分章写作者。
 
 from coursebook_agent.agent.style_rules import inject_prompt_rules
 from coursebook_agent.config import config
+
+
+def _coerce_component_list(raw_components) -> list[dict]:
+    """把模型返回的组件统一成 {component_type, data:{...}}。
+
+    模型有时会把组件字段平铺在顶层（没有包 data），Pydantic 校验时会把这些
+    extra 字段丢弃，导致前端只渲染出空标签。这里把顶层字段合并进 data。
+    """
+    out: list[dict] = []
+    for comp in raw_components or []:
+        if not isinstance(comp, dict):
+            continue
+        ct = str(comp.get("component_type") or comp.get("type") or "").strip()
+        if not ct:
+            continue
+        data = comp.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        merged = dict(data)
+        for key, value in comp.items():
+            if key in {"component_type", "type", "data"}:
+                continue
+            merged[key] = value
+        out.append({"component_type": ct, "data": merged})
+    return out
+
+
+def _parse_dict_like_string(value: str):
+    if not value.startswith("{") or not value.endswith("}"):
+        return None
+    try:
+        obj = ast.literal_eval(value)
+    except (ValueError, SyntaxError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _readable_item(item) -> str:
+    def render(data: dict) -> str:
+        # 组件形对象只取 data 里的实际内容，去掉 component_type/data 外壳。
+        ct = data.get("component_type")
+        if ct and isinstance(data.get("data"), dict):
+            return _dict_to_readable(data["data"])
+        return _dict_to_readable(data)
+
+    if isinstance(item, dict):
+        return render(item)
+    if isinstance(item, str):
+        data = _parse_dict_like_string(item.strip())
+        if data:
+            return render(data)
+        return item
+    return str(item)
+
+
+def _dict_to_readable(data: dict) -> str:
+    parts: list[str] = []
+    for key, value in data.items():
+        text = _readable_item(value)
+        if text.strip():
+            parts.append(f"{key}：{text}")
+    return "；".join(parts)
+
+
+def _concept_to_text(item) -> str:
+    data: dict | None = None
+    if isinstance(item, dict):
+        data = item
+    elif isinstance(item, str):
+        data = _parse_dict_like_string(item.strip())
+    if data:
+        term = str(data.get("term") or data.get("name") or "").strip()
+        definition = str(data.get("definition") or data.get("desc") or "").strip()
+        if term and definition:
+            return f"{term}：{definition}"
+        if term:
+            return term
+        return _dict_to_readable(data)
+    return str(item)
+
+
+def _hoist_uncertainty_markers(draft: "LectureDraft") -> "LectureDraft":
+    """把 [不确定：...] 从学生可见字段里摘出来，归入 warnings。
+
+    模型偶尔会把不确定标注直接写进正文/例题/易错点等学生内容里，这对学生
+    没有信息量且会打断阅读；统一上移到 warnings（教师/编辑可见）。
+    """
+    pattern = re.compile(r"\[[^\]]*(?:不确定|无法确认)[^\]]*\]")
+
+    def clean(text: str):
+        found = pattern.findall(text)
+        if not found:
+            return text, []
+        return pattern.sub("", text).strip(), found
+
+    hoisted: list[str] = []
+
+    def apply_text(name: str):
+        val = getattr(draft, name)
+        if isinstance(val, str):
+            new, found = clean(val)
+            if found:
+                setattr(draft, name, new)
+                hoisted.extend(found)
+        elif isinstance(val, list):
+            out = []
+            for item in val:
+                if isinstance(item, str):
+                    new, found = clean(item)
+                    out.append(new)
+                    hoisted.extend(found)
+                else:
+                    out.append(item)
+            setattr(draft, name, out)
+
+    for name in ("overview", "bridge_from_prev", "bridge_to_next"):
+        apply_text(name)
+    for name in ("learning_goals", "key_points", "common_mistakes", "concepts", "examples", "summary", "prerequisite_concepts"):
+        apply_text(name)
+
+    for section in draft.sections:
+        new, found = clean(section.content)
+        if found:
+            section.content = new
+            hoisted.extend(found)
+        for comp in section.components:
+            for key, value in list(comp.data.items()):
+                if isinstance(value, str):
+                    new, found = clean(value)
+                    if found:
+                        comp.data[key] = new
+                        hoisted.extend(found)
+
+    if hoisted:
+        draft.warnings = list(draft.warnings) + hoisted
+    return draft
 
 
 def _build_section_materials(instruction, chunks) -> str:
@@ -259,7 +397,7 @@ async def generate_chapter(
 async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstruction | None, chunks: list[TimedChunk]) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(60, llm.timeout)).complete_json(
+        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
             SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
             max_tokens=2000,
@@ -308,18 +446,20 @@ def _normalize(data: dict, lecture, instruction, role, target_title) -> dict:
             "source_chunk_ids": [str(x) for x in (item.get("source_chunk_ids") or [])],
             "emphasis": str(item.get("emphasis") or "normal"),
             "time_links": [str(x) for x in (item.get("time_links") or [])],
-            "components": [dict(c) for c in (item.get("components") or []) if isinstance(c, dict)],
+            "components": _coerce_component_list(item.get("components")),
         })
     data["sections"] = sections
 
     for key in ("learning_goals", "key_points", "common_mistakes", "concepts", "summary", "warnings", "prerequisite_concepts"):
         value = data.get(key)
         if isinstance(value, str):
-            data[key] = [value]
+            value = [value]
         elif not isinstance(value, list):
-            data[key] = []
+            value = []
+        if key == "concepts":
+            data[key] = [_concept_to_text(x) for x in value if str(x).strip()]
         else:
-            data[key] = [str(x) for x in value if str(x).strip()]
+            data[key] = [_readable_item(x) for x in value if str(x).strip()]
 
     examples = data.get("examples")
     if isinstance(examples, str):
@@ -379,6 +519,7 @@ def _validate_and_fix(data: dict, chunks: list[TimedChunk], instruction, previou
     draft = _apply_statistical_guardrails(draft)
     draft.source_ranges = _collect_ranges(draft.sections, chunks)
     draft.transcript_links = _build_transcript_links(draft.sections, chunks)
+    draft = _hoist_uncertainty_markers(draft)
     return draft
 
 
@@ -545,7 +686,10 @@ V2_SYSTEM = """你是高校课程教辅书的分章写作者。
 def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
     instruction = context.chapter
     component_specs = "\n".join(
-        f"- {c.name}：{c.description}（字段：{', '.join(c.fields)}）"
+        (
+            f"- {c.name}：{c.description}（字段：{', '.join(c.fields)}）\n"
+            f"  示例：{{\"component_type\": \"{c.name}\", \"data\": {{{', '.join(f'\"{f}\": \"...\"' for f in c.fields)}}}}}"
+        )
         for c in context.component_specs
     ) or "(无组件规范)"
     prev_summary = ""
@@ -575,9 +719,9 @@ def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "L
         '  "bridge_from_prev": "...",\n'
         '  "bridge_to_next": "...",\n'
         '  "prerequisite_concepts": [...],\n'
-        '  "concepts": [...],\n'
+        '  "concepts": ["术语：课堂中的解释（一句话）"],\n'
         '  "sections": [\n'
-        '    {"heading": "...", "content": "...", "source_revision_ids": ["rev-..."], "source_labels": ["字幕 03:20-05:40"], "emphasis": "key|normal|review", "components": [...]}\n'
+        '    {"heading": "...", "content": "...", "source_revision_ids": ["rev-..."], "source_labels": ["字幕 03:20-05:40"], "emphasis": "key|normal|review", "components": [{"component_type": "worked_example", "data": {"title": "...", "problem": "...", "steps": ["..."], "conclusion": "...", "source_ref": "..."}}]}\n'
         '  ],\n'
         '  "examples": ["..."],\n'
         '  "summary": [...],\n'
@@ -589,13 +733,16 @@ def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "L
         "3. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。\n"
         "4. examples 只能是人可读字符串，绝不能输出对象/字典/JSON。\n"
         "5. components 的 component_type 只能从 worked_example、tip_box、warning、side_note、procedure 中选取。\n"
+        "6. components 里每个元素必须是 {\"component_type\": \"...\", \"data\": {...}}；所有组件字段一律放进 data 对象内，component_type 之外不要出现其他字段。\n"
+        "7. 数学公式请用 $...$ 包裹（行内用单个 $，独立成行用 $$...$$），例如 $\\frac{1}{n}$、$\\lim_{n\\to\\infty} a_n$；不要输出 Markdown 数学代码块之外的裸 LaTeX。\n"
+        "8. warnings 只能是字符串数组（用于标注 ASR 不确定与覆盖缺口），绝不能把 components 对象放进 warnings；所有组件一律放在 sections[].components 里。\n"
     )
 
 
 async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(60, llm.timeout)).complete_json(
+        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
             V2_SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
             max_tokens=2000,
@@ -645,18 +792,20 @@ def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
             "source_chunk_ids": [str(x) for x in (item.get("source_revision_ids") or item.get("source_chunk_ids") or [])],
             "emphasis": str(item.get("emphasis") or "normal"),
             "time_links": [str(x) for x in (item.get("time_links") or item.get("source_labels") or [])],
-            "components": [dict(c) for c in (item.get("components") or []) if isinstance(c, dict)],
+            "components": _coerce_component_list(item.get("components")),
         })
     data["sections"] = sections
 
     for key in ("learning_goals", "key_points", "common_mistakes", "concepts", "summary", "warnings", "prerequisite_concepts"):
         value = data.get(key)
         if isinstance(value, str):
-            data[key] = [value]
+            value = [value]
         elif not isinstance(value, list):
-            data[key] = []
+            value = []
+        if key == "concepts":
+            data[key] = [_concept_to_text(x) for x in value if str(x).strip()]
         else:
-            data[key] = [str(x) for x in value if str(x).strip()]
+            data[key] = [_readable_item(x) for x in value if str(x).strip()]
 
     examples = data.get("examples")
     if isinstance(examples, str):
@@ -719,6 +868,7 @@ def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) 
     draft.source_ranges = [
         f"{s.heading}：{', '.join(s.source_chunk_ids)}" for s in draft.sections if s.source_chunk_ids
     ]
+    draft = _hoist_uncertainty_markers(draft)
     return draft
 
 

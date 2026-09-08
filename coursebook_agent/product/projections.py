@@ -15,6 +15,7 @@ from coursebook_agent.product.models import (
     RunProjection,
     StageProjection,
 )
+from coursebook_agent.quality_categories import group_warnings
 
 
 def _description_cache_dir() -> "Path":
@@ -367,7 +368,7 @@ def project_run(state: JobState) -> RunProjection:
                     body = str(comp.get("data", {}).get("body") or "")
                     if title:
                         warnings.append(f"{title}: {body[:120]}" if body else title)
-        # Cap warning count to avoid front-end overload.
+        # Cap flat warning count for compatibility; groups carry the full view.
         quality.append(QualityReport(
             chapter_id=cid,
             title=draft.get("title",""),
@@ -376,6 +377,7 @@ def project_run(state: JobState) -> RunProjection:
             missing_source_count=len(missing_sources),
             component_count=sum(len(s.get("components") or []) for s in sections),
             warnings=warnings[:5],
+            warning_groups=group_warnings(warnings),
         ))
 
     return RunProjection(

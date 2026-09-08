@@ -3,7 +3,24 @@ import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ChapterView } from './ChapterView'
+import { MathText } from '@/components/math/MathText'
 import type { CourseBook } from '@/types'
+
+function MetaList({ title, items }: { title: string; items: string[] }) {
+  if (!items.length) return null
+  return (
+    <div className="mt-8">
+      <h3 className="mb-3 text-base font-semibold">{title}</h3>
+      <ul className="my-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
+        {items.map((item, i) => (
+          <li key={i}>
+            <MathText text={item} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
 
 function FrontMatter({ book }: { book: CourseBook }) {
   const courseMeta = [book.course?.name, book.course?.teacher, book.course?.term].filter(Boolean).join(' · ')
@@ -17,42 +34,19 @@ function FrontMatter({ book }: { book: CourseBook }) {
       {book.preface && (
         <div className="mt-8">
           <h3 className="mb-3 text-base font-semibold">前言</h3>
-          <p className="whitespace-pre-wrap text-sm leading-relaxed">{book.preface}</p>
+          <p className="text-sm leading-relaxed whitespace-pre-wrap">
+            <MathText text={book.preface} />
+          </p>
         </div>
       )}
 
-      {book.how_to_use.length > 0 && (
-        <div className="mt-8">
-          <h3 className="mb-3 text-base font-semibold">如何使用本书</h3>
-          <ul className="my-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-            {book.how_to_use.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {book.knowledge_map.length > 0 && (
-        <div className="mt-8">
-          <h3 className="mb-3 text-base font-semibold">知识地图</h3>
-          <ul className="my-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-            {book.knowledge_map.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {book.learning_path.length > 0 && (
-        <div className="mt-8">
-          <h3 className="mb-3 text-base font-semibold">学习路径</h3>
-          <ul className="my-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-            {book.learning_path.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <MetaList title="如何使用本书" items={book.how_to_use} />
+      <MetaList title="知识地图" items={book.knowledge_map} />
+      <MetaList title="学习路径" items={book.learning_path} />
+      <MetaList title="要点速记" items={book.key_point_index} />
+      <MetaList title="连贯性阅读提示" items={book.continuity_notes} />
+      <MetaList title="全课术语表" items={book.glossary} />
+      <MetaList title="来源索引" items={book.source_index} />
     </div>
   )
 }
@@ -119,7 +113,9 @@ export function BookReader({ book, onRegenerate }: { book: CourseBook; onRegener
             )}
             <ChapterView chapter={chapter} />
           </>
-        ) : <FrontMatter book={book} />}
+        ) : (
+          <FrontMatter book={book} />
+        )}
       </main>
     </div>
   )

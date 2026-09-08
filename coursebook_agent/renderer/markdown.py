@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from coursebook_agent.models import CourseBook, LectureDraft, ChapterSection, ChapterComponent
+from coursebook_agent.quality_categories import group_warnings
 
 
 def _is_empty_chapter(chapter: LectureDraft) -> bool:
@@ -10,56 +11,73 @@ def _is_empty_chapter(chapter: LectureDraft) -> bool:
     return not chapter.sections and len(chapter.overview.strip()) < 20
 
 
+_COMPONENT_HEADERS = {
+    "worked_example": "【例题】",
+    "tip_box": "【小贴士】",
+    "warning": "⚠️ 【易错警告】",
+    "procedure": "【步骤】",
+    "side_note": "【旁注】",
+}
+
+_FIELD_LABELS = {
+    "title": "标题", "problem": "题目", "problem_statement": "问题陈述",
+    "goal": "目标", "key_inequality": "关键不等式", "δ_or_N_choice": "δ/N 的选取",
+    "delta_or_N_choice": "δ/N 的选取", "verification_step": "验证步骤",
+    "common_fallacy": "常见误区", "context": "语境", "tip": "提示",
+    "why_it_works": "原理", "mistake_pattern": "错误模式", "why_wrong": "错误原因",
+    "correct_pattern": "正确写法", "evidence_from_class": "课堂证据",
+    "body": "正文", "steps": "步骤", "conclusion": "结论",
+    "source_ref": "来源", "when_to_use": "适用场景",
+}
+
+
+def _as_lines(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(x) for x in value]
+    if isinstance(value, str):
+        return value.splitlines()
+    return [str(value)]
+
+
 def _render_component(comp: ChapterComponent) -> str:
-    """Render a component instance to Markdown."""
-    d = comp.data
-    title = d.get("title", "")
-    body = d.get("body", "")
-    source_ref = d.get("source_ref", "")
+    """Render a component instance to Markdown.
 
-    if comp.component_type == "worked_example":
-        lines = [f"> **【例题】{title}**" if title else "> **【例题】**"]
-        if body:
-            lines.append(f"> {body}")
-        if source_ref:
-            lines.append(f"> *来源：{source_ref}*")
-        return "\n".join(lines) + "\n"
+    兼容 v1（title/body/source_ref）与 v2（problem_statement/goal/…、
+    context/tip/why_it_works、mistake_pattern/why_wrong/…）两套字段。
+    """
+    d = comp.data or {}
+    header = _COMPONENT_HEADERS.get(comp.component_type, "【补充说明】")
+    title = str(d.get("title") or "").strip()
+    lines = [f"> **{header}" + (f"：{title}" if title else "") + "**"]
 
-    if comp.component_type == "tip_box":
-        lines = [f"> **{title}**" if title else "> **补充说明**"]
-        if body:
-            lines.append(f"> {body}")
-        return "\n".join(lines) + "\n"
-
-    if comp.component_type == "warning":
-        lines = [f"> ⚠️ **【易错】**{title}" if title else "> ⚠️ **【易错】**"]
-        if body:
-            lines.append(f"> {body}")
-        return "\n".join(lines) + "\n"
-
-    if comp.component_type == "procedure":
-        lines = [f"> **【步骤】{title}**" if title else "> **【步骤】**"]
-        if body:
-            for line in body.split("\n"):
+    # 正文块：procedure 优先 steps，其余类型优先 body，二者都有则都渲染。
+    block_keys = ["steps", "body"] if comp.component_type == "procedure" else ["body", "steps"]
+    for key in block_keys:
+        value = d.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        for line in _as_lines(value):
+            if str(line).strip():
                 lines.append(f"> {line}")
-        when = d.get("when_to_use", "")
-        if when:
-            lines.append(f"> *适用：{when}*")
-        return "\n".join(lines) + "\n"
 
-    if comp.component_type == "side_note":
-        lines = [f"> **旁注：**{body}" if body else ""]
-        if source_ref:
-            lines.append(f"> *来源：{source_ref}*")
-        return "\n".join(lines) + "\n"
-
-    # Unknown components are a validation failure upstream. Render their usable
-    # content without exposing implementation labels to students as a last resort.
-    lines = ["> **补充说明**"]
-    if title:
-        lines.append(f"> **{title}**")
-    if body:
-        lines.append(f"> {body}")
+    for key, value in d.items():
+        if key in {"title", "body", "steps"}:
+            continue
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        label = _FIELD_LABELS.get(key, key)
+        if key == "source_ref":
+            lines.append(f"> *来源：{value}*")
+        elif key == "when_to_use":
+            lines.append(f"> *适用：{value}*")
+        else:
+            for line in _as_lines(value):
+                if str(line).strip():
+                    lines.append(f"> **{label}**：{line}")
     return "\n".join(lines) + "\n"
 
 
@@ -137,8 +155,11 @@ def render_chapter(chapter: LectureDraft) -> str:
     lines.extend(["", "## 来源", ""])
     lines.extend(f"- {x}" for x in chapter.source_ranges)
     if chapter.warnings:
-        lines.extend(["", "## 整理说明", ""])
-        lines.extend(f"- {x}" for x in chapter.warnings)
+        lines.extend(["", "## 教师备注", ""])
+        for group in group_warnings(chapter.warnings):
+            lines.append(f"### {group['label']}")
+            lines.extend(f"- {x}" for x in group["items"])
+            lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 

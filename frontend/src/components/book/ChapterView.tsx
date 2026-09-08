@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { ComponentBlock } from './ComponentBlock'
+import { MathText } from '@/components/math/MathText'
 import { sanitizeList } from '@/lib/sanitize'
 import type { LectureDraft } from '@/types'
 
@@ -21,9 +22,36 @@ function List({ items, className = '' }: { items: string[]; className?: string }
   return (
     <ul className={`my-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed ${className}`}>
       {items.map((item, i) => (
-        <li key={i}>{item}</li>
+        <li key={i}>
+          <MathText text={item} />
+        </li>
       ))}
     </ul>
+  )
+}
+
+function ConceptList({ items }: { items: string[] }) {
+  if (!items.length) return null
+  return (
+    <dl className="my-2 space-y-2">
+      {items.map((item, i) => {
+        const idx = item.indexOf('：')
+        const term = idx >= 0 ? item.slice(0, idx) : item
+        const def = idx >= 0 ? item.slice(idx + 1) : ''
+        return (
+          <div key={i} className="rounded-md border bg-muted/30 px-3 py-2">
+            <dt className="text-sm font-semibold">
+              <MathText text={term} />
+            </dt>
+            {def && (
+              <dd className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                <MathText text={def} />
+              </dd>
+            )}
+          </div>
+        )
+      })}
+    </dl>
   )
 }
 
@@ -43,7 +71,9 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       {chapter.bridge_from_prev && (
         <>
           <SectionHeading>承上</SectionHeading>
-          <p className="text-sm leading-relaxed text-muted-foreground">{chapter.bridge_from_prev}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            <MathText text={chapter.bridge_from_prev} />
+          </p>
         </>
       )}
 
@@ -55,7 +85,9 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       )}
 
       <SectionHeading>本章导读</SectionHeading>
-      <p className="whitespace-pre-wrap text-sm leading-relaxed">{chapter.overview}</p>
+      <p className="text-sm leading-relaxed whitespace-pre-wrap">
+        <MathText text={chapter.overview} />
+      </p>
 
       {chapter.key_points.length > 0 && (
         <>
@@ -67,7 +99,7 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       {chapter.concepts.length > 0 && (
         <>
           <SectionHeading>核心概念</SectionHeading>
-          <List items={chapter.concepts} />
+          <ConceptList items={chapter.concepts} />
         </>
       )}
 
@@ -86,7 +118,9 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
             {section.emphasis === 'key' && <Badge variant="secondary">重点</Badge>}
             {section.emphasis === 'review' && <Badge variant="outline">回顾</Badge>}
           </h3>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{section.content}</p>
+          <p className="mt-2 text-sm leading-relaxed whitespace-pre-wrap">
+            <MathText text={section.content} />
+          </p>
           {section.components.map((comp, j) => (
             <ComponentBlock key={j} component={comp} />
           ))}
@@ -118,7 +152,9 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       {chapter.bridge_to_next && (
         <>
           <SectionHeading>启下</SectionHeading>
-          <p className="text-sm leading-relaxed text-muted-foreground">{chapter.bridge_to_next}</p>
+          <p className="text-sm leading-relaxed text-muted-foreground">
+            <MathText text={chapter.bridge_to_next} />
+          </p>
         </>
       )}
 
@@ -126,13 +162,6 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
         <>
           <SectionHeading>来源</SectionHeading>
           <List items={chapter.source_ranges} className="text-xs text-muted-foreground" />
-        </>
-      )}
-
-      {chapter.warnings.length > 0 && (
-        <>
-          <SectionHeading>整理说明</SectionHeading>
-          <List items={chapter.warnings} className="text-xs text-muted-foreground" />
         </>
       )}
     </article>

@@ -181,6 +181,7 @@ class QualityReport(BaseModel):
     missing_source_count: int
     component_count: int
     warnings: list[str] = Field(default_factory=list)
+    warning_groups: list[dict] = Field(default_factory=list)
 
 
 class RunEvent(BaseModel):
