@@ -73,7 +73,8 @@ export function RunDetailPage() {
  <header className="flex items-start justify-between gap-4">
  <div>
  <Link to="/runs" className="inline-flex items-center gap-2 text-sm text-[#718183]"><ArrowLeft size={15} />返回运行中心</Link>
- <h1 className="mt-5 text-[25px] font-semibold">课程 {run.course_id} · 课程教辅书</h1>
+ <h1 className="mt-5 text-[25px] font-semibold">{run.dataset_name || '资料集生成'}</h1>
+ <p className="mt-2 font-mono text-xs text-[#819092]">运行 {run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id.slice(-12)}`}{run.course_id && ` · 课程 ${run.course_id}`}</p>
  <p className="mt-2 font-mono text-xs text-[#819092]">{run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id}`}</p>
  </div>
  <div className="flex gap-2">
@@ -199,10 +200,17 @@ export function RunDetailPage() {
  <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
  <h2 className="text-sm font-semibold">运行信息</h2>
  <dl className="mt-4 space-y-3 text-xs">
- {[['状态', run.status], ['工作流', run.preset_id], ['课程 ID', run.course_id], ['更新时间', run.updated_at ? new Date(run.updated_at).toLocaleString() : '—']].map(([label, value]) => (
- <div key={label} className="flex justify-between gap-4">
+ {[
+ ['状态', run.status],
+ ['工作流', run.preset_id],
+ ...(run.course_id ? [['课程 ID', run.course_id]] : []),
+ ['更新时间', run.updated_at ? new Date(run.updated_at).toLocaleString() : '—'],
+ ['资料集 ID', run.dataset_id.slice(-12)],
+ ['运行 ID', run.run_id],
+].map(([label, value]) => (
+ <div key={String(label)} className="flex justify-between gap-4">
  <dt className="text-[#718183]">{label}</dt>
- <dd className="text-right font-medium">{value}</dd>
+ <dd className="text-right font-mono text-[11px]">{value}</dd>
  </div>
  ))}
  </dl>
