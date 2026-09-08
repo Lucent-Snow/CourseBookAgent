@@ -16,10 +16,13 @@ def _phase(state: JobState) -> str:
         return "attention"
     if state.status == "completed":
         return "completed"
+    # Map by message keywords in the order the pipeline emits them.
     message = f"{state.step} {state.message}"
-    if "规划" in message or "压缩" in message or "字幕" in message:
-        return "prepare"
-    if "合成" in message:
+    if "解析" in message or "描述" in message:
+        return "describe"
+    if "规划" in message or "Tag" in message or "组装" in message:
+        return "plan"
+    if "合成" in message or "渲染" in message:
         return "synthesize"
     if "质量" in message or "审校" in message:
         return "quality"
