@@ -27,7 +27,7 @@ def _render_component(comp: ChapterComponent) -> str:
         return "\n".join(lines) + "\n"
 
     if comp.component_type == "warning":
-        lines = [f"> **【易错】**{title}" if title else "> **【易错】**"]
+        lines = [f"> ⚠️ **【易错】**{title}" if title else "> ⚠️ **【易错】**"]
         if body:
             lines.append(f"> {body}")
         return "\n".join(lines) + "\n"
