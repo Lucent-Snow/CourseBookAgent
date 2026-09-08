@@ -23,6 +23,13 @@ class LLMError(RuntimeError):
         self.retryable = retryable
 
 
+_THINK_PATTERNS = [
+    re.compile(r"<think>.*?</think>", re.DOTALL),
+    re.compile(r"<reasoning>.*?</reasoning>", re.DOTALL),
+    re.compile(r"<analysis>.*?</analysis>", re.DOTALL),
+]
+
+
 class LLMClient:
     def __init__(self, max_retries: int = 3, timeout: float | None = None, transport=None):
         self.max_retries = max(1, max_retries)
@@ -56,6 +63,7 @@ class LLMClient:
                                    "authentication" if response.status_code in {401, 403} else "request")
                 body = response.json()
                 content = _extract_message_text(body)
+                content = _strip_reasoning_blocks(content)
                 if not content.strip():
                     raise LLMError("模型未返回最终内容", "empty_response", True)
                 return content.strip()
@@ -133,31 +141,81 @@ def _extract_message_text(body: dict[str, Any]) -> str:
     return ""
 
 
-def extract_json_object(text: str) -> dict[str, Any]:
-    text = text.strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
-    candidate = fenced.group(1) if fenced else text
-    if not candidate.lstrip().startswith("{"):
-        start, end = candidate.find("{"), candidate.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("no JSON object found")
-        candidate = candidate[start : end + 1]
-    for attempt in _json_candidates(candidate):
-        try:
-            parsed = json.loads(attempt)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
+def _strip_reasoning_blocks(text: str) -> str:
+    cleaned = text
+    for pattern in _THINK_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _balanced_json_candidates(text: str) -> list[str]:
+    """Try every brace-balanced prefix starting at the first '{' and ending at
+    the matching '}'.  This tolerates trailing prose after the JSON and
+    tolerates the response being truncated mid-JSON (we still get the
+    longest well-balanced prefix that parses)."""
+    candidates: list[str] = []
+    n = len(text)
+    for start in range(n):
+        if text[start] != "{":
             continue
+        depth = 0
+        in_string = False
+        escape = False
+        for end in range(start, n):
+            ch = text[end]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start:end + 1])
+                    break
+        if not candidates:
+            continue
+    return candidates
+
+
+def extract_json_object(text: str) -> dict[str, Any]:
+    text = _strip_reasoning_blocks(text).strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1)
+        for attempt in _json_candidates(candidate):
+            try:
+                parsed = json.loads(attempt)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
+    candidates = _balanced_json_candidates(text)
+    if not candidates:
+        raise ValueError("no JSON object found")
+    # Prefer the longest balanced candidate that parses, since JSON is
+    # usually at the end of the response with prose before/after.
+    candidates.sort(key=len, reverse=True)
+    for cand in candidates:
+        for attempt in _json_candidates(cand):
+            try:
+                parsed = json.loads(attempt)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                continue
     raise ValueError("no JSON object found")
 
 
 def _json_candidates(candidate: str) -> list[str]:
     raw = candidate.strip()
-    # Strip common trailing prose after the final closing brace.
-    end = raw.rfind("}")
-    if end > 0:
-        raw = raw[: end + 1]
     cleaned = re.sub(r",\s*([}\]])", r"\1", raw)  # trailing commas
     cleaned = cleaned.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
-    return [raw, cleaned]
+    return [cleaned]
