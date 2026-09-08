@@ -137,6 +137,52 @@ class AgentProjection(BaseModel):
     output_available: bool = False
 
 
+class ResourceProjection(BaseModel):
+    """One row of the per-resource transparency table."""
+    revision_id: str
+    resource_id: str
+    title: str
+    kind: str
+    provider: str
+    # Description stage
+    description_status: Literal["pending", "running", "done", "failed"] = "pending"
+    description_text: str = ""
+    description_topic: str = ""
+    description_scope: str = ""
+    description_suggested_role: str = ""
+    # Tag stage (chapter tags as list of chapter_id; "__global__" if global;
+    # [] if no tag)
+    tag_kind: Literal["chapter", "global", "none"] = "none"
+    tag_chapter_ids: list[str] = Field(default_factory=list)
+
+
+class StageProjection(BaseModel):
+    """Run-level stage counters so the front-end can render a step indicator."""
+    parsed: int = 0
+    parsed_total: int = 0
+    described: int = 0
+    described_total: int = 0
+    planned: bool = False
+    plan_summary: dict = Field(default_factory=dict)
+    assembled: int = 0
+    assembled_total: int = 0
+    chapters_succeeded: int = 0
+    chapters_failed: int = 0
+    chapters_total: int = 0
+    synthesized: bool = False
+    rendered: bool = False
+
+
+class QualityReport(BaseModel):
+    chapter_id: str
+    title: str
+    section_count: int
+    source_revision_ids: list[str]
+    missing_source_count: int
+    component_count: int
+    warnings: list[str] = Field(default_factory=list)
+
+
 class RunProjection(BaseModel):
     run_id: str
     course_id: str
@@ -152,6 +198,9 @@ class RunProjection(BaseModel):
     failed_agents: int = 0
     total_agents: int = 0
     agents: list[AgentProjection] = Field(default_factory=list)
+    resources: list[ResourceProjection] = Field(default_factory=list)
+    stage: StageProjection = Field(default_factory=StageProjection)
+    quality: list[QualityReport] = Field(default_factory=list)
     artifact_available: bool = False
 
 
