@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, Eye, File, FileText, Layers, Presentation, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -27,7 +27,7 @@ export function DatasetDetailPage() {
  const [preview, setPreview] = useState<{ title: string; text: string } | null>(null)
  const [showImport, setShowImport] = useState(false)
 
- async function load() {
+ const load = useCallback(async () => {
  try {
  const [detailData, runsData] = await Promise.all([
  productApi.dataset(datasetId),
@@ -36,9 +36,9 @@ export function DatasetDetailPage() {
  setDetail(detailData)
  setRuns(runsData.data ?? [])
  } catch (err) { setError((err as Error).message) }
- }
+ }, [datasetId])
 
- useEffect(() => { void load() }, [datasetId])
+ useEffect(() => { void load() }, [load])
 
  async function upload(files: FileList | null) {
  if (!files?.length) return

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { api } from '@/api/client'
@@ -93,7 +93,7 @@ export function WorkspacePage() {
     }
   }, [busy])
 
-  function recordTiming(current: number) {
+  const recordTiming = useCallback((current: number) => {
     const prev = lastCurrentRef.current
     setChapterTimes((prevTimes) => {
       const next = { ...prevTimes }
@@ -104,9 +104,9 @@ export function WorkspacePage() {
       return next
     })
     lastCurrentRef.current = current
-  }
+  }, [])
 
-  function poll(jobId: string, genCourseId: string) {
+  const poll = useCallback((jobId: string, genCourseId: string) => {
     void (async () => {
       try {
         const job = await api.job(jobId)
@@ -140,7 +140,7 @@ export function WorkspacePage() {
         setError((err as Error).message)
       }
     })()
-  }
+  }, [navigate, recordTiming])
 
   async function generate() {
     setBusy(true)
