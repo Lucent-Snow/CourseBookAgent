@@ -5,6 +5,11 @@ from __future__ import annotations
 from coursebook_agent.models import CourseBook, LectureDraft, ChapterSection, ChapterComponent
 
 
+def _is_empty_chapter(chapter: LectureDraft) -> bool:
+    """判断章节是否为空/失败（无正文且导读极短）。"""
+    return not chapter.sections and len(chapter.overview.strip()) < 20
+
+
 def _render_component(comp: ChapterComponent) -> str:
     """Render a component instance to Markdown."""
     d = comp.data
@@ -165,11 +170,16 @@ def render_coursebook(book: CourseBook) -> str:
 
     lines.extend(["## 目录", ""])
     for chapter in book.chapters:
+        if _is_empty_chapter(chapter):
+            continue
         suffix = f"（{chapter.module_name}）" if chapter.module_name else ""
         lines.append(f"- [{chapter.title}](#{_anchor(chapter.title)}){suffix}")
     lines.append("")
 
     for chapter in book.chapters:
+        if _is_empty_chapter(chapter):
+            lines.extend(["---", "", f"# {chapter.title}", "", f"> **本讲内容待生成**", ""])
+            continue
         lines.extend(["---", "", render_chapter(chapter).strip(), ""])
 
     if book.key_point_index:

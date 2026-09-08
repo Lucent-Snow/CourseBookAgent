@@ -15,9 +15,11 @@ from coursebook_agent.agent.quality import (
     CourseProfile,
     deterministic_quality_gate,
     enforce_component_contract,
+    fact_verification_gate,
     llm_quality_gate,
     load_profile,
     sanitize_examples,
+    QualityResult,
     traceability_metrics,
 )
 from coursebook_agent.storage import atomic_write_text
@@ -246,6 +248,19 @@ class CourseBookPipeline:
                     quality_issues.append(f"[审校] LLM 审校失败：{exc}")
                     draft.quality_report["semantic"] = {
                         "accepted": False, "issues": [str(exc)], "metrics": {"review_status": "failed"}}
+
+            # 第四层：事实抽检（始终执行，抽样验证字幕支撑）
+            fact_result: QualityResult | None = None
+            try:
+                fact_result = await fact_verification_gate(draft, chunks, sample_size=4)
+                draft.quality_metrics["fact_check"] = fact_result.metrics
+                if not fact_result.accepted:
+                    quality_issues.extend(f"[事实抽检] {issue}" for issue in fact_result.issues)
+            except Exception as exc:
+                fact_result = QualityResult(False, [f"事实抽检异常：{exc}"], {"status": "failed"})
+                draft.quality_metrics["fact_check"] = {"status": "failed"}
+
+            draft.quality_report["fact_check"] = asdict(fact_result)
 
             # ── 重试判定 ──────────────────────────────────────────────────────
             if not quality_issues:

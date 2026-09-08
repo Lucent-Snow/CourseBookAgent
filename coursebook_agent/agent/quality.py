@@ -294,3 +294,107 @@ async def llm_quality_gate(
         issues.extend(f"ASR 待人工确认：{x}" for x in response["asr_uncertainties"])
         status = "human_review"
     return QualityResult(status == "pass" and not issues, issues, {"review_status": status, "raw": response})
+
+
+async def fact_verification_gate(
+    draft: LectureDraft,
+    chunks: list[TimedChunk],
+    sample_size: int = 4,
+    client: LLMClient | None = None,
+) -> QualityResult:
+    """从章节内容中抽样验证事实陈述是否在字幕中有支撑。
+
+    规则：
+    - 提取带数字/日期/人名的具体陈述
+    - 随机抽样 sample_size 条
+    - 用 LLM 验证每条是否在字幕 chunks 中有依据
+    - 如果编造比例 > 25%，打回重生成
+    """
+    import random
+
+    lecture_chunks = [c for c in chunks if c.lecture_id == draft.lecture_id]
+    if not lecture_chunks or not draft.sections:
+        return QualityResult(True, [], {"fact_check": "skipped", "reason": "no_chunks_or_sections"})
+
+    # 从各 section 内容中提取具体事实陈述（带数字/日期/人名的句子）
+    claims: list[tuple[str, str]] = []  # (heading, claim_text)
+    for section in draft.sections:
+        content = section.content.strip()
+        if not content:
+            continue
+        sentences = re.split(r'[。！？;；]', content)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 15:
+                continue
+            # 匹配含数字/日期/年份/人名的句子
+            if re.search(r'\d{4}', sentence) or re.search(r'\d+[.%万万亿百人]', sentence) or re.search(r'[一-龥]{2,4}[年|月|日]', sentence):
+                claims.append((section.heading, sentence))
+
+    if not claims:
+        return QualityResult(True, [], {"fact_check": "skipped", "reason": "no_factual_claims_found"})
+
+    # 随机抽样
+    n = min(sample_size, len(claims))
+    sampled = random.sample(claims, n)
+
+    evidence = "\n".join(f"[{c.chunk_id}] {c.text}" for c in lecture_chunks[:50])  # 截取前50个chunk避免超长
+
+    verify_items = []
+    for heading, claim in sampled:
+        verify_items.append(f"- 来自小节「{heading}」：「{claim}」")
+
+    prompt = f"""你是事实核验编辑。以下 {len(sampled)} 条具体事实陈述来自一篇教辅草稿。
+请逐条判断：这些陈述是否在提供的字幕证据中有明确支撑？
+
+【字幕证据（节选）】
+{evidence}
+
+【待核验事实】
+{"\n".join(verify_items)}
+
+只返回 JSON 数组，每个元素：
+{{"claim": "原文事实", "supported": true/false, "reason": "支持或不支持的理由（简短）"}}
+
+规则：
+- supported=true 仅当字幕证据中明确提到了该事实或与之等价的内容
+- 如果事实是具体数字/年份/人名/事件，字幕中必须有对应信息
+- 如果字幕证据中没有相关信息，标记为 supported=false
+- 不要因为是合理的常识就判为 supported"""
+
+    llm = client or LLMClient(max_retries=1, timeout=120)
+    try:
+        response = await llm.complete_json(
+            "你是只依据提供证据做核验的编辑。只输出 JSON 数组。",
+            prompt,
+            max_tokens=2000,
+        )
+    except Exception as exc:
+        return QualityResult(False, [f"事实抽检失败：{exc}"], {"fact_check": "failed"})
+
+    if not isinstance(response, list):
+        return QualityResult(False, ["事实抽检返回格式异常"], {"fact_check": "failed"})
+
+    unsupported = [item for item in response if not item.get("supported", True)]
+    fabricate_ratio = len(unsupported) / max(1, len(response))
+
+    issues = []
+    for item in unsupported:
+        claim = item.get("claim", "")
+        reason = item.get("reason", "")
+        # 截断 claim 避免太长
+        if len(claim) > 80:
+            claim = claim[:80] + "..."
+        issues.append(f"事实无字幕支撑：「{claim}」（{reason}）")
+
+    accepted = fabricate_ratio <= 0.25
+    return QualityResult(
+        accepted,
+        issues,
+        {
+            "fact_check": "pass" if accepted else "fail",
+            "sampled": len(response),
+            "unsupported": len(unsupported),
+            "fabricate_ratio": round(fabricate_ratio, 2),
+        },
+    )

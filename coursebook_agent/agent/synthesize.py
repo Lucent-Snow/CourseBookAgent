@@ -105,7 +105,7 @@ async def synthesize_book(
         chapters=ordered,
         glossary=glossary[:80],
         source_index=source_index,
-        warnings=[str(x) for x in (data.get("warnings") or []) if str(x).strip()],
+        warnings=[str(x) for x in (data.get("warnings") or []) if str(x).strip()] + fallback.warnings,
         preface=preface,
         how_to_use=how_to_use,
         knowledge_map=knowledge_map,
@@ -121,6 +121,9 @@ async def synthesize_book(
 def synthesize_book_fallback(course: Course, chapters: list[LectureDraft], plan: BookPlan | None = None) -> CourseBook:
     """Deterministic book layer from chapter fields."""
     title = plan.book_title if plan else f"{course.name}：复习教辅"
+
+    # 全书一致性检查
+    consistency_warnings, consistency_notes = _check_book_consistency(chapters)
 
     knowledge_map = []
     if plan and plan.modules:
@@ -148,6 +151,9 @@ def synthesize_book_fallback(course: Course, chapters: list[LectureDraft], plan:
     continuity_notes = list(plan.continuity_notes) if plan and plan.continuity_notes else []
     if guest_titles:
         continuity_notes.append("专题章（" + "；".join(guest_titles) + "）可后读。")
+
+    # 合并一致性检查的连续性提示
+    continuity_notes.extend(consistency_notes)
 
     preface_parts = [
         plan.book_positioning if plan and plan.book_positioning else f"本书把《{course.name}》课堂讲解整理为可连续复习的教辅文本。",
@@ -179,6 +185,7 @@ def synthesize_book_fallback(course: Course, chapters: list[LectureDraft], plan:
         learning_path=learning_path,
         key_point_index=key_points,
         continuity_notes=continuity_notes,
+        warnings=consistency_warnings,
         quality_notes=[f"共 {len(chapters)} 章，core={sum(1 for c in chapters if c.chapter_role=='core')} guest={sum(1 for c in chapters if c.chapter_role=='guest')}"],
         components=default_components,
         render_config=plan.render_config if plan else {},
@@ -195,3 +202,63 @@ def _fallback_glossary(chapters: list[LectureDraft]) -> list[str]:
                 seen.add(name)
                 glossary.append(item)
     return glossary
+
+
+def _check_book_consistency(chapters: list[LectureDraft]) -> tuple[list[str], list[str]]:
+    """全书一致性检查：检测重复章节、编号断裂、承上启下引用。
+    
+    Returns: (warnings, continuity_notes)
+    """
+    warnings: list[str] = []
+    notes: list[str] = []
+
+    if not chapters:
+        return warnings, notes
+
+    # 1. 检测重复的 lecture_id
+    seen_ids: dict[str, int] = {}
+    for i, ch in enumerate(chapters):
+        lid = ch.lecture_id
+        if lid in seen_ids:
+            warnings.append(f'重复的章节：第 {i + 1} 讲与第 {seen_ids[lid]} 讲使用相同的 lecture_id（{lid}）')
+        else:
+            seen_ids[lid] = i + 1
+
+    # 2. 检测空/失败的章节
+    failed_indices = []
+    for i, ch in enumerate(chapters):
+        # 判断为空/失败：没有 sections 且 overview 很短
+        has_content = bool(ch.sections) or len(ch.overview.strip()) > 20
+        has_warning_only = len(ch.warnings) > 0 and not ch.sections
+        if not has_content:
+            failed_indices.append(i)
+            warnings.append(f'第 {i + 1} 讲（{ch.title}）内容为空，已从目录排除')
+
+    # 3. 检测章节编号断裂
+    if len(failed_indices) > 0 and len(failed_indices) < len(chapters):
+        note_parts = []
+        for idx in failed_indices:
+            note_parts.append(f'第 {idx + 1} 讲')
+        notes.append(f'{"、".join(note_parts)} 生成失败，阅读时请跳过。')
+
+    # 4. 检测「承上」引用的前一讲是否真的有内容
+    for i, ch in enumerate(chapters):
+        if ch.bridge_from_prev and i > 0:
+            prev = chapters[i - 1]
+            if not prev.sections and len(prev.overview.strip()) < 20:
+                notes.append(f'第 {i + 1} 讲（{ch.title}）的「承上」引用了第 {i} 讲，但第 {i} 讲内容为空。')
+
+    # 5. 检测「启下」引用的后一讲是否真的有内容
+    for i, ch in enumerate(chapters):
+        if ch.bridge_to_next and i < len(chapters) - 1:
+            nxt = chapters[i + 1]
+            if not nxt.sections and len(nxt.overview.strip()) < 20:
+                notes.append(f'第 {i + 1} 讲（{ch.title}）的「启下」引用了第 {i + 2} 讲，但第 {i + 2} 讲内容为空。')
+
+    # 6. 检测标题只有日期格式（缺乏描述性标题）
+    import re
+    for i, ch in enumerate(chapters):
+        if ch.sections and re.match(r'^第\s*\d+\s*[讲章节][:：]?\s*\d{4}-\d{2}-\d{2}', ch.title):
+            warnings.append(f'第 {i + 1} 讲标题缺少描述性内容（{ch.title}），建议补充。')
+
+    return warnings, notes
