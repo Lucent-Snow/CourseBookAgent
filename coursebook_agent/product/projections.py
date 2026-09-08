@@ -90,7 +90,7 @@ def _phase(state: JobState) -> str:
         if getattr(stage, "described_total", 0) and getattr(stage, "described", 0) < getattr(stage, "described_total", 0):
             return "describe"
     message = f"{state.step} {state.message}"
-    if "解析" in message or "描述" in message:
+    if "解析" in message or "描述" in message or "description" in message.lower():
         return "describe"
     if "规划" in message or "Tag" in message or "组装" in message:
         return "plan"
