@@ -1,34 +1,78 @@
-"""End-to-end orchestration with four-layer book generation."""
+"""End-to-end orchestration with the new multi-resource book generation flow.
+
+The legacy 4-layer pipeline is preserved for backward compatibility
+(``generate_course``).  ``generate_course_v2`` implements the workflow
+described in ``docs/WORKFLOW.md``:
+
+    snapshot -> parse -> describe -> main-Agent plan + Tag -> assemble
+    chapter contexts -> one chapter Agent per chapter -> quality gate ->
+    synthesise -> render.
+
+The Tag is a context-affinity label assigned by the main Agent:
+``chapter`` resources enter one or more specific chapters; ``global``
+resources enter every chapter's global context; resources without a tag
+are not used in the run.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
-from coursebook_agent.agent.chapter import _apply_statistical_guardrails, _collect_ranges, _build_transcript_links, generate_chapter
+from coursebook_agent.agent.chapter import (
+    _apply_statistical_guardrails,
+    _collect_ranges,
+    _build_transcript_links,
+    generate_chapter,
+    generate_chapter_v2,
+    generate_chapter_v2_with_fallback,
+)
+from coursebook_agent.agent.describe import describe_with_cache
 from coursebook_agent.agent.digest import compress_lecture, compress_lecture_from_cache
-from coursebook_agent.agent.editor import load_plan, plan_book, save_plan, heuristic_book_plan
+from coursebook_agent.agent.editor import (
+    heuristic_book_plan,
+    heuristic_book_plan_v2,
+    load_plan,
+    plan_book,
+    plan_book_v2,
+    save_plan,
+)
 from coursebook_agent.agent.llm import LLMClient
 from coursebook_agent.agent.quality import (
     CourseProfile,
+    QualityResult,
     deterministic_quality_gate,
     enforce_component_contract,
     fact_verification_gate,
     llm_quality_gate,
     load_profile,
     sanitize_examples,
-    QualityResult,
     traceability_metrics,
 )
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.agent.synthesize import synthesize_book, synthesize_book_fallback
 from coursebook_agent.config import config
-from coursebook_agent.models import BookPlan, CourseBook, LectureDraft
+from coursebook_agent.models import (
+    BookPlan,
+    Course,
+    CourseBook,
+    LectureDraft,
+    ParsedResource,
+    ResourceDescription,
+)
+from coursebook_agent.assembly.assemble import assemble_chapter_contexts
 from coursebook_agent.preprocess.transcript import chunk_segments, clean_segments, apply_canonical_terms
+from coursebook_agent.product.snapshot_loader import (
+    load_course_resources_from_zhiyun,
+    load_snapshot,
+)
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunSource
+
+logger = logging.getLogger(__name__)
 
 
 class CourseBookPipeline:
@@ -248,7 +292,6 @@ class CourseBookPipeline:
                     quality_issues.append(f"[审校] LLM 审校失败：{exc}")
                     draft.quality_report["semantic"] = {
                         "accepted": False, "issues": [str(exc)], "metrics": {"review_status": "failed"}}
-
             # 第四层：事实抽检（始终执行，抽样验证字幕支撑）
             fact_result: QualityResult | None = None
             try:
@@ -540,3 +583,210 @@ def _chapter_summary(index: int, chapter: LectureDraft) -> dict:
         "common_mistakes": len(chapter.common_mistakes),
         "warnings": chapter.warnings[:5],
     }
+
+
+# ── v2 multi-resource orchestration ─────────────────────────────────────────
+
+
+def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) -> dict:
+    return {
+        "chapter_id": chapter.chapter_id,
+        "title": chapter.title,
+        "status": "failed" if failed else "done",
+        "module_name": chapter.module_name,
+        "chapter_role": chapter.chapter_role,
+        "sections": [
+            {"heading": s.heading, "chars": len(s.content), "components": len(s.components)}
+            for s in chapter.sections
+        ],
+        "total_chars": sum(len(s.content) for s in chapter.sections),
+        "components": sum(len(s.components) for s in chapter.sections),
+        "learning_goals": len(chapter.learning_goals),
+        "key_points": len(chapter.key_points),
+        "common_mistakes": len(chapter.common_mistakes),
+        "warnings": chapter.warnings[:5],
+        "used_resource_ids": chapter.used_resource_ids,
+    }
+
+
+class MultiResourceCourseBookPipeline(CourseBookPipeline):
+    """Pipeline that drives the v2 multi-resource workflow.
+
+    Backed by the legacy CourseBookPipeline for shared infra (plans_dir,
+    intermediate_dir, renderer, profile loading, synthesise).  Adds the
+    description/main-Agent/assemble stages.
+    """
+
+    def _description_cache_dir(self) -> Path:
+        path = config.data_dir / "intermediate" / "descriptions"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _plan_path_for(self, snapshot_id: str) -> Path:
+        return self.plans_dir / f"bookplan-{snapshot_id}.json"
+
+    async def _describe_all(
+        self, parsed: list[ParsedResource]
+    ) -> list[ResourceDescription]:
+        cache_dir = self._description_cache_dir()
+        sem = asyncio.Semaphore(4)
+
+        async def one(p: ParsedResource) -> ResourceDescription:
+            async with sem:
+                return await describe_with_cache(p, cache_dir=cache_dir)
+
+        return await asyncio.gather(*[one(p) for p in parsed])
+
+    async def run(
+        self,
+        *,
+        snapshot_id: str | None = None,
+        course_id: str | None = None,
+        regenerate: bool = False,
+        review: bool = True,
+        concurrency: int = 3,
+        progress=None,
+        chapter_indices: list[int] | None = None,
+    ) -> CourseBook:
+        """Top-level entry.  Either snapshot_id or course_id must be provided.
+
+        Returns the produced CourseBook and persists:
+        - ``intermediate/descriptions/description-<rev>.json``
+        - ``plans/bookplan-<snapshot_id>.json``
+        - ``intermediate/chapter-<chapter_id>.json``
+        - ``intermediate/coursebook-<course_id>.json``
+        - ``output/coursebook-<course_id>.md``
+        """
+        if not snapshot_id and not course_id:
+            raise ValueError("snapshot_id 或 course_id 必须提供其一")
+
+        loaded = await asyncio.to_thread(load_snapshot, snapshot_id) if snapshot_id else None
+        if loaded is None:
+            assert course_id is not None
+            loaded = await asyncio.to_thread(load_course_resources_from_zhiyun, course_id)
+        course = loaded.course or (Course(course_id=course_id, name=f"课程 {course_id}") if course_id else Course(course_id="unknown", name="未命名课程"))
+        parsed = loaded.resources
+        if not parsed:
+            raise ValueError("本次运行没有任何可解析的资料")
+
+        if progress:
+            progress(0, 5, f"描述 {len(parsed)} 份资料")
+
+        descriptions = await self._describe_all(parsed)
+
+        if progress:
+            progress(1, 5, f"主 Agent 规划全书（{len(descriptions)} 份资料）")
+
+        plan_path = self._plan_path_for(snapshot_id) if snapshot_id else self.plan_path(course.course_id)
+        if plan_path.exists() and not regenerate:
+            plan = load_plan(plan_path)
+        else:
+            try:
+                plan = await plan_book_v2(
+                    course, descriptions,
+                    client=LLMClient(max_retries=3, timeout=180),
+                    snapshot_id=snapshot_id,
+                )
+            except Exception as exc:
+                logger.warning("plan_book_v2 failed (%s); using heuristic v2 fallback", exc)
+                plan = heuristic_book_plan_v2(course, descriptions, snapshot_id=snapshot_id)
+                plan.warnings.append(f"主 Agent 不可用，已使用按资料逐章的启发式回退：{exc}")
+            save_plan(plan, plan_path)
+
+        if not plan.chapters:
+            raise ValueError("主 Agent 未产出任何章节")
+
+        # Restrict to a subset of chapters if asked.
+        selected = set(chapter_indices or list(range(1, len(plan.chapters) + 1)))
+        selected_contexts = [c for i, c in enumerate(plan.chapters, start=1) if i in selected]
+        plan_chapter_ids = [c.chapter_id for c in plan.chapters]
+
+        if progress:
+            progress(2, 5, f"按 Tag 组装 {len(selected_contexts)} 个章节上下文")
+
+        contexts = assemble_chapter_contexts(
+            plan, parsed, course=course, snapshot_id=snapshot_id,
+        )
+        # Re-order contexts to match plan order, then filter.
+        order_index = {c.chapter.chapter_id: i for i, c in enumerate(contexts)}
+        contexts.sort(key=lambda c: order_index.get(c.chapter.chapter_id, 1_000_000))
+        contexts = [c for c in contexts if c.chapter.chapter_id in {sc.chapter_id for sc in selected_contexts}]
+
+        if progress:
+            progress(3, 5, f"并发生成 {len(contexts)} 个章节")
+
+        sem = asyncio.Semaphore(max(1, concurrency))
+        results: list[LectureDraft] = []
+        failures: list[str] = []
+        done = 0
+        total = len(contexts)
+
+        async def gen_one(ctx) -> LectureDraft:
+            async with sem:
+                chapter_id = ctx.chapter.chapter_id
+                draft_path = self.intermediate_dir / f"chapter-{chapter_id}.json"
+                if draft_path.exists() and not regenerate:
+                    try:
+                        existing = LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
+                        if existing.chapter_id == chapter_id:
+                            return existing
+                    except (OSError, ValueError):
+                        pass
+                prev_draft = None
+                idx = next((i for i, c in enumerate(contexts) if c.chapter.chapter_id == chapter_id), None)
+                if idx is not None and idx > 0:
+                    prev_id = contexts[idx - 1].chapter.chapter_id
+                    prev_path = self.intermediate_dir / f"chapter-{prev_id}.json"
+                    if prev_path.exists():
+                        try:
+                            prev_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError):
+                            pass
+                try:
+                    draft = await generate_chapter_v2_with_fallback(
+                        ctx, previous_draft=prev_draft, review=review,
+                    )
+                    atomic_write_text(draft_path, draft.model_dump_json(indent=2))
+                    return draft
+                except Exception as exc:
+                    failed = LectureDraft(
+                        chapter_id=chapter_id,
+                        title=ctx.chapter.book_title,
+                        overview="本章生成失败。",
+                        warnings=[str(exc)],
+                        used_resource_ids=[r.revision_id for r in ctx.chapter_resources] + [r.revision_id for r in ctx.global_resources],
+                    )
+                    atomic_write_text(draft_path, failed.model_dump_json(indent=2))
+                    failures.append(f"章节 {chapter_id} 失败：{exc}")
+                    return failed
+
+        tasks = [gen_one(c) for c in contexts]
+        for coro in asyncio.as_completed(tasks):
+            draft = await coro
+            results.append(draft)
+            done += 1
+            if progress:
+                progress(3 + done / total, 5, f"已生成 {done}/{total} 章", _chapter_progress_summary(draft))
+
+        # Order results by chapter order in the plan.
+        order = {c.chapter_id: i for i, c in enumerate(plan.chapters)}
+        results.sort(key=lambda d: order.get(d.chapter_id, 1_000_000))
+
+        if progress:
+            progress(4, 5, "全书合成与渲染")
+
+        book = await synthesize_book(
+            course, results, plan=plan, client=LLMClient(max_retries=2, timeout=180),
+        )
+        book.warnings.extend(failures)
+        book.components = plan.components
+        book.render_config = plan.render_config
+        book.snapshot_id = snapshot_id
+
+        book_path = self.intermediate_dir / f"coursebook-{course.course_id}.json"
+        atomic_write_text(book_path, book.model_dump_json(indent=2))
+        atomic_write_text(config.output_dir / f"coursebook-{course.course_id}.md", render_coursebook(book))
+
+        if progress:
+            progress(5, 5, "课程教辅生成完成")
+        return book
