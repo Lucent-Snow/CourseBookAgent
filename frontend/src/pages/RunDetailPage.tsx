@@ -16,23 +16,49 @@ const STAGE_ORDER: Array<{ key: keyof StageProjection | 'rendered'; label: strin
  { key: 'rendered', label: '7. 渲染并输出', hint: '输出最终 Markdown' },
 ]
 
-function stageIndex(stage: StageProjection): number {
- if (!stage.parsed_total && !stage.described_total) return -1
- if (!stage.rendered) return -1
- const counts: Array<boolean> = [
- stage.parsed === stage.parsed_total && stage.parsed_total > 0,
- stage.described === stage.described_total && stage.described_total > 0,
- stage.planned,
- stage.assembled === stage.assembled_total && stage.assembled_total > 0,
- stage.chapters_succeeded + stage.chapters_failed === stage.chapters_total && stage.chapters_total > 0,
- stage.synthesized,
- stage.rendered,
- ]
- const idx = counts.findIndex((c) => !c)
- return idx === -1 ? counts.length - 1 : idx - 1
+function stageIndex(stage: StageProjection, phase: string, status: string): number {
+ if (status === 'queued') return 0
+ if (status === 'completed' || stage.rendered) return 6
+ if (stage.synthesized) return 6
+ if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed < stage.chapters_total) return 4
+ if (stage.assembled_total > 0 && stage.assembled < stage.assembled_total) return 3
+ if (stage.planned) return 3
+ if (stage.described_total > 0 && stage.described < stage.described_total) return 1
+ if (stage.parsed_total > 0 && stage.parsed < stage.parsed_total) return 0
+ const phaseMap: Record<string, number> = { describe: 1, plan: 2, write: 4, synthesize: 5, quality: 5 }
+ return phaseMap[phase] ?? 0
+}
+
+const statusLabel: Record<string, string> = {
+ queued: '排队中', running: '运行中', completed: '已完成', partial: '部分完成',
+ failed: '失败', interrupted: '已中断', cancelled: '已取消',
+}
+
+const phaseLabel: Record<string, string> = {
+ queued: '等待运行', describe: '资料说明', plan: '规划与组装', write: '章节生成',
+ synthesize: '全书合成', quality: '质量检查', completed: '已完成', attention: '需要处理',
+}
+
+function statusTone(status: string): string {
+ if (status === 'completed') return 'bg-[#e9f5ee] text-[#27774a]'
+ if (status === 'failed' || status === 'partial' || status === 'interrupted') return 'bg-red-50 text-red-700'
+ if (status === 'running') return 'bg-[#e6f3f3] text-[#147d86]'
+ return 'bg-[#f1f3f3] text-[#718183]'
+}
+
+function elapsedSince(createdAt: string | null, now: number): string {
+ if (!createdAt) return '—'
+ const seconds = Math.max(0, Math.floor((now - new Date(createdAt).getTime()) / 1000))
+ const hours = Math.floor(seconds / 3600)
+ const minutes = Math.floor((seconds % 3600) / 60)
+ const rest = seconds % 60
+ return hours > 0 ? `${hours}小时 ${minutes}分` : `${minutes}分 ${String(rest).padStart(2, '0')}秒`
 }
 
 const agentTone = { pending: 'text-[#829092] bg-[#f1f3f3]', running: 'text-[#147d86] bg-[#e6f3f3]', succeeded: 'text-[#27774a] bg-[#e9f5ee]', failed: 'text-red-700 bg-red-50', blocked: 'text-amber-700 bg-amber-50' }
+const agentLabel: Record<keyof typeof agentTone, string> = {
+ pending: '等待中', running: '生成中', succeeded: '已完成', failed: '失败', blocked: '已阻塞',
+}
 
 const tagTone: Record<ResourceProjection['tag_kind'], string> = {
  chapter: 'text-[#147d86] bg-[#e6f3f3] border-[#b8dadb]',
@@ -53,6 +79,7 @@ export function RunDetailPage() {
  const { runId = '' } = useParams()
  const [run, setRun] = useState<RunProjection | null>(null)
  const [error, setError] = useState('')
+ const [now, setNow] = useState(() => Date.now())
 
  useEffect(() => {
  const refresh = () => { void productApi.run(runId).then(setRun).catch((err) => setError((err as Error).message)) }
@@ -61,12 +88,21 @@ export function RunDetailPage() {
  return () => window.clearInterval(timer)
  }, [runId])
 
+ useEffect(() => {
+ const timer = window.setInterval(() => setNow(Date.now()), 1000)
+ return () => window.clearInterval(timer)
+ }, [])
+
  async function action(kind: 'retry' | 'cancel') { try { if (kind === 'retry') await api.retryJob(runId); else await api.cancelJob(runId); } catch (err) { setError((err as Error).message) } }
 
  if (!run) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取运行状态…'}</div>
 
  const stage = run.stage
- const currentStageIdx = stageIndex(stage)
+ const currentStageIdx = stageIndex(stage, run.phase, run.status)
+ const completedStages = run.status === 'completed' ? STAGE_ORDER.length : Math.max(currentStageIdx, 0)
+ const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
+ const chapterDone = stage.chapters_succeeded + stage.chapters_failed
+ const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
 
  return (
  <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-8">
@@ -74,10 +110,13 @@ export function RunDetailPage() {
  <div>
  <Link to="/runs" className="inline-flex items-center gap-2 text-sm text-[#718183]"><ArrowLeft size={15} />返回运行中心</Link>
  <h1 className="mt-5 text-[25px] font-semibold">{run.dataset_name || '资料集生成'}</h1>
- <p className="mt-2 font-mono text-xs text-[#819092]">运行 {run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id.slice(-12)}`}{run.course_id && ` · 课程 ${run.course_id}`}</p>
- <p className="mt-2 font-mono text-xs text-[#819092]">{run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id}`}</p>
+ <p className="mt-2 font-mono text-xs text-[#819092]">运行 {run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id.slice(-12)}`}</p>
  </div>
  <div className="flex gap-2">
+ <span className={`inline-flex h-9 items-center rounded-full px-3 text-xs font-medium ${statusTone(run.status)}`}>
+ {run.status === 'running' && <span className="mr-2 size-1.5 animate-pulse rounded-full bg-current" />}
+ {statusLabel[run.status] || run.status}
+ </span>
  {['failed','partial','interrupted'].includes(run.status) && <Button variant="outline" onClick={() => void action('retry')}><RefreshCw size={14} />恢复或重试</Button>}
  {['queued','running'].includes(run.status) && <Button variant="outline" onClick={() => void action('cancel')}><Pause size={14} />停止运行</Button>}
  {run.artifact_available && <Button render={<Link to={`/artifacts/${run.run_id}`} />} className="bg-[#147d86] text-white">查看产物</Button>}
@@ -93,33 +132,45 @@ export function RunDetailPage() {
  <div className="flex items-center justify-between">
  <div>
  <h2 className="text-base font-semibold">{run.message || '运行准备中'}</h2>
- <p className="mt-1 text-xs text-[#718183]">当前阶段：{STAGE_ORDER[Math.max(currentStageIdx, 0)]?.label ?? '排队'}</p>
+ <p className="mt-1 text-xs text-[#718183]">当前阶段：{phaseLabel[run.phase] || STAGE_ORDER[Math.max(currentStageIdx, 0)]?.label || '排队'}</p>
  </div>
  <strong className="text-2xl text-[#147d86]">{run.progress}%</strong>
  </div>
  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e7eeee]">
  <div className="h-full rounded-full bg-[#147d86] transition-all" style={{ width: `${run.progress}%` }} />
  </div>
- <ol className="mt-4 grid grid-cols-7 gap-2">
+ <ol className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-7">
  {STAGE_ORDER.map((s, i) => {
- const done = i < currentStageIdx
+ const done = i < completedStages
  const active = i === currentStageIdx
  return (
- <li key={String(s.key)} className={`rounded-md px-2 py-2 text-[10px] ${done ? 'bg-[#e9f5ee] text-[#27774a]' : active ? 'bg-[#e6f3f3] text-[#147d86] border border-[#b8dadb]' : 'bg-[#f7f9f9] text-[#a6b3b4]'}`}>
+ <li key={String(s.key)} className={`rounded-md px-2 py-2 text-[10px] ${done ? 'bg-[#e9f5ee] text-[#27774a]' : active ? 'border border-[#b8dadb] bg-[#e6f3f3] text-[#147d86]' : 'bg-[#f7f9f9] text-[#a6b3b4]'}`}>
+ <div className="flex items-center gap-1.5"><span className="font-mono">{done ? '✓' : active ? '●' : `${i + 1}`}</span>
  <p className="truncate font-medium">{s.label}</p>
+ </div>
  <p className="mt-1 truncate text-[9px] opacity-80">{s.hint}</p>
  </li>
  )
  })}
  </ol>
- <div className="mt-4 grid grid-cols-3 gap-3 text-[11px] text-[#718183]">
+ <div className="mt-4 grid grid-cols-2 gap-3 text-[11px] text-[#718183] md:grid-cols-3">
  <span>已解析 {stage.parsed}/{stage.parsed_total} 份</span>
- <span>已描述 {stage.described}/{stage.described_total} 份</span>
+ <span>已描述 {stage.described}/{stage.described_total} 份 · {describedPercent}%</span>
  <span>{stage.planned ? `已规划 ${stage.plan_summary.chapter_count} 章` : '尚未规划'}</span>
  <span>已组装 {stage.assembled}/{stage.assembled_total} 章上下文</span>
- <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} succeeded</span>
+ <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} 完成 · {chapterPercent}%</span>
  <span>{stage.chapters_failed} 失败</span>
  </div>
+ </section>
+
+ <section className="grid gap-3 sm:grid-cols-4">
+ {[['整体进度', `${run.progress}%`, phaseLabel[run.phase] || '运行中'], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数']].map(([label, value, hint]) => (
+ <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
+ <p className="text-[11px] text-[#718183]">{label}</p>
+ <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>
+ <p className="mt-1 text-[10px] text-[#819092]">{hint}</p>
+ </div>
+ ))}
  </section>
 
  {/* ── Per-resource transparency ─────────────────────────────── */}
@@ -139,7 +190,7 @@ export function RunDetailPage() {
  {r.description_text && <p className="mt-2 text-xs leading-5 text-[#657678]">{r.description_text}</p>}
  {r.description_topic && <p className="mt-1 text-[10px] text-[#879496]">主题：{r.description_topic} · 范围：{r.description_scope} · 角色：{r.description_suggested_role}</p>}
  </div>
- <span className={`inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] ${describeStatusTone(r.description_status)}`}>{r.description_status}</span>
+ <span className={`inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] ${describeStatusTone(r.description_status)}`}>{describeStatusLabel(r.description_status)}</span>
  <div>
  <span className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[10px] ${tagTone[r.tag_kind]}`}>
  <Tag size={11} />{r.tag_kind === 'chapter' ? `章节 (${r.tag_chapter_ids.join(', ')})` : r.tag_kind === 'global' ? '全局资料' : '未参与本次生成'}
@@ -164,7 +215,7 @@ export function RunDetailPage() {
  <p className="text-sm font-medium truncate">{agent.label}</p>
  <p className="mt-1 truncate text-[11px] text-[#718183]">{agent.message}</p>
  </div>
- <span className={`rounded-full px-2 py-1 text-[10px] font-medium ${agentTone[agent.status]}`}>{agent.status}</span>
+ <span className={`rounded-full px-2 py-1 text-[10px] font-medium ${agentTone[agent.status]}`}>{agentLabel[agent.status]}</span>
  </div>
  ))}
  </div>
@@ -232,4 +283,13 @@ export function RunDetailPage() {
  </div>
  </div>
  )
+}
+
+function describeStatusLabel(s: ResourceProjection['description_status']) {
+ switch (s) {
+ case 'done': return '已完成'
+ case 'running': return '生成中'
+ case 'failed': return '失败'
+ default: return '等待中'
+ }
 }
