@@ -6,14 +6,13 @@ import { ChapterView } from './ChapterView'
 import type { CourseBook } from '@/types'
 
 function FrontMatter({ book }: { book: CourseBook }) {
+  const courseMeta = [book.course?.name, book.course?.teacher, book.course?.term].filter(Boolean).join(' · ')
   return (
     <div className="min-w-0">
       <h2 className="text-2xl font-bold leading-snug">{book.title}</h2>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {book.course.name}
-        {book.course.teacher ? ` · ${book.course.teacher}` : ''}
-        {book.course.term ? ` · ${book.course.term}` : ''}
-      </p>
+      {courseMeta && (
+        <p className="mt-2 text-sm text-muted-foreground">{courseMeta}</p>
+      )}
 
       {book.preface && (
         <div className="mt-8">

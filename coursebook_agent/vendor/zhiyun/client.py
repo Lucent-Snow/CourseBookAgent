@@ -522,14 +522,23 @@ class ZhiyunApi:
         sub_id: int | str,
         *,
         per_page: int = 100,
+        max_pages: int = 20,
     ) -> list[dict]:
+        """Fetch the PPT timeline for one lecture.
+
+        ``max_pages`` caps the pagination to avoid runaway requests when the
+        upstream endpoint keeps returning non-empty pages (observed during a
+        stress test where page index reached 26445 for a 16-lecture course).
+        A normal lecture has well under 100 slides, so 20 pages (2000 entries)
+        is a generous absolute ceiling.
+        """
         headers = self._headers.copy()
         headers["Referer"] = f"https://classroom.zju.edu.cn/livingroom?sub_id={sub_id}"
 
         timeline = []
         async with self._make_client() as client:
             page = 1
-            while True:
+            while page <= max_pages:
                 resp = await client.get(
                     self._url(URL_PPT),
                     headers=headers,

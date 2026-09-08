@@ -13,32 +13,60 @@
 | B5 | V2 只有 4 讲 pilot run，无全量 14 讲 run | 质量报告页只有试点数据 | 需跑全量 V2 |
 | B6 | LLM 配置从 `.env` 读，`save_llm_settings` 后内存 config 已刷新但 `LLM_TIMEOUT` 等未联动 | 设置页改动不完整 | 待完善 |
 | B7 | `synthesize_book` 单次大调用（14 章摘要喂给 LLM），JSON 返回不稳触发 repair 重试 | 合成阶段慢（约 2-3 分钟） | 待拆分或确定性回退 |
+| B8 | `tests/test_core.py::test_warning_render` 断言 `⚠️` emoji，但 `fix: 修复quality.py` 把渲染输出改为 `【易错】` | 测试在 main 上持续失败 | 待队友在他们的分支同步测试断言 |
+| B9 | 智云课件页只保存 PPT 时间轴图片元数据，未真正保存为可复用文件 | 无法离线重看 | 待评估（学在浙大已支持原始文件下载） |
+| B10 | `ZhiyunApi.get_ppt_timeline` 用 `while True` 翻页 `search-ppt`，无上限 | 上端曾观察到一门 16 讲的课被同一会话拉到 `page=26445`（远超真实规模），形成对智云 API 的无界翻页 | ✅ 已修（vendor/zhiyun/client.py：增加 `max_pages=20`，空 list 立刻 break） |
+| B11 | 智云 CAS `loginView.sendsms.error` 触发 SMS 二次验证（2026-09） | 无法用账号密码登录智云 / 学在浙大，需要短信码；服务端策略问题 | 未解决；当前用浏览器手登的 session 文件 `data/zhiyun/session.json` / `data/xuezai/session.json` 复用 cookie |
+| B12 | 学在浙大（Courses.zju.edu.cn）从这台机器公网 IP 直接访问失败，必须走 webvpn 或校园网；webvpn 入口又强制 SMS 二次验证 | 今天无法做学在浙大真实端到端 | 已留 webvpn 代码路径（`XueZaiSource(via_webvpn=True)`），但因 webvpn 自身需要 SMS 验证而无法直接走通；后续若拿到已登录的 webvpn cookie 可绕过 |
 
 ## 前端
 
 | # | 问题 | 影响 | 状态 |
 |---|---|---|---|
-| F1 | 书架 53 个课程卡片全量渲染，无搜索/筛选/分页 | 课程多时首屏卡顿、难找课 | 待加搜索 |
+| F1 | 资料库已加搜索栏；课程卡仍按 `updated_at` 排序，未做字母/教师/学期筛选 | 学期多时查找成本仍高 | 待加多维度筛选 |
 | F2 | `ReviewPage` 重生成用 `run_id.split('-')[0]` 推断 course_id | 脆弱，run_id 格式变化即错 | 后端应在 report 里返回 course_id |
 | F3 | `WorkspacePage` 的 courseId 从 query 读，课程不在下拉列表时无对应 option | 选课状态可能错配 | 待校验 |
 | F4 | 设置页保存 LLM 后 `api_key_set` 未刷新 | 显示状态不准确 | 待修 |
 | F5 | 阅读器时间戳仍是纯文本，未接播放器跳转 | 「来源可追溯」卖点未完全落地 | 需接智云播放器 |
 | F6 | V1 产物 `examples` 含 Python dict 残留（`{'example': ...}`） | 前端直接展示会暴露机器残留 | ✅ 已修（前端 sanitize + 后端 sanitize_examples） |
+| F7 | 工作流预设当前只有内置 `coursebook`，产品配置页不能选其他 profile | 资料形态变化时无法切换 | 待 ADR 009 决议落地 |
+| F8 | 资料集删除会级联删除快照、资源、blob | 没有"软删除"或回收站 | 行为当前可接受，待后续看 |
 
 ## 产品 / 体验
 
 | # | 问题 | 说明 |
 |---|---|---|
 | P1 | 首次使用引导缺失 | 未配置 LLM / 未登录智云时，应引导到设置页，而非静默失败 |
-| P2 | 书架无课程封面元信息 | 目前用渐变色块代替，真实封面/教师头像可增强辨识度 |
+| P2 | 资料库无课程封面元信息 | 目前用渐变色块代替，真实封面/教师头像可增强辨识度 |
 | P3 | 质量报告无「已确认」状态回读 | 确认写入 `review/confirm-*.json`，前端未回显已确认状态 |
+| P4 | 学在浙大课件已下载到资料集，但生成 prompt 还没引用 | 文档里需与生成核心协调 |
 
-## 完成标准回顾
+## 已验证基线（2026-09-07）
 
-- [x] 后端 7 个新接口（settings/runs/confirm/regenerate/cache/books 列表/llm test）
-- [x] 前端 5 页路由 + 全部连接后端
-- [x] 后端 24 测试通过
-- [x] 浏览器端到端验证 5 页 + 深度检查通过
-- [ ] B1/F6 机器残留修复（P0，影响成品质量）
-- [ ] F5 时间戳跳转（P0，卖点落地）
-- [ ] B5 全量 V2 run（P0，质量报告有数据）
+- [x] 后端 62 个 unittest 中 61 通过；唯一失败 `test_warning_render` 是 main 既有回归（见 B8），由队友修复。
+- [x] 前端 `npm run build` 通过；`npm run lint` 无错误，4 条警告来自保留的旧兼容页和 shadcn 组件。
+- [x] 浏览器端到端：资料库新建、TXT 上传解析、资料预览、快照创建、配置工作流、运行中心轮询、产物阅读全部验证通过。
+- [x] 智云课堂：通过统一身份认证后能在产品工作台选择我的课程、查看讲次、导入字幕与课件页。
+- [x] 学在浙大：导入对话框切换 provider 后立即触发新 API；账号状态与会话独立管理。
+
+## 仍需处理
+
+- [ ] B2 设置接口鉴权
+- [ ] B3 单讲重生成后的全书合成仍与全课生成共用 `generation_lock`
+- [ ] B5 全量质量报告数据
+- [ ] B6 设置保存后 `LLM_TIMEOUT` 等配置是否联动
+- [ ] B7 全书合成的大调用仍可能慢且触发 JSON 修复
+- [ ] B8 `test_warning_render` 测试断言修复（队友）
+- [ ] B9 智云课件页是否需要做原始文件下载（与学在浙大能力对齐）
+- [ ] F1 资料库多维度筛选
+- [ ] F2 质量报告不要从 `run_id` 推断 `course_id`
+- [ ] F3 选课状态校验
+- [ ] F4 设置页保存 LLM 后 `api_key_set` 刷新
+- [ ] F5 时间戳接智云播放器跳转
+- [ ] F7 工作流 profile 切换（ADR 009）
+- [ ] P1 首次使用引导
+- [ ] P3 质量报告回显章节确认状态
+- [ ] P4 学在浙大课件接入生成上下文
+
+> B1/F6 的机器残留修复已在当前代码和测试中体现；不要把它们继续列为未完成任务。
+| B10 | `ZhiyunApi.get_ppt_timeline` 用 `while True` 翻页 `search-ppt`，无上限 | 上端曾观察到一门 16 讲的课被同一会话拉到 `page=26445`（远超真实规模），形成对智云 API 的无界翻页 | ✅ 已修（vendor/zhiyun/client.py：增加 `max_pages=20`，空 list 立刻 break） |

@@ -1,8 +1,26 @@
-"""Core domain models for the subtitle-only coursebook workflow."""
+"""Core domain models for the multi-resource course-book workflow.
+
+Workflow stages are fixed. Each resource first yields a description. The
+editor (the main Agent) consumes all descriptions, decides chapters, the
+book's overall style and assigns a context-affinity Tag to every resource:
+
+- ``chapter`` Tag(s): the resource is fed into one or more chapter agents.
+- ``global`` Tag: the resource is fed into every chapter's global context.
+- no Tag: the resource stays in the library but is not used in this run.
+
+The downstream stage is therefore responsible only for assembling context
+by Tag and for invoking one chapter Agent per chapter — it must not
+re-invent the workflow.
+"""
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+
+ResourceTagKind = Literal["chapter", "global"]
 
 
 # ── 课程与讲次 ──────────────────────────────────────────────────────────────
@@ -107,8 +125,13 @@ class ComponentSpec(BaseModel):
 class ChapterInstruction(BaseModel):
     """The editor's writing instruction for one chapter."""
 
-    lecture_id: str
-    index: int
+    # Chapter identity is independent of any lecture index.  ``lecture_id``
+    # and ``index`` are retained for legacy compatibility (one chapter ==
+    # one lecture) but a chapter may legitimately cover zero lectures and be
+    # driven entirely by other resources.
+    chapter_id: str = ""
+    lecture_id: str = ""
+    index: int = 0
     book_title: str
     module_name: str
     chapter_role: str = "core"  # core | review | guest | admin | mixed
@@ -148,6 +171,17 @@ class BookPlan(BaseModel):
     # Rendering hints
     render_config: dict = Field(default_factory=dict)  # e.g. {"pdf_omit_timestamps": True}
     warnings: list[str] = Field(default_factory=list)
+    # ── v2 multi-resource fields ────────────────────────────────────────
+    # Map revision_id -> "global" or list[chapter_id]. Resources not present
+    # in this map are not used in this run (no tag).
+    resource_tags: dict[str, list[str]] = Field(default_factory=dict)
+    # Map chapter_id -> list[revision_id] that belong to that chapter.
+    # Derived from resource_tags by the assembler; not required from the LLM.
+    chapter_resources: dict[str, list[str]] = Field(default_factory=dict)
+    # List of revisions with "global" tag for chapter global context.
+    global_resource_ids: list[str] = Field(default_factory=list)
+    # Snapshot this plan was produced for (None for legacy course-id-only plans).
+    snapshot_id: str | None = None
 
 
 # ── 第3层：章节产物 ────────────────────────────────────────────────────────
@@ -169,7 +203,8 @@ class ChapterSection(BaseModel):
 
 
 class LectureDraft(BaseModel):
-    lecture_id: str
+    chapter_id: str = ""
+    lecture_id: str = ""
     title: str
     overview: str
     concepts: list[str] = Field(default_factory=list)
@@ -178,6 +213,8 @@ class LectureDraft(BaseModel):
     summary: list[str] = Field(default_factory=list)
     source_ranges: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    # v2: list of resource revision ids the chapter actually used.
+    used_resource_ids: list[str] = Field(default_factory=list)
     # Book-aware fields
     chapter_role: str = "core"
     learning_goals: list[str] = Field(default_factory=list)
@@ -205,6 +242,7 @@ class CourseBook(BaseModel):
     glossary: list[str] = Field(default_factory=list)
     source_index: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    snapshot_id: str | None = None
     # Book-level editorial layer
     preface: str = ""
     how_to_use: list[str] = Field(default_factory=list)
@@ -221,6 +259,8 @@ class CourseBook(BaseModel):
 class JobState(BaseModel):
     job_id: str
     course_id: str = ""
+    dataset_id: str = ""
+    dataset_name: str = ""
     status: str
     step: str
     progress: int = 0
@@ -232,6 +272,74 @@ class JobState(BaseModel):
     error_code: str | None = None
     request: dict = Field(default_factory=dict)
     events: list[dict] = Field(default_factory=list)
+
+
+# ── v2 multi-resource domain ─────────────────────────────────────────────────
+
+
+class ResourceLocation(BaseModel):
+    """Source location within a resource. Generic across subtitles, slides,
+    pages, and paragraphs."""
+
+    kind: Literal["transcript_segment", "slide", "page", "section", "row"]
+    start: int | None = None  # seconds for transcript / page number otherwise
+    end: int | None = None
+    label: str = ""
+
+
+class ParsedResourceUnit(BaseModel):
+    """A small, source-addressable slice of a resource."""
+
+    unit_id: str
+    text: str
+    location: ResourceLocation | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class ParsedResource(BaseModel):
+    """The output of the parsing stage for a single resource revision."""
+
+    revision_id: str
+    resource_id: str
+    kind: str
+    source_type: str
+    provider: str
+    title: str
+    units: list[ParsedResourceUnit] = Field(default_factory=list)
+    raw_text: str = ""
+    page_count: int | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class ResourceDescription(BaseModel):
+    """A description of one resource revision, as seen by the main Agent."""
+
+    revision_id: str
+    resource_id: str
+    kind: str
+    source_type: str
+    provider: str
+    title: str
+    topic: str = ""
+    knowledge_topics: list[str] = Field(default_factory=list)
+    scope: str = "lecture"  # course | module | lecture | topic
+    related_lecture_ids: list[str] = Field(default_factory=list)
+    usable_content_kinds: list[str] = Field(default_factory=list)  # definition | derivation | example | procedure | exercise | policy
+    suggested_role: str = ""  # primary | global_constraint | auxiliary | ignore
+    summary: str = ""
+    overlap_notes: list[str] = Field(default_factory=list)
+
+
+class ChapterContext(BaseModel):
+    """A chapter Agent's complete input assembled from Tags."""
+
+    chapter: ChapterInstruction
+    global_resources: list[ParsedResource] = Field(default_factory=list)
+    chapter_resources: list[ParsedResource] = Field(default_factory=list)
+    global_writing_prompt: str = ""
+    component_specs: list[ComponentSpec] = Field(default_factory=list)
+    course: Course | None = None
+    snapshot_id: str | None = None
 
 
 def format_timestamp(seconds: int | float) -> str:

@@ -19,12 +19,14 @@ from pydantic import BaseModel, Field
 from coursebook_agent.agent.llm import LLMClient, LLMError
 from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
 from coursebook_agent.models import CourseBook, JobState, LectureDraft
-from coursebook_agent.pipeline import CourseBookPipeline
+from coursebook_agent.pipeline import CourseBookPipeline, MultiResourceCourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
+from coursebook_agent.product.api import router as product_router
 
 app = FastAPI(title="CourseBookAgent", version="0.1.0")
+app.include_router(product_router)
 app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 jobs: dict[str, JobState] = {}
 generation_lock = asyncio.Lock()
@@ -71,6 +73,10 @@ class GenerateRequest(BaseModel):
     refresh_source: bool = False
     regenerate: bool = False
     review: bool = False
+    snapshot_id: str | None = None
+    preset_id: str = "coursebook"
+    lecture_indices: list[int] | None = None
+    concurrency: int = Field(default=3, ge=1, le=8)
 
 
 def _schedule(job_id: str, coroutine) -> None:
@@ -150,21 +156,125 @@ async def generate(request: GenerateRequest):
     return jobs[job_id].model_dump()
 
 
+class GenerateV2Request(BaseModel):
+    course_id: str | None = None
+    snapshot_id: str | None = None
+    regenerate: bool = False
+    review: bool = True
+    concurrency: int = Field(default=3, ge=1, le=8)
+    chapter_indices: list[int] | None = None
+
+
+@app.post("/api/generate/v2", status_code=202)
+async def generate_v2(request: GenerateV2Request):
+    if not request.snapshot_id:
+        raise HTTPException(status_code=400, detail="snapshot_id 必须提供；系统不再以课程为主键。")
+    # Resolve dataset_id from snapshot so the run is bound to its source
+    # dataset instead of a course.
+    from coursebook_agent.product.service import ProductService
+    snapshot_obj = ProductService().get_snapshot(request.snapshot_id)
+    job_id = uuid.uuid4().hex[:12]
+    job_state = JobState(
+        job_id=job_id,
+        course_id=request.course_id or "",
+        request=request.model_dump(),
+        status="queued", step="排队", progress=0,
+        message="v2 多资料工作流准备",
+    )
+    # Dataset binding lives in request so projections can find it.
+    job_state.request["dataset_id"] = snapshot_obj.dataset_id
+    job_state.request["dataset_name"] = ProductService().get_dataset(snapshot_obj.dataset_id).name
+    jobs[job_id] = job_state
+    _persist_job(job_state)
+    _schedule(job_id, _run_job_v2(job_id, request))
+    return job_state.model_dump()
+
+
+async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
+    state = jobs[job_id]
+    async with generation_lock:
+        state.status, state.step, state.message = "running", "读取快照", "v2 多资料工作流启动"
+        _persist_job(state)
+        await _generate_locked_v2(state, request)
+
+
+async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> None:
+    # Promote dataset binding to top-level fields so projection can render it.
+    state.dataset_id = state.request.get("dataset_id", state.dataset_id)
+    state.dataset_name = state.request.get("dataset_name", state.dataset_name)
+
+    def progress(done: float, total: float, message: str, chapter: dict | None = None) -> None:
+        try:
+            pct = int(min(done / total, 1.0) * 95)
+        except ZeroDivisionError:
+            pct = 0
+        state.progress = pct
+        # Use the first 1-2 Chinese characters (or first word) as a step
+        # label so the projection has something stable to map. Avoid
+        # truncating long descriptive messages into a single garbled
+        # token.
+        head = message.strip().split(" ", 1)[0]
+        state.step = head[:4] if len(head) > 4 else head
+        state.message = message
+        if chapter:
+            cid = chapter.get("chapter_id") or chapter.get("index")
+            # v2 sends chapter_id only; legacy sends index. Mirror an "index"
+            # field so the projection can sort by either.
+            if chapter.get("chapter_id") and "index" not in chapter:
+                # Try to preserve explicit index from caller; otherwise assign by order.
+                chapter = {**chapter, "index": chapter.get("index", len(state.chapters) + 1)}
+            state.chapters = sorted(
+                [c for c in state.chapters if c.get("chapter_id", c.get("index")) != cid] + [chapter],
+                key=lambda c: c.get("index", 0),
+            )
+        _persist_job(state)
+
+    try:
+        pipeline = MultiResourceCourseBookPipeline()
+        book = await asyncio.wait_for(pipeline.run(
+            snapshot_id=request.snapshot_id,
+            course_id=request.course_id,
+            dataset_name=state.dataset_name,
+            regenerate=request.regenerate,
+            review=request.review,
+            concurrency=request.concurrency,
+            progress=progress,
+            chapter_indices=request.chapter_indices,
+        ), timeout=5400)
+        if any(c.get("status") == "failed" for c in state.chapters):
+            state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分章节生成失败，可重试失败章节", book
+        else:
+            state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程讲义已生成", book
+        _persist_job(state)
+    except asyncio.TimeoutError:
+        state.error_code = "task_timeout"
+        state.status, state.step, state.error, state.message = "failed", "超时", "任务超过 90 分钟", "生成超时，可恢复已完成章节"
+        _persist_job(state)
+    except Exception as exc:
+        state.error_code = getattr(exc, "code", "generation_error")
+        state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "生成失败"
+        _persist_job(state)
+    except asyncio.CancelledError:
+        state.status, state.step, state.message = "interrupted", "中断", "生成中断，可手动恢复"
+        _persist_job(state)
+        raise
+
+
 async def _run_job(job_id: str, request: GenerateRequest) -> None:
     state = jobs[job_id]
-    if generation_lock.locked():
-        state.status, state.step, state.message = "queued", "排队", "已有生成任务运行，等待执行"
-        _persist_job(state)
+    # Block on the lock so this task actually starts when the previous run
+    # releases; the lock-fair queueing keeps it serialised.
     async with generation_lock:
         state.status, state.step, state.message = "running", "获取字幕", "正在读取课程讲次和字幕"
         _persist_job(state)
-        await _generate_locked(state, request)
+        await _generate_locked(state, request, only_indices=request.lecture_indices)
 
 
 async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
     def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
         state.progress = min(95, int(done / total * 95)) if total else 0
-        state.step = message.split(" ", 1)[0]
+        head = message.strip().split(" ", 1)[0]
+        state.step = head[:4] if len(head) > 4 else head
         state.message = message
         if chapter:
             idx = chapter.get("index")
@@ -184,6 +294,7 @@ async def _generate_locked(state: JobState, request: GenerateRequest, only_indic
             progress=progress,
             only_indices=only_indices,
             checkpoint_dir=JOB_DIR / state.job_id,
+            concurrency=request.concurrency,
         ), timeout=3600)
         if any(c.get("status") == "failed" for c in state.chapters):
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book
@@ -480,7 +591,18 @@ async def list_runs():
 
 def _job_report(state: JobState) -> dict:
     results = []
-    for index, chapter in enumerate(state.book.chapters if state.book else [], 1):
+    chapters = state.book.chapters if state.book else []
+    # A single-lecture job stores the merged book for reading, but its quality
+    # report must only cover the lecture generated by this job.
+    requested = [int(i) for i in state.request.get("only_indices", []) if str(i).isdigit()]
+    indices = requested or list(range(1, len(chapters) + 1))
+    for index in indices:
+        if requested and len(chapters) == len(requested):
+            chapter = chapters[requested.index(index)]
+        else:
+            chapter = chapters[index - 1] if 1 <= index <= len(chapters) else None
+        if chapter is None:
+            continue
         report = dict(chapter.quality_report)
         confirmation = JOB_DIR / state.job_id / f"confirm-{index}.json"
         confirmed = json.loads(confirmation.read_text(encoding="utf-8")) if confirmation.exists() else None

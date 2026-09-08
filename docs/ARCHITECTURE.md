@@ -2,99 +2,121 @@
 
 ## 1. 技术定位
 
-CourseBookAgent 的核心是**字幕 → 教辅书的生成工作流**，不是简单的字幕拼接。
+CourseBookAgent 的核心是**课堂资料 → 教辅书的生成工作流**，由"产品工作台"和"生成核心"两层组成。
 
 | 层 | 技术 | 说明 |
 |---|---|---|
-| 数据获取 | 项目内置 Zhiyun adapter / 智云课堂接口 | 获取课程、讲次、带时间戳字幕，不依赖外部 skill |
-| 后端 | Python + FastAPI | 编排长任务与 API |
-| AI | 通用大模型 API | 生成工作流的核心 |
-| 存储 | 本地文件 | 中间产物全缓存 |
-| 前端 | 简单 Web | 课程选择、进度、教辅阅读 |
-| 输出 | Markdown / HTML / PDF | 组件化渲染 |
+| 数据获取 | 项目内置 Zhiyun / Xue Zai ZJU adapter | 智云课堂字幕 + 课件页，学在浙大原始课件，不依赖外部 skill |
+| 后端 | Python + FastAPI + SQLite | 编排长任务、产品工作台应用层、本地元数据 |
+| AI | 通用大模型 API（OpenAI 兼容） | 生成工作流的核心 |
+| 存储 | 本地文件 + SQLite | 中间产物全缓存，资料集元数据 + 内容寻址 blob |
+| 前端 | React + TypeScript + Vite + Tailwind + shadcn | 9 页产品工作台 + 旧兼容页 |
+| 输出 | Markdown / Web 阅读器 | 组件化渲染；PDF 尚未实现 |
 
 ---
 
-## 2. 生成工作流
-
-```text
-字幕（原始）
-    │
-    ▼  字幕压缩（每讲独立，面向聪明主编）
-    │  输入：完整字幕 TimedChunk[]
-    │  输出：LectureDigest（知识点地图 + 教师流向 + 时间锚点）
-    │  原则：主编知道假设检验是什么，只需知道"老师怎么讲的"
-    │
-    ▼  全书规划（主编统筹，全局）
-    │  输入：14 份 LectureDigest
-    │  输出：BookPlan
-    │    ├─ 书的结构（模块/章节/角色/主线）
-    │    ├─ 组件规范（ComponentSpec：Tips/例题/侧边栏/重点框）
-    │    ├─ 共享系统 prompt（writer_system_prompt）
-    │    ├─ 每章写作指令（ChapterInstruction）
-    │    └─ 渲染配置（render_config）
-    │
-    ▼  分章撰写（每章独立）
-    │  输入：writer_system_prompt + ChapterInstruction + 完整字幕
-    │  输出：LectureDraft（带时间戳链接、组件实例、来源引用）
-    │  原则：读者"比较蠢"，要讲详细；关键处链接到字幕时间段
-    │
-    ▼  全书合成（终审，全局）
-    │  输入：14 章 LectureDraft + BookPlan
-    │  输出：CourseBook（前言/知识地图/术语表/要点索引 + 组件统一）
-    │
-    ▼  渲染
-     → Markdown（带时间戳文本引用）
-     → Web（可点击的时间戳链接 + 组件 HTML）
-     → PDF（省略时间戳链接）
-```
-
----
-
-## 3. 模块划分
+## 2. 模块划分
 
 ```text
 coursebook_agent/
-├── app.py                  # FastAPI 入口
-├── config.py               # 配置
-├── models.py               # 数据模型
-├── pipeline.py             # 工作流编排
+├── app.py                  # FastAPI 入口；同时挂载 /api/courses、/api/jobs 等旧路由与 /api/product/*
+├── config.py               # 配置（LLM / 智云 / 路径）
+├── models.py               # 生成核心数据模型（资料描述 / Tag / BookPlan / ChapterDraft / CourseBook 等）
+├── pipeline.py             # 固定阶段编排；按主 Agent 章节规划与 Tag 组装上下文
 ├── sources/
-│   └── zhiyun.py           # 智云课堂数据获取
+│   ├── zhiyun.py           # 智云课堂适配器：课程列表、讲次、字幕、PPT 时间轴
+│   └── xuezai/
+│       └── assist.py       # 学在浙大适配器：CAS 登录、我的课程、课件列表、文件下载
 ├── preprocess/
-│   └── transcript.py       # 字幕清洗 + 分块
+│   ├── transcript.py       # 字幕清洗 + 分块
+│   └── teaching_signals.py # 教学信号预处理
 ├── agent/
-│   ├── digest.py           # 字幕压缩
-│   ├── editor.py           # 全书规划（主编）
-│   ├── chapter.py          # 分章撰写
+│   ├── describe.py         # 逐份资料 description
+│   ├── digest.py           # 需要时整理字幕内容
+│   ├── editor.py           # 主 Agent 全书规划、章节划分与 Tag
+│   ├── chapter.py          # 按章节上下文撰写
 │   ├── synthesize.py       # 全书合成（终审）
-│   ├── quality.py          # 质量门禁（组件契约/例子清理/确定性门禁/LLM 审校）
-│   └── llm.py              # LLM 客户端
+│   ├── quality.py          # 质量门禁（组件契约 / 例子清理 / 确定性门禁 / LLM 审校）
+│   ├── style_rules.py      # 写作风格规则
+│   └── llm.py              # LLM 客户端（重试 / JSON 修复）
 ├── renderer/
 │   └── markdown.py         # Markdown 渲染（含组件）
-├── frontend/               # React 前端（书架/工作台/阅读器/设置/质量报告 5 页）
+├── product/                # 产品工作台应用层
+│   ├── api.py              # /api/product/* 路由
+│   ├── service.py          # SQLite + 内容寻址 blob 持久化
+│   ├── models.py           # Dataset / Resource / ResourceRevision / InputSnapshot / WorkflowPreset / AgentProjection / RunProjection / ArtifactSummary
+│   ├── parsers.py          # 多格式文档解析（PDF/DOCX/PPTX/Markdown/TXT）
+│   ├── projections.py      # JobState → RunProjection / ArtifactSummary
+│   └── __init__.py         # 导出 ProductService
+├── frontend/               # React 前端（9 页产品工作台 + 旧兼容页）
 ├── profiles/               # 课程 Profile（术语表/章节模板）
 └── scripts/
-    └── overnight_book_quality.py  # 通宵批处理脚本
+    ├── overnight_book_quality.py  # 全量批处理
+    └── check_offline.py            # 离线确定性回归
 ```
+
+---
+
+## 3. 产品工作台应用层（与生成核心的边界）
+
+产品工作台是独立的"应用层"，不修改生成核心，只扩展它的请求契约。详见 `docs/decisions/008-product-workbench-application-layer.md`。
+
+```text
+用户上传 / 导入
+    ↓
+Dataset (SQLite)
+    ↓ 选取资源版本
+InputSnapshot (SHA-256 锁定)
+    ↓ 创建 Run
+GenerateRequest { snapshot_id, preset_id, lecture_indices, concurrency, ... }
+    ↓
+CourseBookPipeline（既有逻辑，新增参数透传）
+    ↓
+JobState (in-memory + 落盘)
+    ↓
+projections.project_run / project_artifact
+    ↓
+RunProjection / ArtifactSummary
+    ↓
+独立 ArtifactSummary（按 job_id 区分，同课程多次生成互不覆盖）
+```
+
+- 资源 `source_type` 区分 `upload` / `zhiyun` / `xuezai`；`provider` 区分 `zhiyun` / `xue_zai_zju`。
+- 同一资源多次上传会生成新的 `revision_id`；旧版本仍可在快照中引用。
+- 快照 `SHA-256` 锁定资源版本集合，避免"运行引用资料但资料被改"的隐蔽问题。
+- `lecture_indices` 透传给 `pipeline.generate_course(only_indices=...)`，并发参数 `concurrency` 透传给 `asyncio.Semaphore` 限流。
+- `preset_id` 默认 `coursebook`，作为未来多 profile 工作流的扩展点。
 
 ---
 
 ## 4. 核心数据模型
 
-详见 `coursebook_agent/models.py`。关键模型：
+生成核心的关键模型（`coursebook_agent/models.py`）：
 
 | 模型 | 层 | 用途 |
 |---|---|---|
 | `TimedChunk` | 0 | 分块后的字幕单元，带时间戳 |
 | `KnowledgePoint` | 1 | 单个知识点（名/描述/类别/来源引用） |
 | `LectureDigest` | 1 | 一讲的压缩知识点地图 |
-| `ComponentSpec` | 2 | 可复用的 UI 组件规范（Tips/例题/侧边栏） |
+| `ComponentSpec` | 2 | 可复用的 UI 组件规范 |
 | `ChapterInstruction` | 2 | 主编给某一章的写作指令 |
 | `BookPlan` | 2 | 主编的完整蓝图 |
 | `ChapterSection` | 3 | 章节中的小节（含组件实例和时间链接） |
 | `LectureDraft` | 3 | 一章的完整产物 |
 | `CourseBook` | 4 | 全书产物 |
+
+产品工作台的关键模型（`coursebook_agent/product/models.py`）：
+
+| 模型 | 用途 |
+|---|---|
+| `Dataset` | 资料集，长期容器 |
+| `Resource` | 单份资料；可来自上传 / 智云 / 学在浙大 |
+| `ResourceRevision` | 资料的某个版本（SHA-256 内容寻址） |
+| `InputSnapshot` | 一次运行所引用的资料版本快照（哈希锁定） |
+| `WorkflowPreset` | 工作流预设（`coursebook` 是当前唯一内置） |
+| `AgentProjection` | 一个章节 Agent 的结构化状态 |
+| `RunProjection` | 一次 Job 的结构化视图 |
+| `ArtifactSummary` | 一个产物（按 job_id 区分） |
 
 ---
 
@@ -104,7 +126,9 @@ coursebook_agent/
 
 ```text
 data/
-├── cache/zhiyun/           # 原始字幕缓存
+├── cache/
+│   ├── zhiyun/             # 原始字幕 + 课程/讲次缓存
+│   └── xuezai/             # 我的课程 + 课件列表缓存
 ├── intermediate/
 │   ├── digest-*.json       # 字幕压缩产物
 │   ├── chunks-*.json       # 清洗分块
@@ -112,37 +136,63 @@ data/
 │   └── coursebook-*.json   # 全书产物
 ├── plans/
 │   └── bookplan-*.json     # 全书蓝图
-└── output/
-    ├── coursebook-*.md     # 最终 Markdown
-    └── lecture-*.md        # 单章 Markdown
+├── output/
+│   ├── coursebook-*.md     # 最终 Markdown
+│   └── lecture-*.md        # 单章 Markdown
+└── product/                # 产品工作台持久化
+    ├── product.sqlite3     # 资料集 / 资源 / 快照元数据
+    ├── blobs/              # 内容寻址 blob（SHA-256 文件名）
+    └── text/               # 解析后的文本（按 revision_id）
 ```
 
 ---
 
 ## 6. API
 
-完整契约见 `docs/API.md`。核心路由：
+完整契约见 `docs/API.md`。
+
+| 路由族 | 路径前缀 | 说明 |
+|---|---|---|
+| 健康 | `/api/health` | 健康 + 配置状态 |
+| 智云（旧） | `/api/zhiyun/*`、`/api/courses`、`/api/books` | 兼容路径，仍可用 |
+| 任务（旧） | `/api/generate`、`/api/jobs/*`、`/api/runs/*` | Job 调度 + 报告 |
+| 设置 | `/api/settings`、`/api/settings/llm` | LLM 配置保存 |
+| 缓存清理 | `/api/cache` | 清派生产物 |
+| **产品工作台（新）** | `/api/product/*` | 资料集、上传、快照、导入、运行投影、产物 |
+| 静态 | `/static/*` | 内置旧 SPA |
+
+产品工作台关键路由：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/health` | 健康 + 配置状态 |
-| GET/POST | `/api/zhiyun/auth` `/api/zhiyun/login` | 智云登录 |
-| GET | `/api/courses` `/api/books` | 课程列表 / 已生成成书列表 |
-| POST | `/api/generate` | 全课生成任务 |
-| GET | `/api/jobs/{id}` `/api/jobs/{id}/book` | 任务状态 / 生成结果 |
-| POST | `/api/courses/{id}/lectures/{i}/regenerate` | 单讲重生成 |
-| GET/PUT | `/api/settings` `/api/settings/llm` | 设置读取 / LLM 配置保存 |
-| GET | `/api/runs` `/api/runs/{id}/report` | V2 run 列表 / 质量报告 |
-| POST | `/api/runs/{id}/chapters/{i}/confirm` | 人工确认 |
-| DELETE | `/api/cache` | 清派生产物 |
+| GET/POST | `/api/product/datasets` | 资料集列表 / 新建 |
+| GET/DELETE | `/api/product/datasets/{id}` | 资料集详情 / 删除 |
+| POST | `/api/product/datasets/{id}/resources` | 上传 PDF/DOCX/PPTX/MD/TXT |
+| GET | `/api/product/imports/zhiyun/courses` | 智云课堂"我的课程" |
+| GET | `/api/product/imports/zhiyun/courses/{id}` | 智云课堂讲次列表 |
+| POST | `/api/product/datasets/{id}/imports/zhiyun` | 智云课堂讲次 + 课件导入 |
+| GET | `/api/product/imports/xuezai/courses` | 学在浙大"我的课程" |
+| GET | `/api/product/imports/xuezai/courses/{id}` | 学在浙大课件列表 |
+| POST | `/api/product/datasets/{id}/imports/xuezai` | 学在浙大课件下载导入 |
+| POST | `/api/product/auth/login` | 统一身份认证登录（智云 + 学在浙大） |
+| GET | `/api/product/auth/providers` | 两个 provider 的连接状态 |
+| GET/POST | `/api/product/datasets/{id}/snapshots` | 输入快照列表 / 创建 |
+| GET | `/api/product/resource-revisions/{id}/preview` | 解析文本预览 |
+| GET | `/api/product/workflow-presets` | 工作流预设列表 |
+| GET | `/api/product/runs[/{id}]` | 结构化运行投影 |
+| GET | `/api/product/artifacts[/{id}]` | 独立产物（含 CourseBook） |
+
+`POST /api/generate` 新增可选字段：`snapshot_id`、`preset_id`、`lecture_indices`、`concurrency`。旧请求仍兼容。
 
 ---
 
 ## 7. 关键设计决策
 
-### 7.1 压缩 vs 完整的分层
+### 7.1 Description、章节规划与 Tag
 
-主编只看压缩摘要（~2 万字），不看完整字幕（~30 万字）。写作者看完整字幕。这解决了上下文限制问题，同时保留了主编的全局视角。
+新的目标工作流先解析每份资料并生成 description。主 Agent 一次性查看所有资料的 description，确定全书章节、章节范围和整体写作风格，并给资料打 Tag。Tag 是资料上下文归属分类：章节 Tag 将资料送入对应章节 Agent，全局 Tag 将资料作为全书范围资料提供给相关 Agent，无 Tag 表示本次生成不使用该资料。
+
+章节不是讲次的同义词。一章可以合并多节课，也可以组合字幕、PPT、PDF、DOCX 等多种资料；一个章节 Agent 负责一个主 Agent 规划出的章节。字幕压缩可以作为某类资料的整理手段，但不再假设所有字幕必须先按讲次压缩后才能规划全书。
 
 ### 7.2 组件化输出
 
@@ -150,16 +200,26 @@ data/
 
 ### 7.3 时间戳链接
 
-Web 版的关键内容链接到字幕时间段，读者可跳转。PDF 版省略链接，保留文本引用。
+Web 版当前保留时间链接字段，但尚未真正接入智云播放器跳转。PDF 输出尚未实现。
 
 ### 7.4 并行章节生成
 
-分章撰写是全书生成的主要耗时环节。`pipeline.generate_course` 用 `asyncio.Semaphore` 限流并发执行各章，默认并发 3；承上启下依赖 `ChapterInstruction` 的桥接字段兜底，不依赖上一章的生成结果。
+分章撰写是全书生成的主要耗时环节。`pipeline.generate_course` 用 `asyncio.Semaphore` 限流并发执行各章，默认并发 3；承上启下依赖 `ChapterInstruction` 的桥接字段兜底，不依赖上一章的生成结果。`concurrency` 参数可在产品工作台运行时由用户覆盖。
 
 ### 7.5 质量门禁
 
 `agent/quality.py` 提供统一的写盘前清理：组件契约（未知组件归并、steps 数组展开）、例子清理（Python dict 残留转文本）、确定性门禁、LLM 审校。主流程默认应用前两者，全量门禁循环是下一迭代目标。
 
-### 7.6 当前不处理 PPT
+### 7.6 多 provider 数据源
 
-PPT 获取、OCR 和字幕-PPT 对齐留作后续增强。
+`product/` 不内嵌具体数据源实现，而是按 `provider` 字段区分来源。智云课堂与学在浙大各自有独立适配器和独立会话，互不干扰。新 provider 必须遵循这一边界。
+
+### 7.7 资料集与输入快照
+
+- 资料集是长期容器，可能同时包含字幕、PPT、PDF、Word。
+- 输入快照是某次运行所引用的资源版本集合，按 SHA-256 锁定，避免"资料被改但运行引用了旧版本"的隐性 bug。
+- 同一课程多次运行产生不同 job_id，从而不同 `ArtifactSummary`，互不覆盖。
+
+### 7.8 生成核心与资料工作台的新对接方向
+
+现有 `product/` 与生成核心的薄适配只透传 `preset_id` / `snapshot_id` / `lecture_indices` / `concurrency`，因此当前上传资料尚未进入生成 prompt。下一阶段需要在保持资料快照边界的前提下，向生成核心提供快照资料的解析内容与来源元数据，并持久化 description、BookPlan 章节映射和 Tag 结果。生成核心仍负责 Agent 与 pipeline；产品层仍负责资料、版本、快照和运行可见性。
