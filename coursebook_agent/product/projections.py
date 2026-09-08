@@ -118,6 +118,7 @@ def project_run(state: JobState) -> RunProjection:
     # written by MultiResourceCourseBookPipeline under data/plans/ with the
     # name pattern bookplan-{snapshot_id}.json or bookplan-{course_id}.json.
     canonical_chapter_ids: list[str] = []
+    plan: dict | None = None
     snapshot_id = state.request.get("snapshot_id")
     course_id = state.course_id or state.request.get("course_id")
     for candidate in (
