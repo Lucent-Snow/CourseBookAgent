@@ -231,16 +231,16 @@ Tag 需要能表达资料与章节的关系，而不是只能给资料设置一�
 
 ## 12. 当前实现与目标的差距
 
-**v2 多资料工作流已落地**（`MultiResourceCourseBookPipeline.run`，详见 §1–§11）。已实现：
+**多资料工作流已落地**（`CourseBookPipeline.run`，详见 §1–§11）。已实现：
 
 - `product/parsers.py` 支持 PPTX、PDF、DOCX、Markdown、TXT 的文本解析。
-- `product/service.py` 已保存资料、资料版本、输入快照；`MultiResourceCourseBookPipeline` 通过 `snapshot_id` 读取 `ParsedResource` 列表。
+- `product/service.py` 已保存资料、资料版本、输入快照；`CourseBookPipeline` 通过 `snapshot_id` 读取 `ParsedResource` 列表。
 - `agent/describe.py` 走 transcript 启发式、其他 LLM 失败 fallback，缓存到 `data/intermediate/descriptions/`。
-- `agent/editor.py::plan_book_v2` 接受 `ResourceDescription[]`，输出 `BookPlan v2`：章节由主题决定、`resource_tags / chapter_resources / global_resource_ids` 显式标记。
-- `agent/chapter.py::generate_chapter_v2` 接收 `ChapterContext`（chapter + global + chapter resources + 写作 prompt）。
+- `agent/editor.py::plan_book_from_descriptions` 接受 `ResourceDescription[]`，输出 `BookPlan`：章节由主题决定、`resource_tags / chapter_resources / global_resource_ids` 显式标记。
+- `agent/chapter.py::generate_chapter_from_context` 接收 `ChapterContext`（chapter + global + chapter resources + 写作 prompt）。
 - `coursebook_agent/assembly/assemble.py` 按 Tag 装 `ChapterContext`。
-- `pipeline.py::MultiResourceCourseBookPipeline.run` 按 7 阶段跑：`description → 主 Agent 规划 → Tag 装配 → 章节生成 → 合成 → 渲染`，按 `snapshot_id` 缓存 BookPlan，章节缓存按 `chapter-{snapshot_id}-{chapter_id}.json` 分桶。
-- `agent/editor.py::heuristic_book_plan_v2` fallback **按主题关键词贪心合并**，不再 1 章 = 1 资料。
+- `pipeline.py::CourseBookPipeline.run` 按 7 阶段跑：`description → 主 Agent 规划 → Tag 装配 → 章节生成 → 合成 → 渲染`，按 `snapshot_id` 缓存 BookPlan，章节缓存按 `chapter-{snapshot_id}-{chapter_id}.json` 分桶。
+- `agent/editor.py::heuristic_plan_by_topic` fallback **按主题关键词贪心合并**，不再 1 章 = 1 资料。
 - 前端：DatasetDetailPage 列出"第 N 次生成"，可点击进入 / 删除；RunProjection 暴露 dataset_id/dataset_name 给前端做资料集名主标题；per-resource / stage / quality 透明化。
 
 **已知遗留**（详见 `docs/ISSUES.md`）：

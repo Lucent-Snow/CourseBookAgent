@@ -23,9 +23,9 @@
 | GET | `/api/settings` | 配置状态（LLM 脱敏 + 智云 + 数据统计） | 设置 |
 | PUT | `/api/settings/llm` | 保存 LLM 配置（写 .env） | 设置 |
 | POST | `/api/settings/llm/test` | 测试 LLM 连接 | 设置 |
-| GET | `/api/runs` | V2 run 列表 | 质量报告 |
-| GET | `/api/runs/{run_id}/report` | V2 质量报告 | 质量报告 |
-| GET | `/api/runs/{run_id}/chapters/{lecture_index}` | V2 章节产物 | 质量报告 |
+| GET | `/api/runs` | run 列表 | 质量报告 |
+| GET | `/api/runs/{run_id}/report` | 质量报告 | 质量报告 |
+| GET | `/api/runs/{run_id}/chapters/{lecture_index}` | 章节产物 | 质量报告 |
 | POST | `/api/runs/{run_id}/chapters/{lecture_index}/confirm` | 标记人工确认 | 质量报告 |
 | DELETE | `/api/cache` | 清派生产物（保留原始字幕与蓝图） | 设置 |
 
@@ -54,7 +54,7 @@
 
 ```json
 // GET /api/runs
-{ "data": [ { "run_id": "82493-v2-...", "accepted": 12, "rejected": 2, "course_id": "82493" } ] }
+{ "data": [ { "run_id": "82493-...", "accepted": 12, "rejected": 2, "course_id": "82493" } ] }
 
 // POST /api/runs/{run_id}/chapters/{lecture_index}/confirm
 { "note": "已人工对照原音频确认" }  → { "ok": true }
@@ -95,6 +95,6 @@
 资料集、资源版本和输入快照的架构边界见 `docs/decisions/008-product-workbench-application-layer.md`。上传材料已真实保存和解析；当前生成核心仍以智云讲次字幕为主要上下文，其他材料进入生成 prompt 的适配需要与生成工作线共同确认。
 ## 遗留问题（记录，之后迭代）
 
-1. V2 目前只有 4 讲 pilot run，`GET /api/runs` 需能容忍无全量 run 的情况。
+1. 目前只有 4 讲 pilot run，`GET /api/runs` 需能容忍无全量 run 的情况。
 2. 单讲重生成后重新 synthesize 全书，与全课生成共用 `generation_lock`，耗时会阻塞（见 ISSUES B3）。
 3. `PUT /api/settings/llm` 写 `.env` 无鉴权，本地应用可接受，多用户部署待议（见 ISSUES B2）。

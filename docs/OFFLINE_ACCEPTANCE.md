@@ -40,7 +40,7 @@ npm run build
 - POST /api/jobs/{job_id}/retry：恢复失败、部分完成、中断任务。复用原 job_id。
 - POST /api/jobs/{job_id}/cancel：停止排队/运行任务，保留快照。
 - GET /api/jobs/{job_id}：包含 course_id、chapters、events。
-- GET /api/runs：合并旧 V2 报告与有成书结果的新任务。
+- GET /api/runs：合并旧报告与有成书结果的新任务。
 - GET /api/runs/{job_id}/report：包含 course_id、results[].deterministic.metrics.traceability，
   semantic、confirmation。未审校不等于通过。
 - GET /api/jobs/{job_id}/chapters/{index}/sources/{chunk_id}：读取任务保存的字幕证据。

@@ -10,7 +10,7 @@
 | B2 | `PUT /api/settings/llm` 直接写 `.env` 无鉴权 | 本地应用可接受，但多用户部署不安全 | 记录待议 |
 | B3 | 单讲重生成后重新 synthesize 全书，且与全课生成共用 `generation_lock` | 重生成一章也要等全书合成，耗时且阻塞 | 待优化（增量合成） |
 | B4 | `DELETE /api/cache` 会删 `data/runs`（质量报告记录） | 清除缓存后质量报告页为空 | ✅ 已修（仅清理派生产物） |
-| B5 | V2 只有 4 讲 pilot run，无全量 14 讲 run | 质量报告页只有试点数据 | 需跑全量 V2 |
+| B5 | 当前 pilot run 只有 4 讲，无全量 14 讲 run | 质量报告页只有试点数据 | 需跑全量 run |
 | B6 | LLM 配置从 `.env` 读，`save_llm_settings` 后内存 config 已刷新但 `LLM_TIMEOUT` 等未联动 | 设置页改动不完整 | 待完善 |
 | B7 | `synthesize_book` 单次大调用（14 章摘要喂给 LLM），JSON 返回不稳触发 repair 重试 | 合成阶段慢（约 2-3 分钟） | 待拆分或确定性回退 |
 | B8 | `tests/test_core.py::test_warning_render` 断言 `⚠️` emoji，但 `fix: 修复quality.py` 把渲染输出改为 `【易错】` | 测试在 main 上持续失败 | ✅ 已修（当前全套测试通过） |

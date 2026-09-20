@@ -154,7 +154,7 @@ data/
     └── text/               # 解析后的文本（按 revision_id）
 ```
 
-`chapter-{cid}.json` 在 v2 之前用 lecture_id 做后缀，会跨 snapshot 串台（详见 `docs/ISSUES.md`）。v2 用 `{snapshot_id}-{chapter_id}` 命名，按 snapshot 分桶。
+`chapter-{cid}.json` 在多资料工作流之前用 lecture_id 做后缀，会跨 snapshot 串台（详见 `docs/ISSUES.md`）。现用 `{snapshot_id}-{chapter_id}` 命名，按 snapshot 分桶。
 
 ---
 
@@ -166,7 +166,7 @@ data/
 |---|---|---|
 | 健康 | `/api/health` | 健康 + 配置状态 |
 | 智云（旧） | `/api/zhiyun/*`、`/api/courses`、`/api/books` | 兼容路径，仍可用 |
-| 任务（旧） | `/api/generate`、`/api/jobs/*`、`/api/runs/*` | Job 调度 + 报告（**v2 推荐用 `/api/generate/v2`**） |
+| 任务（旧） | `/api/generate/legacy`、`/api/jobs/*`、`/api/runs/*` | Job 调度 + 报告（**新客户端推荐用 `/api/generate`**） |
 | 设置 | `/api/settings`、`/api/settings/llm` | LLM 配置保存 |
 | 缓存清理 | `/api/cache` | 清派生产物 |
 | **产品工作台** | `/api/product/*` | 资料集、上传、快照、导入、运行投影、产物 |
@@ -195,13 +195,13 @@ data/
 | GET | `/api/product/runs[/{id}]` | 结构化运行投影 |
 | GET | `/api/product/artifacts[/{id}]` | 独立产物（含 CourseBook） |
 
-`/api/generate/v2` 是新的 v2 端点：`{ snapshot_id, course_id?, regenerate, review, concurrency, chapter_indices? }`。**`course_id` 可选**；生成绑定到 `snapshot_id` 所属的资料集。
+`/api/generate` 是新的端点：`{ snapshot_id, course_id?, regenerate, review, concurrency, chapter_indices? }`。**`course_id` 可选**；生成绑定到 `snapshot_id` 所属的资料集。
 
 ---
 
 ## 7. 关键设计决策
 
-### 7.1 v2 多资料工作流（核心约定）
+### 7.1 多资料工作流（核心约定）
 
 新的固定工作流按"资料 → description → 章节规划 → 上下文装配 → 章节生成 → 合成 → 渲染"7 阶段执行（见 `docs/WORKFLOW.md`）。要点：
 
@@ -253,8 +253,8 @@ Web 版保留时间链接字段，但尚未真正接入智云播放器跳转。`
 
 ### 7.9 章节缓存与串台修复
 
-v2 之前 `chapter-{cid}.json` 用 chapter_id 做后缀，但 `c1`/`c2` 跨 snapshot 会冲突——曾出现 84213 的章节被 65564 的 c1 内容污染（详见 `docs/ISSUES.md` 与 commit `77c825d`）。v2 改为 `chapter-{snapshot_id}-{chapter_id}.json`，按 snapshot 分桶；`course_id` 单独存在时降级到 `chapter-{course_id}-{chapter_id}.json`。
+多资料工作流之前 `chapter-{cid}.json` 用 chapter_id 做后缀，但 `c1`/`c2` 跨 snapshot 会冲突——曾出现 84213 的章节被 65564 的 c1 内容污染（详见 `docs/ISSUES.md` 与 commit `77c825d`）。改为 `chapter-{snapshot_id}-{chapter_id}.json`，按 snapshot 分桶；`course_id` 单独存在时降级到 `chapter-{course_id}-{chapter_id}.json`。
 
 ### 7.10 与产品工作台的当前对接
 
-`MultiResourceCourseBookPipeline.run(snapshot_id, course_id?, dataset_name?, ...)` 直接读 snapshot 资料 → 解析 → description → 主 Agent 规划 → Tag → 按 Tag 装上下文 → 章节生成 → 合成 → 渲染。`product/` 通过 `/api/generate/v2` 端点触发，不再需要中间薄适配。`/api/product/datasets/{id}/runs` 列出该资料集的所有生成记录；`DELETE /api/product/runs/{id}` 清理运行（含 in-flight task 取消与缓存清除）。
+`CourseBookPipeline.run(snapshot_id, course_id?, dataset_name?, ...)` 直接读 snapshot 资料 → 解析 → description → 主 Agent 规划 → Tag → 按 Tag 装上下文 → 章节生成 → 合成 → 渲染。`product/` 通过 `/api/generate` 端点触发，不再需要中间薄适配。`/api/product/datasets/{id}/runs` 列出该资料集的所有生成记录；`DELETE /api/product/runs/{id}` 清理运行（含 in-flight task 取消与缓存清除）。
