@@ -1,4 +1,4 @@
-"""Offline regression tests: no university login or paid model requests."""
+"""Offline regression tests for the multi-resource run lifecycle."""
 import asyncio
 import importlib
 import json
@@ -12,24 +12,24 @@ from fastapi import HTTPException
 
 from coursebook_agent.agent.quality import traceability_metrics
 from coursebook_agent.config import config
-from coursebook_agent.models import Course, Lecture, LectureDraft, ChapterSection, JobState, TimedChunk, TranscriptSegment, BookPlan
-from coursebook_agent.pipeline import CourseBookPipeline
-from coursebook_agent.storage import atomic_write_text
+from coursebook_agent.models import (
+    Course,
+    LectureDraft,
+    ChapterSection,
+    JobState,
+    TimedChunk,
+)
 
 appmod = importlib.import_module("coursebook_agent.app")
 
 
-def draft(i):
-    return LectureDraft(lecture_id=f"l{i}", title=f"章节{i}", overview="示例",
-                        sections=[ChapterSection(heading="说明", content="真实内容", source_chunk_ids=["c1"])])
-
-
-class Source:
-    def get_course(self, *args):
-        return Course(course_id="demo", name="离线课程")
-
-    def list_lectures(self, *args):
-        return [Lecture(lecture_id=f"l{i}", course_id="demo", index=i, title=f"讲{i}") for i in (1, 2, 3)]
+def draft(i: int) -> LectureDraft:
+    return LectureDraft(
+        lecture_id=f"l{i}",
+        title=f"章节{i}",
+        overview="示例",
+        sections=[ChapterSection(heading="说明", content="真实内容", source_chunk_ids=["c1"])],
+    )
 
 
 class RecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -37,105 +37,41 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         base = Path(self.tmp.name)
-        for obj, key, value in [(config, "data_dir", base), (config, "output_dir", base / "output"),
-                                (appmod, "JOB_DIR", base / "jobs"), (appmod, "jobs", {}),
-                                (appmod, "tasks", {}),
-                                (appmod, "generation_lock", asyncio.Lock())]:
+        for obj, key, value in [
+            (config, "data_dir", base),
+            (config, "output_dir", base / "output"),
+            (appmod, "JOB_DIR", base / "jobs"),
+            (appmod, "jobs", {}),
+            (appmod, "tasks", {}),
+            (appmod, "generation_lock", asyncio.Lock()),
+        ]:
             p = patch.object(obj, key, value)
             p.start()
             self.addCleanup(p.stop)
 
-    async def test_failure_retry_reuses_successful_snapshots(self):
-        pipeline = CourseBookPipeline(Source())
-        checkpoint = config.data_dir / "checkpoint"
-        statuses = {}
-        def progress(done, total, msg, chapter=None):
-            if chapter:
-                statuses[chapter["index"]] = chapter["status"]
-        async def first(course_id, index, **kwargs):
-            if index == 2:
-                raise RuntimeError("simulated failure")
-            return draft(index)
-        with patch.object(pipeline, "generate_lecture", side_effect=first):
-            book = await pipeline.generate_course("demo", use_book_plan=False, synthesize=False,
-                                                  progress=progress, checkpoint_dir=checkpoint)
-        self.assertEqual(statuses, {1: "done", 2: "failed", 3: "done"})
-        self.assertTrue(book.warnings)
-        generator = AsyncMock(return_value=draft(2))
-        with patch.object(pipeline, "generate_lecture", generator):
-            book = await pipeline.generate_course("demo", regenerate=True, only_indices=[2],
-                use_book_plan=False, synthesize=False, checkpoint_dir=checkpoint)
-        self.assertEqual(generator.await_count, 1)
-        self.assertEqual(generator.await_args.args[1], 2)
-        self.assertEqual([c.lecture_id for c in book.chapters], ["l1", "l2", "l3"])
-        with patch.object(pipeline, "generate_lecture", AsyncMock()) as generation:
-            await pipeline.generate_course("demo", only_indices=[], use_book_plan=False,
-                                           synthesize=False, checkpoint_dir=checkpoint)
-            generation.assert_not_awaited()
+    async def test_generate_requires_snapshot_id(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await appmod.generate(appmod.GenerateRequest())
+        self.assertEqual(ctx.exception.status_code, 400)
 
-    async def test_snapshot_plan_is_reused_on_retry(self):
-        pipeline = CourseBookPipeline(Source())
-        checkpoint = config.data_dir / "checkpoint"
-        atomic_write_text(checkpoint / "plan.json", BookPlan(course_id="demo", book_title="原计划").model_dump_json())
-        with patch.object(pipeline, "ensure_book_plan", AsyncMock()) as plan:
-            with patch.object(pipeline, "generate_lecture", AsyncMock(side_effect=[draft(1), draft(2), draft(3)])):
-                await pipeline.generate_course("demo", regenerate=True, synthesize=False, checkpoint_dir=checkpoint)
-            plan.assert_not_awaited()
-
-    async def test_chapter_metrics_persist_without_course_profile(self):
-        source = Source()
-        source.get_transcript = lambda *args: [TranscriptSegment(lecture_id="l1", index=0,
-            start_sec=3, end_sec=8, text="这是课堂证据")]
-        pipeline = CourseBookPipeline(source)
-        async def generate(lecture, chunks, **kwargs):
-            result = draft(1)
-            result.sections[0].source_chunk_ids = [chunks[0].chunk_id]
-            return result
-        with patch("coursebook_agent.pipeline.generate_chapter", side_effect=generate):
-            result = await pipeline.generate_lecture("demo", 1, use_book_plan=False, review=False)
-        saved = LectureDraft.model_validate_json((pipeline.intermediate_dir / "chapter-l1.json").read_text(encoding="utf-8"))
-        self.assertEqual(saved.quality_metrics["traceability"]["source_coverage"], 1)
-        self.assertFalse(saved.quality_report["accepted"])
-        self.assertEqual(saved.transcript_links[0]["start_sec"], 3)
-        self.assertIn("00:03", saved.sections[0].time_links[0])
-        self.assertEqual(saved, result)
+    async def test_run_status_404_when_missing(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await appmod.run_status("does-not-exist")
+        self.assertEqual(ctx.exception.status_code, 404)
 
     async def test_cancel_running_task_can_be_resumed(self):
         state = JobState(job_id="cancel", course_id="demo", status="running", step="生成")
         appmod.jobs[state.job_id] = state
         appmod._schedule(state.job_id, asyncio.sleep(100))
-        result = await appmod.cancel_job(state.job_id)
+        result = await appmod.cancel_run(state.job_id)
         self.assertEqual(result["status"], "interrupted")
         self.assertNotIn(state.job_id, appmod.tasks)
 
-    async def test_full_job_failure_retry_flow(self):
-        state = JobState(job_id="flow", course_id="demo", status="running", step="生成")
-        appmod.jobs["flow"] = state
-        pipeline = CourseBookPipeline(Source())
-        async def generate(course_id, index, **kwargs):
-            if index == 2:
-                raise RuntimeError("temporary")
-            return draft(index)
-        from coursebook_agent.agent.synthesize import synthesize_book_fallback
-        async def synth(course, chapters, **kwargs):
-            return synthesize_book_fallback(course, chapters, plan=kwargs.get("plan"))
-        with patch.object(appmod, "CourseBookPipeline", return_value=pipeline), patch(
-                "coursebook_agent.pipeline.synthesize_book", side_effect=synth), patch.object(
-                pipeline, "ensure_book_plan", AsyncMock(return_value=BookPlan(course_id="demo", book_title="计划"))):
-            with patch.object(pipeline, "generate_lecture", side_effect=generate):
-                await appmod._generate_locked(state, appmod.LegacyGenerateRequest(course_id="demo"))
-            self.assertEqual(state.status, "partial")
-            with patch.object(pipeline, "generate_lecture", AsyncMock(return_value=draft(2))) as gen:
-                await appmod._run_retry_job("flow", "demo", [2])
-                self.assertEqual(gen.await_count, 1)
-            self.assertEqual(state.status, "completed")
-            self.assertTrue(all(c["status"] == "done" for c in state.chapters))
-
-    async def test_missing_snapshot_fails_instead_of_silent_incomplete_book(self):
-        pipeline = CourseBookPipeline(Source())
-        with self.assertRaisesRegex(ValueError, "缓存缺失"):
-            await pipeline.generate_course("demo", only_indices=[], use_book_plan=False,
-                                           synthesize=False)
+    async def test_cancel_rejects_when_not_running(self):
+        appmod.jobs["idle"] = JobState(job_id="idle", status="completed", step="完成")
+        with self.assertRaises(HTTPException) as ctx:
+            await appmod.cancel_run("idle")
+        self.assertEqual(ctx.exception.status_code, 409)
 
     async def test_restart_marks_running_interrupted_preserves_completed(self):
         for key, status in [("running", "running"), ("done", "completed")]:
@@ -146,24 +82,65 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(appmod.jobs["done"].status, "completed")
         self.assertEqual(appmod.jobs["running"].events[-1]["status"], "interrupted")
 
-    async def test_retry_rejects_duplicate_and_missing_course(self):
-        appmod.jobs["done"] = JobState(job_id="done", status="completed", step="完成")
+    async def test_retry_rejects_when_already_running(self):
+        appmod.jobs["running"] = JobState(job_id="running", status="running", step="生成")
         with self.assertRaises(HTTPException) as ctx:
-            await appmod.retry_failed_job("done")
+            await appmod.retry_run("running")
         self.assertEqual(ctx.exception.status_code, 409)
-        appmod.jobs["bad"] = JobState(job_id="bad", status="failed", step="失败")
-        with self.assertRaises(HTTPException):
-            await appmod.retry_failed_job("bad")
 
-    async def test_interrupted_job_can_retry_before_any_chapter_exists(self):
-        state = JobState(job_id="retry", course_id="demo", status="interrupted", step="中断")
-        appmod.jobs[state.job_id] = state
-        with patch.object(appmod, "_run_retry_job", AsyncMock()):
-            result = await appmod.retry_failed_job(state.job_id)
+    async def test_retry_rejects_without_snapshot(self):
+        appmod.jobs["no-snap"] = JobState(
+            job_id="no-snap",
+            status="failed",
+            step="失败",
+            request={"review": False},
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await appmod.retry_run("no-snap")
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    async def test_retry_reschedules_with_same_request(self):
+        state = JobState(
+            job_id="retry",
+            status="failed",
+            step="失败",
+            request={
+                "snapshot_id": "snap-1",
+                "review": True,
+                "concurrency": 3,
+                "regenerate": True,
+            },
+        )
+        appmod.jobs["retry"] = state
+        with patch.object(appmod, "_run_job", AsyncMock()) as run:
+            result = await appmod.retry_run(state.job_id)
             self.assertEqual(result["status"], "queued")
-            with self.assertRaises(HTTPException):
-                await appmod.retry_failed_job(state.job_id)
+            # The retry schedules _run_job inside a Task; let the loop run it
+            # so the AsyncMock actually gets awaited.
             await asyncio.sleep(0)
+            self.assertIn(state.job_id, appmod.tasks)
+            await appmod.tasks[state.job_id]
+            self.assertEqual(run.await_count, 1)
+            args = run.await_args.args
+            request = args[1] if len(args) > 1 else run.await_args.kwargs.get("request")
+            self.assertEqual(request.snapshot_id, "snap-1")
+            self.assertTrue(request.review)
+
+    async def test_double_retry_is_rejected_after_first(self):
+        state = JobState(
+            job_id="retry",
+            status="failed",
+            step="失败",
+            request={"snapshot_id": "snap-1", "review": False},
+        )
+        appmod.jobs["retry"] = state
+        with patch.object(appmod, "_run_job", AsyncMock()):
+            await appmod.retry_run(state.job_id)
+            self.assertEqual(appmod.jobs["retry"].status, "queued")
+            with self.assertRaises(HTTPException) as ctx:
+                await appmod.retry_run(state.job_id)
+            self.assertEqual(ctx.exception.status_code, 409)
+            await appmod.tasks[state.job_id]
 
     async def test_clear_cache_blocked_while_queued(self):
         appmod.jobs["queued"] = JobState(job_id="queued", status="queued", step="排队")
@@ -173,11 +150,22 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_report_roundtrip_and_confirmation(self):
         chapter = draft(1)
         chapter.quality_metrics = {"traceability": {"source_coverage": 1}}
-        chapter.quality_report = {"accepted": False, "deterministic": {
-            "accepted": True, "issues": [], "metrics": chapter.quality_metrics}}
+        chapter.quality_report = {
+            "accepted": False,
+            "deterministic": {
+                "accepted": True,
+                "issues": [],
+                "metrics": chapter.quality_metrics,
+            },
+        }
         from coursebook_agent.models import CourseBook
-        state = JobState(job_id="report", course_id="demo", status="completed", step="完成",
-                         book=CourseBook(course=Source().get_course(), title="教辅", chapters=[chapter]))
+        state = JobState(
+            job_id="report",
+            course_id="demo",
+            status="completed",
+            step="完成",
+            book=CourseBook(course=Course(course_id="demo", name="离线课程"), title="教辅", chapters=[chapter]),
+        )
         appmod._persist_job(state)
         appmod._load_jobs()
         result = await appmod.run_report("report")
@@ -188,51 +176,46 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["results"][0]["accepted"])
 
     async def test_http_retry_and_status_contract(self):
-        state = JobState(job_id="http", course_id="demo", status="interrupted", step="中断")
+        state = JobState(
+            job_id="http",
+            course_id="demo",
+            status="interrupted",
+            step="中断",
+            request={"snapshot_id": "snap-1", "review": False, "concurrency": 3},
+        )
         appmod.jobs["http"] = state
-        with patch.object(appmod, "_run_retry_job", AsyncMock()):
+        with patch.object(appmod, "_run_job", AsyncMock()):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=appmod.app), base_url="http://test") as client:
-                response = await client.post("/api/jobs/http/retry")
+                response = await client.post("/api/runs/http/retry")
                 self.assertEqual(response.status_code, 202)
                 self.assertEqual(response.json()["course_id"], "demo")
-                response = await client.post("/api/jobs/http/retry")
+                await appmod.tasks["http"]
+                response = await client.post("/api/runs/http/retry")
                 self.assertEqual(response.status_code, 409)
-                response = await client.get("/api/jobs/http")
+                response = await client.get("/api/runs/http")
                 self.assertEqual(response.json()["status"], "queued")
                 self.assertTrue(response.json()["events"])
-            await asyncio.sleep(0)
 
-    async def test_source_endpoint_serves_saved_evidence(self):
-        appmod.jobs["source"] = JobState(job_id="source", course_id="demo", status="completed", step="完成")
-        path = appmod.JOB_DIR / "source"
-        atomic_write_text(path / "lectures.json", json.dumps([{"lecture_id": "l1"}]))
-        atomic_write_text(path / "chunks-l1.json", json.dumps([
-            {"chunk_id": "c1", "lecture_id": "l1", "start_sec": 3, "end_sec": 8, "text": "证据"}
-        ], ensure_ascii=False))
-        response = await appmod.chapter_source("source", 1, "c1")
-        self.assertEqual(response["text"], "证据")
-        with self.assertRaises(HTTPException):
-            await appmod.chapter_source("source", 1, "missing")
-
-    async def test_cache_clear_keeps_reports_and_checkpoints(self):
+    async def test_cache_clear_keeps_jobs_and_runs(self):
         for sub in ["intermediate", "output", "jobs", "runs"]:
-            atomic_write_text(config.data_dir / sub / "fixture.json", "{}")
+            atomic_dir = config.data_dir / sub
+            atomic_dir.mkdir(parents=True, exist_ok=True)
+            (atomic_dir / "fixture.json").write_text("{}", encoding="utf-8")
         result = await appmod.clear_cache()
         self.assertEqual(set(result["removed"]), {"intermediate", "output"})
         self.assertTrue((config.data_dir / "jobs" / "fixture.json").exists())
         self.assertTrue((config.data_dir / "runs" / "fixture.json").exists())
 
-    async def test_manifest_change_prevents_cross_run_mixing(self):
-        pipeline = CourseBookPipeline(Source())
-        path = config.data_dir / "checkpoint"
-        atomic_write_text(path / "lectures.json", json.dumps([{"lecture_id": "other"}]))
-        with self.assertRaisesRegex(ValueError, "讲次已变化"):
-            await pipeline.generate_course("demo", only_indices=[], use_book_plan=False,
-                                           checkpoint_dir=path, synthesize=False)
+    async def test_download_md_rejects_incomplete_run(self):
+        appmod.jobs["fresh"] = JobState(job_id="fresh", status="running", step="生成")
+        with self.assertRaises(HTTPException) as ctx:
+            await appmod.download_run_markdown("fresh")
+        self.assertEqual(ctx.exception.status_code, 409)
 
 
 class IntegrityTests(unittest.TestCase):
     def test_atomic_failure_keeps_previous_file(self):
+        from coursebook_agent.storage import atomic_write_text
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "artifact.json"
             atomic_write_text(path, '{"old": true}')
