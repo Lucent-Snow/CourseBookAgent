@@ -117,8 +117,8 @@ def project_run(state: JobState) -> RunProjection:
             summaries_by_chapter[str(cid)] = item
 
     # Read the plan cache for the canonical chapter order. The cache file is
-    # written by MultiResourceCourseBookPipeline under data/plans/ with the
-    # name pattern bookplan-{snapshot_id}.json or bookplan-{course_id}.json.
+    # written by CourseBookPipeline.run() under data/plans/ with the name
+    # pattern bookplan-{snapshot_id}.json or bookplan-{course_id}.json.
     canonical_chapter_ids: list[str] = []
     plan: dict | None = None
     snapshot_id = state.request.get("snapshot_id")
