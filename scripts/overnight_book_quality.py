@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Overnight book-quality regeneration runner.
 
-Runs lecture-by-lecture with retries, skips already-V2 chapters unless forced,
+Runs lecture-by-lecture with retries, skips chapters that already have
+multi-resource-format sections unless forced,
 then synthesizes the whole coursebook.
 """
 
@@ -20,7 +21,7 @@ from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.renderer.markdown import render_chapter, render_coursebook
 
 
-def is_v2(draft: LectureDraft) -> bool:
+def has_multi_resource_format(draft: LectureDraft) -> bool:
     return bool(draft.bridge_from_prev or draft.key_points or draft.learning_goals)
 
 
@@ -30,8 +31,8 @@ async def generate_one(pipeline: CourseBookPipeline, course_id: str, index: int,
     path = pipeline.intermediate_dir / f"chapter-{lecture.lecture_id}.json"
     if path.exists() and not force:
         draft = LectureDraft.model_validate_json(path.read_text(encoding="utf-8"))
-        if is_v2(draft):
-            return {"index": index, "status": "skip_v2", "title": draft.title, "lecture_id": lecture.lecture_id}
+        if has_multi_resource_format(draft):
+            return {"index": index, "status": "skip_existing", "title": draft.title, "lecture_id": lecture.lecture_id}
 
     previous = None
     if index > 1:
@@ -60,7 +61,7 @@ async def generate_one(pipeline: CourseBookPipeline, course_id: str, index: int,
                 "attempt": attempt,
                 "title": draft.title,
                 "lecture_id": lecture.lecture_id,
-                "v2": is_v2(draft),
+                "multi_resource": has_multi_resource_format(draft),
                 "sections": len(draft.sections),
                 "key_points": len(draft.key_points),
             }
@@ -81,7 +82,7 @@ async def main() -> None:
     parser.add_argument("--course-id", default="82493")
     parser.add_argument("--start", type=int, default=1)
     parser.add_argument("--end", type=int, default=14)
-    parser.add_argument("--force", action="store_true", help="Regenerate even if chapter already V2")
+    parser.add_argument("--force", action="store_true", help="Regenerate even if chapter already has the new format")
     parser.add_argument("--review", action="store_true", default=True)
     parser.add_argument("--no-review", action="store_true")
     parser.add_argument("--synthesize", action="store_true", default=True)
@@ -118,7 +119,7 @@ async def main() -> None:
         "course_id": args.course_id,
         "indices": indices,
         "results": results,
-        "ok": sum(1 for r in results if r["status"] in {"ok", "skip_v2"}),
+        "ok": sum(1 for r in results if r["status"] in {"ok", "skip_existing"}),
         "failed": [r for r in results if r["status"] == "failed"],
     }
 
