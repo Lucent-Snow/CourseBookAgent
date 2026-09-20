@@ -3,7 +3,7 @@ import { ArrowRight, FileText, FolderOpen, Plus, Search, Settings } from 'lucide
 import { Link, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { api } from '@/api/client'
+import { infrastructureApi } from '@/api/infrastructure'
 import { productApi } from '@/api/product'
 import type { Dataset } from '@/product-types'
 
@@ -24,7 +24,7 @@ export function DatasetsPage() {
   }
   useEffect(() => { void load() }, [])
   useEffect(() => {
-    void Promise.all([api.health(), productApi.providerAuth()]).then(([health, providers]) => {
+    void Promise.all([infrastructureApi.health(), productApi.providerAuth()]).then(([health, providers]) => {
       setSetup({
         llm: health.llm_configured,
         zhiyun: providers.zhiyun.authenticated,

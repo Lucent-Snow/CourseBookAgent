@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowLeft, Bot, Clock3, FileText, Gauge, Layers, Pause, RefreshCw, ShieldAlert, Tag } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { api } from '@/api/client'
 import { productApi } from '@/api/product'
 import type { QualityReport, ResourceProjection, RunProjection, StageProjection } from '@/product-types'
 
@@ -133,7 +132,17 @@ export function RunDetailPage() {
  return () => window.clearInterval(timer)
  }, [])
 
- async function action(kind: 'retry' | 'cancel') { try { if (kind === 'retry') await api.retryJob(runId); else await api.cancelJob(runId); } catch (err) { setError((err as Error).message) } }
+ async function action(kind: 'retry' | 'cancel') {
+    try {
+      const res = await fetch(`/api/runs/${runId}/${kind}`, { method: 'POST' })
+      if (!res.ok) {
+        const detail = await res.json().then((b) => b?.detail).catch(() => '')
+        throw new Error(detail || `请求失败（${res.status}）`)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
 
  if (!run) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取运行状态…'}</div>
 
