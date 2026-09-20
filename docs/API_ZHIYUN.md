@@ -142,7 +142,7 @@ zju_login.py -u 学号 -p 密码
 |---|---|
 | `POST /api/login` | `zju_login.py -u -p` |
 | `GET /api/login/status` | `zju_login.py --status` |
-| `GET /api/courses` | `zju_zhiyun.py my-courses` |
+| `GET /api/courses` | 旧文档调研 — 已迁移到 `/api/product/imports/zhiyun/courses` |
 | `POST /api/generate` | `zju_zhiyun.py videos` → `transcript` → `ppt` |
 
 ---
@@ -502,9 +502,9 @@ POST /api/login
     → session 就绪
     │
     ▼
-GET /api/courses
-    → zju_zhiyun.py my-courses
-    → [{course_id, title, teacher}, ...]
+GET /api/product/imports/zhiyun/courses
+    → ZhiyunSource.list_courses()
+    → [{course_id, title, teacher, term}, ...]
     │
     ▼
 用户选择 course_id

@@ -37,29 +37,23 @@ npm run dev    # http://localhost:5173，/api 代理到 8000
 ## 测试
 
 ```bash
-uv run python -m unittest discover -s tests -v   # 后端（62 用例，含 6 项产品层）
+uv run python -m unittest discover -s tests -v   # 后端测试
 uv run python scripts/check_offline.py            # 离线确定性回归
 cd frontend && npm run build && npm run lint      # 前端构建与 lint
 ```
 
-## CLI
+## API
 
-```bash
-uv run python -m coursebook_agent.cli --course-id 82493 --plan-only
-uv run python -m coursebook_agent.cli --course-id 82493 --only 2,3,4 --regenerate --review
-uv run python -m coursebook_agent.cli --course-id 82493
-uv run python scripts/overnight_book_quality.py --course-id 82493 --review
-```
-
-## 产品工作台 API（前端默认使用）
-
-资料集与生成请求走 `/api/product/*`；旧的 `/api/courses`、`/api/jobs`、`/api/books`、`/api/runs`、`/api/generate` 仍兼容。
+资料集与生成走 `/api/product/*`；生成触发、运行生命周期和共享设置在 `app.py`。
 
 - 资料集：`/api/product/datasets`、上传 `/api/product/datasets/{id}/resources`、快照 `/api/product/datasets/{id}/snapshots`
 - 智云导入：`/api/product/imports/zhiyun/courses`、`/api/product/datasets/{id}/imports/zhiyun`
 - 学在浙大导入：`/api/product/imports/xuezai/courses`、`/api/product/datasets/{id}/imports/xuezai`
 - 统一身份认证：`/api/product/auth/login`（一次登录同时取智云 + 学在浙大会话）
 - 运行投影：`/api/product/runs[/{run_id}]`、`/api/product/artifacts[/{artifact_id}]`
+- 触发生成：`POST /api/generate`（body 必须带 `snapshot_id`）
+- 运行生命周期：`POST /api/runs/{run_id}/retry`、`POST /api/runs/{run_id}/cancel`、`GET /api/runs/{run_id}/download.md`
+- 共享：`GET /api/health`、`GET /api/settings`、`PUT /api/settings/llm`、`POST /api/settings/llm/test`、`DELETE /api/cache`
 
 详细契约见 `docs/API.md`。
 

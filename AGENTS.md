@@ -28,21 +28,20 @@ uv sync                                                 # 安装依赖
 uv run python -m unittest discover -s tests -v          # 跑后端测试
 uv run uvicorn coursebook_agent.app:app --host 127.0.0.1 --port 8000  # 起后端
 cd frontend && npm install && npm run dev               # 起前端 dev server（/api 代理到 8000）
-uv run python -m coursebook_agent.cli --course-id 82493 --plan-only  # 生成全书蓝图
-uv run python -m coursebook_agent.cli --course-id 82493 --only 2,3,4 --regenerate --review  # 重生成指定讲次
-uv run python scripts/overnight_book_quality.py --course-id 82493 --review  # 全量重跑
 uv run python scripts/check_offline.py                   # 离线确定性回归
 cd frontend && npm run build && npm run lint             # 前端构建与 lint
 ```
 
 ## 模块边界
 
+- `pipeline.py`：唯一入口 `CourseBookPipeline.run()`，按 7 阶段（snapshot → parse → describe → plan + Tag → assemble → generate → synthesize → render）跑完整个工作流；旧 per-lecture 入口已删除。
 - `sources/zhiyun.py`、`sources/xuezai/assist.py`：分别从智云课堂和学在浙大获取资料；不碰生成逻辑；不依赖外部 skill。实时刷新依赖会话文件或环境变量。
-- `agent/`：生成核心——`digest.py`（字幕压缩）、`editor.py`（全书规划）、`chapter.py`（分章撰写）、`synthesize.py`（全书合成）、`quality.py`（质量门禁）、`llm.py`（LLM 客户端）。**这是队友的工作线，不要轻易改动**。
-- `renderer/`：只负责渲染 Markdown，不做生成。
+- `agent/`：生成核心——`describe.py`（逐份资料 description）、`editor.py`（主 Agent 全书规划、Tag 装配）、`chapter.py`（分章撰写）、`synthesize.py`（全书合成）、`quality.py`（质量门禁）、`llm.py`（LLM 客户端）。**这是队友的工作线，不要轻易改动**。
+- `assembly/`：按 Tag 装 `ChapterContext`；纯函数。
+- `renderer/`：只负责渲染 Markdown / Web 阅读器，不做生成。
 - `preprocess/`：字幕清洗分块，纯确定性逻辑，不调 LLM。
-- `product/`：产品工作台应用层。资料集、资源版本、输入快照、工作流预设、结构化运行投影与独立产物。包含 `api.py`（`/api/product/*`）、`service.py`（SQLite 落盘 + 内容寻址 blob）、`projections.py`（Job → 结构化投影）、`parsers.py`（多格式文档解析）。
-- `frontend/`：React 前端，包含 9 页产品工作台（资料库、资料集详情、工作流配置、运行中心、运行详情、产物列表、产物阅读、系统设置），全部连接 `/api/product/*`。
+- `product/`：产品工作台应用层。资料集、资源版本、输入快照、工作流预设、结构化运行投影与独立产物。包含 `api.py`（`/api/product/*`）、`service.py`（SQLite 落盘 + 内容寻址 blob）、`projections.py`（Job → 结构化投影）、`parsers.py`（多格式文档解析）、`snapshot_loader.py`（snapshot → ParsedResource）。
+- `frontend/`：React 前端，包含 8 页产品工作台（资料库、资料集详情、工作流配置、运行中心、运行详情、产物列表、产物阅读、系统设置），全部连接 `/api/product/*`。
 - 生成结果与资料集缓存在 `data/`。原始 `data/cache/zhiyun/`（字幕）、`data/cache/xuezai/`（我的课程、课件列表）、`data/product/`（资料集 SQLite + blob + 文本）均受 Git 忽略。
 
 ## 工作规则

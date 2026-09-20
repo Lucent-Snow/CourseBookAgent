@@ -19,7 +19,7 @@ CourseBookAgent 的核心是**课堂资料 → 教辅书的生成工作流**，�
 
 ```text
 coursebook_agent/
-├── app.py                  # FastAPI 入口；同时挂载 /api/courses、/api/jobs 等旧路由与 /api/product/*
+├── app.py                  # FastAPI 入口：/api/generate、/api/runs/* 生命周期与共享设置 + /api/health
 ├── config.py               # 配置（LLM / 智云 / 路径）
 ├── models.py               # 生成核心数据模型（资料描述 / Tag / BookPlan / ChapterDraft / CourseBook 等）
 ├── pipeline.py             # 固定阶段编排；按主 Agent 章节规划与 Tag 组装上下文
@@ -48,10 +48,9 @@ coursebook_agent/
 │   ├── parsers.py          # 多格式文档解析（PDF/DOCX/PPTX/Markdown/TXT）
 │   ├── projections.py      # JobState → RunProjection / ArtifactSummary
 │   └── __init__.py         # 导出 ProductService
-├── frontend/               # React 前端（9 页产品工作台 + 旧兼容页）
+├── frontend/               # React 前端（8 页产品工作台）
 ├── profiles/               # 课程 Profile（术语表/章节模板）
 └── scripts/
-    ├── overnight_book_quality.py  # 全量批处理
     └── check_offline.py            # 离线确定性回归
 ```
 
@@ -165,12 +164,12 @@ data/
 | 路由族 | 路径前缀 | 说明 |
 |---|---|---|
 | 健康 | `/api/health` | 健康 + 配置状态 |
-| 智云（旧） | `/api/zhiyun/*`、`/api/courses`、`/api/books` | 兼容路径，仍可用 |
-| 任务（旧） | `/api/generate/legacy`、`/api/jobs/*`、`/api/runs/*` | Job 调度 + 报告（**新客户端推荐用 `/api/generate`**） |
-| 设置 | `/api/settings`、`/api/settings/llm` | LLM 配置保存 |
-| 缓存清理 | `/api/cache` | 清派生产物 |
+| 智云鉴权 | `/api/zhiyun/*` | 智云登录状态探测与登录 |
+| 生成触发 | `POST /api/generate` | body 必须含 `snapshot_id` |
+| 运行生命周期 | `/api/runs/*` | retry / cancel / report / confirm / download.md |
+| 设置 | `/api/settings`、`/api/settings/llm`、`/api/settings/llm/test` | LLM 配置保存与测试 |
+| 缓存清理 | `DELETE /api/cache` | 清派生产物（保留原始资料与蓝图） |
 | **产品工作台** | `/api/product/*` | 资料集、上传、快照、导入、运行投影、产物 |
-| 静态 | `/static/*` | 内置旧 SPA |
 
 产品工作台关键路由：
 
@@ -227,7 +226,7 @@ Web 版保留时间链接字段，但尚未真正接入智云播放器跳转。`
 
 ### 7.5 并行章节生成
 
-`MultiResourceCourseBookPipeline.run` 按 7 阶段执行：
+`CourseBookPipeline.run` 按 7 阶段执行：
 - description 与主 Agent 规划串行（依赖链）；
 - chapter generation 用 `asyncio.Semaphore` 限流并发（默认 2，可在请求中覆盖）；
 - chapter 之间的"承上"依赖上一章 `chapter-draft`（在前一章完成后传给下一章），不依赖上一章 LLM 输出中的语义。
