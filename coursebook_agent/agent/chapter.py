@@ -576,10 +576,10 @@ def _collect_ranges(sections: list[ChapterSection], chunks: list[TimedChunk]) ->
     return result
 
 
-# ── v2: chapter Agent that consumes a ChapterContext ──────────────────────
+# ── Chapter agent: consumes a ChapterContext ──────────────────────────────
 
 
-async def generate_chapter_v2(
+async def generate_chapter_from_context(
     context: "ChapterContext",
     *,
     previous_draft: "LectureDraft | None" = None,
@@ -593,19 +593,19 @@ async def generate_chapter_v2(
 
     llm = client or LLMClient(max_retries=3, timeout=180)
     payload = _build_context_payload(context)
-    prompt = _build_v2_prompt(context, payload, previous_draft)
+    prompt = _build_chapter_prompt(context, payload, previous_draft)
     try:
-        data = await llm.complete_json(V2_SYSTEM, prompt, max_tokens=20000)
+        data = await llm.complete_json(CHAPTER_AGENT_SYSTEM, prompt, max_tokens=20000)
     except LLMError as exc:
         # Retry with a tighter contract on JSON failure.
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(V2_SYSTEM, narrow, max_tokens=16000)
+        data = await LLMClient(max_retries=3, timeout=180).complete_json(CHAPTER_AGENT_SYSTEM, narrow, max_tokens=16000)
 
     # If sections are missing, retry once with a tighter instruction.
     if review and isinstance(data, dict) and len(data.get("sections") or []) < 2:
         try:
             retry_data = await LLMClient(max_retries=1, timeout=180).complete_json(
-                V2_SYSTEM,
+                CHAPTER_AGENT_SYSTEM,
                 prompt + "\n\n务必填写 3 个 sections，每节 content ≥ 2 段。不要省略 sections。",
                 max_tokens=16000,
             )
@@ -615,10 +615,10 @@ async def generate_chapter_v2(
             pass
 
     if review and isinstance(data, dict):
-        data = await _review_pass_v2(llm, data, instruction)
+        data = await _review_pass_chapter(llm, data, instruction)
 
-    data = _normalize_v2(data, instruction)
-    draft = _validate_and_fix_v2(data, context, previous_draft)
+    data = _normalize_chapter_data(data, instruction)
+    draft = _validate_and_fix_chapter(data, context, previous_draft)
     return draft
 
 
@@ -670,7 +670,7 @@ def _build_context_payload(context: "ChapterContext") -> str:
     return "\n".join(chapter_lines)
 
 
-V2_SYSTEM = """你是高校课程教辅书的分章写作者。
+CHAPTER_AGENT_SYSTEM = """你是高校课程教辅书的分章写作者。
 
 你的输入：
 - 全局写作提示词和全书组件规范
@@ -683,7 +683,7 @@ V2_SYSTEM = """你是高校课程教辅书的分章写作者。
 只返回 JSON。"""
 
 
-def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
+def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
     instruction = context.chapter
     component_specs = "\n".join(
         (
@@ -739,11 +739,11 @@ def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "L
     )
 
 
-async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
+async def _review_pass_chapter(llm: LLMClient, data: dict, instruction) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
         review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
-            V2_SYSTEM,
+            CHAPTER_AGENT_SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
             max_tokens=2000,
         )
@@ -760,7 +760,7 @@ async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
     return data
 
 
-def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
+def _normalize_chapter_data(data: dict, instruction: ChapterInstruction) -> dict:
     if not isinstance(data, dict):
         raise LLMError("章节结果不是对象")
     data.setdefault("chapter_id", instruction.chapter_id)
@@ -825,7 +825,7 @@ def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
     return data
 
 
-def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) -> "LectureDraft":
+def _validate_and_fix_chapter(data: dict, context: "ChapterContext", previous_draft) -> "LectureDraft":
     instruction = context.chapter
     used_ids = {r.revision_id for r in context.chapter_resources} | {r.revision_id for r in context.global_resources}
     try:
@@ -872,7 +872,7 @@ def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) 
     return draft
 
 
-async def generate_chapter_v2_with_fallback(
+async def generate_chapter_from_context_with_fallback(
     context: "ChapterContext",
     *,
     previous_draft: "LectureDraft | None" = None,
@@ -883,11 +883,11 @@ async def generate_chapter_v2_with_fallback(
     """Generate one chapter; on LLM failure, fall back to a deterministic
     chapter built directly from the resource units.
 
-    This guarantees the v2 pipeline always produces a chapter draft for
-    every chapter in the plan, even when the model is flaky.
+    This guarantees the multi-resource pipeline always produces a chapter
+    draft for every chapter in the plan, even when the model is flaky.
     """
     try:
-        return await generate_chapter_v2(
+        return await generate_chapter_from_context(
             context,
             previous_draft=previous_draft,
             client=client,
@@ -897,7 +897,7 @@ async def generate_chapter_v2_with_fallback(
         # One last LLM retry with a tighter prompt + smaller scope.
         if fallback_llm_budget > 0:
             try:
-                return await generate_chapter_v2(
+                return await generate_chapter_from_context(
                     context,
                     previous_draft=previous_draft,
                     client=LLMClient(max_retries=2, timeout=120),
@@ -905,10 +905,10 @@ async def generate_chapter_v2_with_fallback(
                 )
             except Exception:
                 pass
-        return _deterministic_chapter_v2(context, previous_draft, reason=str(exc))
+        return _deterministic_chapter(context, previous_draft, reason=str(exc))
 
 
-def _deterministic_chapter_v2(
+def _deterministic_chapter(
     context: "ChapterContext",
     previous_draft: "LectureDraft | None",
     *,

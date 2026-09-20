@@ -76,7 +76,7 @@ export function ReviewPage() {
   if (runs.length === 0) {
     return (
       <div className="mx-auto max-w-md py-16 text-center">
-        <p className="text-sm text-muted-foreground">尚无 V2 质量运行记录</p>
+        <p className="text-sm text-muted-foreground">尚无质量运行记录</p>
       </div>
     )
   }

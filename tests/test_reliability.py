@@ -123,7 +123,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                 "coursebook_agent.pipeline.synthesize_book", side_effect=synth), patch.object(
                 pipeline, "ensure_book_plan", AsyncMock(return_value=BookPlan(course_id="demo", book_title="计划"))):
             with patch.object(pipeline, "generate_lecture", side_effect=generate):
-                await appmod._generate_locked(state, appmod.GenerateRequest(course_id="demo"))
+                await appmod._generate_locked(state, appmod.LegacyGenerateRequest(course_id="demo"))
             self.assertEqual(state.status, "partial")
             with patch.object(pipeline, "generate_lecture", AsyncMock(return_value=draft(2))) as gen:
                 await appmod._run_retry_job("flow", "demo", [2])
@@ -180,10 +180,10 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
                          book=CourseBook(course=Source().get_course(), title="教辅", chapters=[chapter]))
         appmod._persist_job(state)
         appmod._load_jobs()
-        result = await appmod.v2_run_report("report")
+        result = await appmod.run_report("report")
         self.assertEqual(result["results"][0]["deterministic"]["metrics"]["traceability"]["source_coverage"], 1)
         await appmod.confirm_run_chapter("report", 1, appmod.ConfirmRequest(note="核对通过"))
-        result = await appmod.v2_run_report("report")
+        result = await appmod.run_report("report")
         self.assertTrue(result["results"][0]["confirmation"]["confirmed"])
         self.assertFalse(result["results"][0]["accepted"])
 

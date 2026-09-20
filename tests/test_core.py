@@ -118,7 +118,7 @@ class ZhiyunSourceTests(unittest.TestCase):
             self.assertEqual([(x.start_sec, x.end_sec, x.text) for x in segments], [(2, 5, "字幕内容")])
 
 
-class V2WorkflowTests(unittest.TestCase):
+class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.profile = CourseProfile(
             course_id="test", subject="统计学", course_theme="测试主题", audience="学生", teaching_goal="可复习",

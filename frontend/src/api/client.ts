@@ -47,7 +47,7 @@ export const api = {
   },
 
   generate: (courseId: string, regenerate = false) =>
-    request<JobState>('/api/generate', {
+    request<JobState>('/api/generate/legacy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ course_id: courseId, regenerate }),
@@ -82,7 +82,7 @@ export const api = {
     }),
   clearCache: () => request<{ ok: boolean; removed: string[] }>('/api/cache', { method: 'DELETE' }),
 
-  // V2 质量报告
+  // Run reports and quality
   listRuns: async (): Promise<RunSummary[]> => {
     const res = await request<{ data: RunSummary[] }>('/api/runs')
     return res.data ?? []

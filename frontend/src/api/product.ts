@@ -73,6 +73,6 @@ export const productApi = {
       chapter_indices: lectureIndices,
     }
     if (courseId) payload.course_id = courseId
-    return request<JobState>('/api/generate/v2', json(payload))
+    return request<JobState>('/api/generate', json(payload))
   },
 }

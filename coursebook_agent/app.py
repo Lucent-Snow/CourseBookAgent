@@ -114,7 +114,12 @@ def _load_jobs() -> None:
 _load_jobs()
 
 
-class GenerateRequest(BaseModel):
+class LegacyGenerateRequest(BaseModel):
+    """Legacy course-keyed request shape kept for backward compatibility.
+
+    New clients should use ``GenerateRequest`` (snapshot-keyed). This shape
+    is wired to ``/api/generate`` and the legacy ``CourseBookPipeline``.
+    """
     course_id: str = Field(default="82493", pattern=r"^[A-Za-z0-9_-]+$")
     refresh_source: bool = False
     regenerate: bool = False
@@ -195,8 +200,8 @@ async def course_lectures(course_id: str):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/api/generate", status_code=202)
-async def generate(request: GenerateRequest):
+@app.post("/api/generate/legacy", status_code=202)
+async def generate_legacy(request: LegacyGenerateRequest):
     job_id = uuid.uuid4().hex[:12]
     jobs[job_id] = JobState(job_id=job_id, course_id=request.course_id, request=request.model_dump(), status="queued", step="排队", progress=0, message="准备生成")
     _persist_job(jobs[job_id])
@@ -204,7 +209,7 @@ async def generate(request: GenerateRequest):
     return jobs[job_id].model_dump()
 
 
-class GenerateV2Request(BaseModel):
+class GenerateRequest(BaseModel):
     course_id: str | None = None
     snapshot_id: str | None = None
     regenerate: bool = False
@@ -213,8 +218,8 @@ class GenerateV2Request(BaseModel):
     chapter_indices: list[int] | None = None
 
 
-@app.post("/api/generate/v2", status_code=202)
-async def generate_v2(request: GenerateV2Request):
+@app.post("/api/generate", status_code=202)
+async def generate(request: GenerateRequest):
     if not request.snapshot_id:
         raise HTTPException(status_code=400, detail="snapshot_id 必须提供；系统不再以课程为主键。")
     # Resolve dataset_id from snapshot so the run is bound to its source
@@ -227,26 +232,26 @@ async def generate_v2(request: GenerateV2Request):
         course_id=request.course_id or "",
         request=request.model_dump(),
         status="queued", step="排队", progress=0,
-        message="v2 多资料工作流准备",
+        message="多资料工作流准备",
     )
     # Dataset binding lives in request so projections can find it.
     job_state.request["dataset_id"] = snapshot_obj.dataset_id
     job_state.request["dataset_name"] = ProductService().get_dataset(snapshot_obj.dataset_id).name
     jobs[job_id] = job_state
     _persist_job(job_state)
-    _schedule(job_id, _run_job_v2(job_id, request))
+    _schedule(job_id, _run_job_from_snapshot(job_id, request))
     return job_state.model_dump()
 
 
-async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
+async def _run_job_from_snapshot(job_id: str, request: GenerateRequest) -> None:
     state = jobs[job_id]
     async with generation_lock:
-        state.status, state.step, state.message = "running", "读取快照", "v2 多资料工作流启动"
+        state.status, state.step, state.message = "running", "读取快照", "多资料工作流启动"
         _persist_job(state)
-        await _generate_locked_v2(state, request)
+        await _generate_locked_from_snapshot(state, request)
 
 
-async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> None:
+async def _generate_locked_from_snapshot(state: JobState, request: GenerateRequest) -> None:
     # Promote dataset binding to top-level fields so projection can render it.
     state.dataset_id = state.request.get("dataset_id", state.dataset_id)
     state.dataset_name = state.request.get("dataset_name", state.dataset_name)
@@ -266,7 +271,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         state.message = message
         if chapter:
             cid = chapter.get("chapter_id") or chapter.get("index")
-            # v2 sends chapter_id only; legacy sends index. Mirror an "index"
+            # snapshot-keyed requests carry chapter_id only; legacy sends index. Mirror an "index"
             # field so the projection can sort by either.
             if chapter.get("chapter_id") and "index" not in chapter:
                 # Try to preserve explicit index from caller; otherwise assign by order.
@@ -313,7 +318,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         raise
 
 
-async def _run_job(job_id: str, request: GenerateRequest) -> None:
+async def _run_job(job_id: str, request: LegacyGenerateRequest) -> None:
     state = jobs[job_id]
     # Block on the lock so this task actually starts when the previous run
     # releases; the lock-fair queueing keeps it serialised.
@@ -323,7 +328,7 @@ async def _run_job(job_id: str, request: GenerateRequest) -> None:
         await _generate_locked(state, request, only_indices=request.lecture_indices)
 
 
-async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
+async def _generate_locked(state: JobState, request: LegacyGenerateRequest, only_indices: list[int] | None = None) -> None:
     def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
         state.progress = min(95, int(done / total * 95)) if total else 0
         head = message.strip().split(" ", 1)[0]
@@ -422,7 +427,7 @@ async def _run_retry_job(job_id: str, course_id: str, retry_indices: list[int]) 
             return
         await _generate_locked(
             state,
-            GenerateRequest(course_id=course_id, regenerate=True, refresh_source=False,
+            LegacyGenerateRequest(course_id=course_id, regenerate=True, refresh_source=False,
                             review=bool(state.request.get("review", False))),
             only_indices=retry_indices,
         )
@@ -481,18 +486,18 @@ async def download_markdown(job_id: str):
 
 
 @app.get("/api/runs/{run_id}/report")
-async def v2_run_report(run_id: str):
+async def run_report(run_id: str):
     if run_id in jobs:
         return _job_report(jobs[run_id])
     path = config.data_dir / "runs" / run_id / "report" / "pilot-quality-report.json"
     if not path.exists():
-        raise HTTPException(status_code=404, detail="V2 运行报告不存在")
+        raise HTTPException(status_code=404, detail="运行报告不存在")
     import json
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 @app.get("/api/runs/{run_id}/chapters/{lecture_index}")
-async def v2_run_chapter(run_id: str, lecture_index: int):
+async def run_chapter(run_id: str, lecture_index: int):
     if run_id in jobs and jobs[run_id].book:
         chapters = jobs[run_id].book.chapters
         if 1 <= lecture_index <= len(chapters):
@@ -501,7 +506,7 @@ async def v2_run_chapter(run_id: str, lecture_index: int):
     base = config.data_dir / "runs" / run_id / "chapters"
     matches = sorted(base.glob(f"chapter-{lecture_index:02d}-*.json"))
     if not matches:
-        raise HTTPException(status_code=404, detail="V2 试点章节不存在")
+        raise HTTPException(status_code=404, detail="章节不存在")
     return LectureDraft.model_validate_json(matches[0].read_text(encoding="utf-8")).model_dump()
 
 
@@ -647,7 +652,7 @@ async def clear_cache():
     return {"ok": True, "removed": removed}
 
 
-# ── V2 runs / quality ───────────────────────────────────────────────────
+# ── Run reports and quality ─────────────────────────────────────────────
 
 @app.get("/api/runs")
 async def list_runs():
@@ -709,7 +714,7 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
         return {"ok": True}
     run_dir = config.data_dir / "runs" / run_id
     if not run_dir.exists():
-        raise HTTPException(status_code=404, detail="V2 运行不存在")
+        raise HTTPException(status_code=404, detail="运行不存在")
     review_dir = run_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
     (review_dir / f"confirm-{lecture_index:02d}.json").write_text(

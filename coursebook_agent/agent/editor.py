@@ -60,7 +60,7 @@ async def plan_book(
 
 {profile_context}
 
-V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、每章 component_usage、depth_guidance 和 common_mistakes。章节类型（core / guest / review / mixed）必须按课程编辑配置中的模板区分，不得用同一套模板套所有讲次。
+蓝图不可降级：必须完整填写 components、writer_system_prompt、每章 component_usage、depth_guidance 和 common_mistakes。章节类型（core / guest / review / mixed）必须按课程编辑配置中的模板区分，不得用同一套模板套所有讲次。
 
 返回严格 JSON：
 {{
@@ -267,10 +267,10 @@ def load_plan(path: Path) -> BookPlan:
     return BookPlan.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-# ── v2: main Agent consumes ResourceDescriptions ────────────────────────────
+# ── Main agent: consumes ResourceDescriptions ──────────────────────────────
 
 
-V2_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排）**。
+MAIN_AGENT_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排）**。
 
 你的工作是把多份零散的课堂资料**重新组织成一本书**，不是按时间顺序把它们切成一节一节的概要。
 
@@ -301,7 +301,7 @@ V2_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排
 只返回 JSON。"""
 
 
-V2_USER_TEMPLATE = """课程信息：{course}
+MAIN_AGENT_USER_TEMPLATE = """课程信息：{course}
 
 所有资料描述（按 revision_id 列出）：
 {descriptions}
@@ -372,14 +372,14 @@ V2_USER_TEMPLATE = """课程信息：{course}
 """
 
 
-async def plan_book_v2(
+async def plan_book_from_descriptions(
     course: Course,
     descriptions: list,
     client: LLMClient | None = None,
     *,
     snapshot_id: str | None = None,
 ) -> BookPlan:
-    """v2 main Agent: ingest resource descriptions, output BookPlan with resource_tags."""
+    """Main Agent: ingest resource descriptions, output BookPlan with resource_tags."""
     if not descriptions:
         raise ValueError("没有任何资料描述可用于规划")
 
@@ -402,15 +402,15 @@ async def plan_book_v2(
             "summary": summary[:160],
         })
     payload = {"course": course.model_dump(), "descriptions": compact_descriptions}
-    prompt = V2_USER_TEMPLATE.format(
+    prompt = MAIN_AGENT_USER_TEMPLATE.format(
         course=json.dumps(course.model_dump(), ensure_ascii=False),
         descriptions=json.dumps(payload, ensure_ascii=False),
     )
-    raw = await llm.complete(V2_SYSTEM, prompt, max_tokens=24000, temperature=0.2)
+    raw = await llm.complete(MAIN_AGENT_SYSTEM, prompt, max_tokens=24000, temperature=0.2)
     try:
         data = extract_json_object(raw)
     except (ValueError, KeyError, TypeError) as exc:
-        logger.warning("plan_book_v2: failed to extract JSON: %s", exc)
+        logger.warning("plan_book_from_descriptions: failed to extract JSON: %s", exc)
         data = {}
     if (not isinstance(data, dict)) or not data.get("chapters"):
         # Retry once with a tighter, JSON-only instruction; do not waste tokens.
@@ -427,25 +427,25 @@ async def plan_book_v2(
             )
             data = extract_json_object(repair)
             if not isinstance(data, dict) or not data.get("chapters"):
-                logger.warning("plan_book_v2 repair returned no chapters: %s", str(data)[:200])
+                logger.warning("plan_book_from_descriptions repair returned no chapters: %s", str(data)[:200])
         except (LLMError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("plan_book_v2 repair failed: %s", exc)
+            logger.warning("plan_book_from_descriptions repair failed: %s", exc)
             data = {}
-    plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=snapshot_id)
+    plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=snapshot_id)
     return plan
 
 
-def _coerce_plan_v2(
+def _coerce_plan_from_descriptions(
     course: Course,
     descriptions: list,
     data: dict,
     *,
     snapshot_id: str | None,
 ) -> BookPlan:
-    """Coerce + sanitise LLM output into a BookPlan v2.
+    """Coerce + sanitise LLM output into a multi-resource BookPlan.
 
     If the LLM produced no chapters (model failure / truncated output),
-    fall back to a minimal-but-correct v2 plan: each description gets its
+    fall back to a minimal-but-correct plan: each description gets its
     own chapter; resources with scope=course are tagged __global__.
     """
     components: list[ComponentSpec] = []
@@ -504,7 +504,7 @@ def _coerce_plan_v2(
 
     # ── Fallback: derive a minimal plan from the descriptions themselves ──
     if not chapters:
-        logger.warning("plan_book_v2: empty chapters after coerce; using descriptions-only fallback")
+        logger.warning("plan_book_from_descriptions: empty chapters after coerce; using descriptions-only fallback")
         for idx, d in enumerate(descriptions, start=1):
             cid = f"c{idx}"
             chapters.append(ChapterInstruction(
@@ -593,13 +593,13 @@ def _derive_chapter_resources(
     return mapping
 
 
-def heuristic_book_plan_v2(
+def heuristic_plan_by_topic(
     course: Course,
     descriptions: list,
     *,
     snapshot_id: str | None = None,
 ) -> BookPlan:
-    """Deterministic fallback for v2.
+    """Deterministic fallback for the multi-resource planner.
 
     The main Agent is supposed to merge descriptions by theme.  When the
     LLM is unavailable we still must NOT emit one chapter per resource

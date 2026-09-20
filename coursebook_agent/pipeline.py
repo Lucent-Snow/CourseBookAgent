@@ -1,8 +1,8 @@
-"""End-to-end orchestration with the new multi-resource book generation flow.
+"""End-to-end orchestration with the multi-resource book generation flow.
 
 The legacy 4-layer pipeline is preserved for backward compatibility
-(``generate_course``).  ``generate_course_v2`` implements the workflow
-described in ``docs/WORKFLOW.md``:
+(``generate_course``).  The new workflow is driven by
+``CourseBookPipeline.run`` and is described in ``docs/WORKFLOW.md``:
 
     snapshot -> parse -> describe -> main-Agent plan + Tag -> assemble
     chapter contexts -> one chapter Agent per chapter -> quality gate ->
@@ -27,17 +27,17 @@ from coursebook_agent.agent.chapter import (
     _collect_ranges,
     _build_transcript_links,
     generate_chapter,
-    generate_chapter_v2,
-    generate_chapter_v2_with_fallback,
+    generate_chapter_from_context,
+    generate_chapter_from_context_with_fallback,
 )
 from coursebook_agent.agent.describe import describe_with_cache
 from coursebook_agent.agent.digest import compress_lecture, compress_lecture_from_cache
 from coursebook_agent.agent.editor import (
     heuristic_book_plan,
-    heuristic_book_plan_v2,
+    heuristic_plan_by_topic,
     load_plan,
     plan_book,
-    plan_book_v2,
+    plan_book_from_descriptions,
     save_plan,
 )
 from coursebook_agent.agent.llm import LLMClient
@@ -202,7 +202,7 @@ class CourseBookPipeline:
 
         # 加载课程 profile（质量门禁需要）
         profile: CourseProfile | None = None
-        profile_path = Path(__file__).resolve().parent / "profiles" / f"{course_id}-v2.json"
+        profile_path = Path(__file__).resolve().parent / "profiles" / f"{course_id}.json"
         if profile_path.exists():
             try:
                 profile = load_profile(profile_path)
@@ -214,7 +214,7 @@ class CourseBookPipeline:
         chunks = chunk_segments(clean_segments(segments))
 
         # 术语规范化（从 profile 加载别名并替换）
-        profile_path_for_terms = Path(__file__).resolve().parent.parent / "profiles" / f"{course_id}-v2.json"
+        profile_path_for_terms = Path(__file__).resolve().parent.parent / "profiles" / f"{course_id}.json"
         chunks, term_logs = apply_canonical_terms(chunks, profile_path_for_terms)
 
         chunks_path = self.intermediate_dir / f"chunks-{lecture.lecture_id}.json"
@@ -585,7 +585,7 @@ def _chapter_summary(index: int, chapter: LectureDraft) -> dict:
     }
 
 
-# ── v2 multi-resource orchestration ─────────────────────────────────────────
+# ── Multi-resource orchestration ──────────────────────────────────────────
 
 
 def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) -> dict:
@@ -610,7 +610,7 @@ def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) ->
 
 
 class MultiResourceCourseBookPipeline(CourseBookPipeline):
-    """Pipeline that drives the v2 multi-resource workflow.
+    """Pipeline that drives the multi-resource workflow.
 
     Backed by the legacy CourseBookPipeline for shared infra (plans_dir,
     intermediate_dir, renderer, profile loading, synthesise).  Adds the
@@ -714,14 +714,14 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
             plan = load_plan(plan_path)
         else:
             try:
-                plan = await plan_book_v2(
+                plan = await plan_book_from_descriptions(
                     course, descriptions,
                     client=LLMClient(max_retries=3, timeout=180),
                     snapshot_id=snapshot_id,
                 )
             except Exception as exc:
-                logger.warning("plan_book_v2 failed (%s); using heuristic v2 fallback", exc)
-                plan = heuristic_book_plan_v2(course, descriptions, snapshot_id=snapshot_id)
+                logger.warning("plan_book_from_descriptions failed (%s); using heuristic fallback", exc)
+                plan = heuristic_plan_by_topic(course, descriptions, snapshot_id=snapshot_id)
                 plan.warnings.append(f"主 Agent 不可用，已使用按资料逐章的启发式回退：{exc}")
             save_plan(plan, plan_path)
 
@@ -783,7 +783,7 @@ class MultiResourceCourseBookPipeline(CourseBookPipeline):
                         except (OSError, ValueError):
                             pass
                 try:
-                    draft = await generate_chapter_v2_with_fallback(
+                    draft = await generate_chapter_from_context_with_fallback(
                         ctx, previous_draft=prev_draft, review=review,
                     )
                     atomic_write_text(draft_path, draft.model_dump_json(indent=2))
