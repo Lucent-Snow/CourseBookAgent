@@ -61,6 +61,39 @@ cd frontend && npm run build && npm run lint             # 前端构建与 lint
 - 任何改动都要跑后端测试；前端改动还必须构建并 lint：`uv run python -m unittest discover -s tests -v`、`cd frontend && npm run build && npm run lint`。
 - 当前 `data/` 被 Git 忽略，只能作为本机实验数据；不要把凭据、原始字幕或生成产物提交到仓库。
 
-## 已知遗留（与本次合并无关，需协调修复）
+## 实验台（逐阶段 prompt 迭代）
 
-- `tests/test_core.py::test_warning_render` 断言 `⚠️` emoji，但 `fix: 修复quality.py` 把 warning 渲染输出改成了 `【易错】` 文字。该测试断言与渲染代码不一致，需要队友在他们的分支上同步修复测试期望。本工作台分支未触及 `renderer/` 或 `agent/quality.py`。
+`scripts/lab.py` 把 `CourseBookPipeline.run()` 拆成 5 个独立可调用的阶段，每个阶段自带缓存：
+
+```bash
+uv run python scripts/lab.py status    --snapshot snap-1
+uv run python scripts/lab.py describe  --snapshot snap-1 [--force] [--revision rev-abc]
+uv run python scripts/lab.py plan      --snapshot snap-1 [--force]
+uv run python scripts/lab.py assemble  --snapshot snap-1
+uv run python scripts/lab.py generate  --snapshot snap-1 --chapter c1 [--force]
+uv run python scripts/lab.py synthesize --snapshot snap-1 [--force]
+uv run python scripts/lab.py show descriptions|plan|chapters|chapter --snapshot snap-1 [--revision|--chapter]
+```
+
+工作循环：跑一个阶段 → `show` 看产物 → 不满意就改 `agent/*.py` 里的 prompt → 加 `--force` 重跑那一个阶段 → 通过后再跑下一个。
+
+JSON 到 stdout（方便 `jq` / `grep` / `diff`），人读摘要到 stderr。
+
+同样的能力通过 API 也开放了，方便前端和远端调用：
+
+```
+GET    /api/product/snapshots/{id}/lab/status
+POST   /api/product/snapshots/{id}/lab/describe         body: {force?, revision_id?}
+POST   /api/product/snapshots/{id}/lab/plan             body: {force?}
+POST   /api/product/snapshots/{id}/lab/assemble
+POST   /api/product/snapshots/{id}/lab/chapters/{chapter_id}/generate   body: {force?, review?}
+POST   /api/product/snapshots/{id}/lab/synthesize        body: {force?}
+GET    /api/product/snapshots/{id}/lab/descriptions
+GET    /api/product/snapshots/{id}/lab/descriptions/{revision_id}
+GET    /api/product/snapshots/{id}/lab/plan
+GET    /api/product/snapshots/{id}/lab/chapters
+GET    /api/product/snapshots/{id}/lab/chapters/{chapter_id}
+DELETE /api/product/snapshots/{id}/lab/descriptions[/{revision_id}]
+DELETE /api/product/snapshots/{id}/lab/plan
+DELETE /api/product/snapshots/{id}/lab/chapters[/{chapter_id}]
+```
