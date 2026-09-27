@@ -179,7 +179,7 @@ class LabService:
             else:
                 self.clear_descriptions()
 
-        llm = client or LLMClient(max_retries=3, timeout=180)
+        llm = client or LLMClient(max_retries=3, timeout=300)
         sem = asyncio.Semaphore(4)
 
         async def one(p: Any) -> ResourceDescription:

@@ -322,6 +322,10 @@ class ResourceDescription(BaseModel):
     source_type: str
     provider: str
     title: str
+    # Five-part Markdown description (form, content blocks, unique value,
+    # terminology/keywords, placement suggestions). This is the primary
+    # payload the main Agent reads; the fields below are light metadata.
+    body: str = ""
     topic: str = ""
     knowledge_topics: list[str] = Field(default_factory=list)
     scope: str = "lecture"  # course | module | lecture | topic

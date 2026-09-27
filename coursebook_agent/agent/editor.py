@@ -384,22 +384,18 @@ async def plan_book_from_descriptions(
         raise ValueError("没有任何资料描述可用于规划")
 
     llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
-    # Keep payload small enough to leave room for reasoning + JSON.
+    # The five-part description body is the main Agent's planning input;
+    # keep light identity metadata alongside it.
     compact_descriptions = []
     for d in descriptions:
-        topic = d.topic or d.title or ""
-        summary = d.summary or topic
         compact_descriptions.append({
             "revision_id": d.revision_id,
             "kind": d.kind,
             "provider": d.provider,
             "title": (d.title or "")[:80],
-            "topic": topic[:120],
-            "knowledge_topics": [str(k)[:24] for k in (d.knowledge_topics or [])][:8],
             "scope": d.scope,
-            "usable_content_kinds": list(d.usable_content_kinds or [])[:5],
             "suggested_role": d.suggested_role,
-            "summary": summary[:160],
+            "description": d.body or d.summary or d.topic,
         })
     payload = {"course": course.model_dump(), "descriptions": compact_descriptions}
     prompt = MAIN_AGENT_USER_TEMPLATE.format(

@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import unittest
 
-from coursebook_agent.agent.describe import _heuristic_description_obj, _extract_candidate_terms
+from coursebook_agent.agent.describe import (
+    HEADINGS,
+    _extract_candidate_terms,
+    _five_part_ok,
+    _heuristic_description_obj,
+    describe_resource,
+)
 from coursebook_agent.agent.editor import _coerce_plan_from_descriptions, _derive_chapter_resources, plan_book_from_descriptions
 from coursebook_agent.assembly.assemble import assemble_chapter_contexts
 from coursebook_agent.models import (
@@ -96,6 +102,51 @@ class DescribeHeuristicTests(unittest.TestCase):
     def test_extract_candidate_terms(self):
         terms = _extract_candidate_terms("极限的定义：函数在某一点的极限值就是当自变量无限趋近时函数值的趋近值", k=5)
         self.assertGreater(len(terms), 0)
+
+
+class DescribeLLMTests(unittest.IsolatedAsyncioTestCase):
+    class _FakeClient:
+        def __init__(self, content: str):
+            self.content = content
+            self.calls = 0
+
+        async def complete(self, system, user, **kwargs):
+            self.calls += 1
+            return self.content
+
+    @staticmethod
+    def _body() -> str:
+        return (
+            "## 形态与性质\n- 类型：讲授转写，ASR 噪声较多。\n\n"
+            "## 内容板块\n- 极限的定义：讲解极限概念与 epsilon-delta 表述（40%）。\n"
+            "- 连续性：连续函数性质（60%）。\n\n"
+            "## 独特价值\n- 课堂用切蛋糕类比极限（出自板块 1）。\n\n"
+            "## 术语、关键词与可用性\n- 术语：极限、连续、epsilon-delta。\n- 开场点名可跳过。\n\n"
+            "## 章节归属建议\n- 适合进入「极限与连续」章作为主干素材。\n"
+        )
+
+    async def test_transcript_goes_through_llm(self):
+        parsed = _transcript("r9", "极限与连续")
+        client = self._FakeClient(self._body())
+        d = await describe_resource(parsed, client=client)
+        self.assertEqual(client.calls, 1, "transcripts must not skip the LLM")
+        self.assertIn("## 内容板块", d.body)
+        self.assertIn("极限", d.topic)
+        self.assertTrue(_five_part_ok(d.body))
+
+    async def test_body_stores_five_part_headings(self):
+        parsed = _pdf("r10", "讲义")
+        d = await describe_resource(parsed, client=self._FakeClient(self._body()))
+        for h in HEADINGS:
+            self.assertIn(h, d.body)
+
+    async def test_bad_format_triggers_repair_then_fallback(self):
+        parsed = _transcript("r11", "杂谈")
+        client = self._FakeClient("完全不合格式的输出")
+        d = await describe_resource(parsed, client=client)
+        self.assertEqual(client.calls, 2, "one repair pass before falling back")
+        self.assertIn("本地规则生成", d.body)
+        self.assertEqual(d.suggested_role, "primary")
 
 
 class CoercePlanFromDescriptionsTests(unittest.TestCase):
