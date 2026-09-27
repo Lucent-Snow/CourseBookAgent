@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,12 +35,14 @@ COURSE_ACTIVITIES_URL = "https://courses.zju.edu.cn/api/courses/{course_id}/acti
 UPLOAD_REFERENCE_BLOB_URL = "https://courses.zju.edu.cn/api/uploads/reference/{reference_id}/blob"
 UPLOAD_BLOB_URL = "https://courses.zju.edu.cn/api/uploads/{id}/blob"
 DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:88.0) Gecko/201001001 Firefox/88.0"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 )
 WEBVPN_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+COURSES_INDEX_URL = "https://courses.zju.edu.cn/user/index"
 
 
 def webvpnify(url: str) -> str:
@@ -61,6 +64,56 @@ def webvpnify(url: str) -> str:
 
 class XueZaiError(RuntimeError):
     pass
+
+
+class SMSRequired(XueZaiError):
+    """Login needs SMS verification; caller must re-submit with ``authcode``.
+
+    Raised on the first POST when the CAS page contains
+    ``loginView.sendsms.error`` indicating an unfamiliar-device SMS
+    challenge. The backend will have already tried to trigger the SMS
+    send so the user just needs to read the 6-digit code and resubmit.
+    """
+
+    def __init__(self, message: str = "需要短信验证码"):
+        super().__init__(message)
+
+
+def _page_indicates_sms(html: str) -> bool:
+    """Detect the SMS-required state hidden in the login page.
+
+    CAS marks the login page with a hidden ``send_error`` input whose value
+    is the literal ``loginView.sendsms.error`` when the current device /
+    IP needs SMS verification.
+    """
+    return 'id="send_error" type="hidden" value=" loginView.sendsms.error' in html
+
+
+def _trigger_sendsms(client: httpx.Client, login_html: str, username: str) -> bool:
+    """Best-effort: hit the CAS sendsms endpoint so the user receives SMS.
+
+    Found by inspecting ``/cas/js/login/login.js``: the browser fires a GET
+    ``v1/services/sedsms?mobile=<username>`` via jQuery's ``$.ajax`` (which
+    defaults to GET). The server replies ``200 OK`` with an empty body and
+    ``Cache-Control: no-store`` when the SMS is accepted. Any 401/405 means
+    auth failed and the SMS was *not* sent.
+
+    Returns True if the request was accepted (even if the body is empty).
+    The user must still read the code from their phone and re-submit.
+    """
+    headers = {
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://zjuam.zju.edu.cn/cas/login",
+    }
+    try:
+        resp = client.get(
+            "https://zjuam.zju.edu.cn/cas/v1/services/sedsms",
+            params={"mobile": username},
+            headers=headers,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 @dataclass
@@ -105,11 +158,23 @@ class XueZaiSource:
 
     def _ensure_client(self) -> httpx.Client:
         if self._client is None:
-            headers = {"User-Agent": WEBVPN_USER_AGENT if self.via_webvpn else DEFAULT_USER_AGENT}
+            base_headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+            }
+            base_headers["User-Agent"] = (
+                WEBVPN_USER_AGENT if self.via_webvpn else DEFAULT_USER_AGENT
+            )
+            # ZJU CAS server uses weak DH keys; OpenSSL 3 rejects them with
+            # DH_KEY_TOO_SMALL by default. Lower the security level so the
+            # handshake goes through (LAZY does the same).
+            ssl_context = ssl.create_default_context()
+            ssl_context.set_ciphers("DEFAULT@SECLEVEL=1")
             self._client = httpx.Client(
-                headers=headers,
+                headers=base_headers,
                 follow_redirects=True,
                 timeout=30.0,
+                verify=ssl_context,
             )
         return self._client
 
@@ -159,7 +224,7 @@ class XueZaiSource:
 
     # ── login ───────────────────────────────────────────────────────────
 
-    def login(self, username: str, password: str) -> dict[str, Any]:
+    def login(self, username: str, password: str, authcode: str | None = None) -> dict[str, Any]:
         username, password = username.strip(), password.strip()
         if not username or not password:
             raise XueZaiError("请输入学号和密码")
@@ -177,35 +242,55 @@ class XueZaiSource:
                     raise
                 except Exception as exc:
                     raise XueZaiError(f"WebVPN 入口访问失败：{exc}") from exc
-                cas_url = WEBVPN_CAS_LOGIN_URL
+                login_url = WEBVPN_CAS_LOGIN_URL
             else:
-                cas_url = CAS_LOGIN_URL
-            login_page = client.get(cas_url)
+                # Direct CAS path mirrors the LAZY pattern: hit the
+                # courses.zju.edu.cn index first, let the 302 chain walk us
+                # through CAS with the right service parameter and cookies,
+                # then POST to wherever that chain ended up. Sending the POST
+                # to a hard-coded ``/cas/login`` (as we used to) skips the
+                # ``service=`` argument and triggers CAS's unfamiliar-device
+                # heuristics → sendsms.error.
+                login_url = COURSES_INDEX_URL
+            login_page = client.get(login_url)
             if "统一身份认证平台" not in login_page.text:
                 raise XueZaiError("无法访问统一身份认证平台")
             execution = re.search(r'name="execution" value="([^"]+)"', login_page.text)
             if not execution:
                 raise XueZaiError("登录页结构变化，无法识别登录参数")
-            pubkey_resp = client.get(cas_url.replace("/cas/login", "/cas/v2/getPubKey"))
+            # The pubkey endpoint is on the CAS host regardless of the
+            # entry point (direct or WebVPN).
+            pubkey_host = (
+                "https://webvpn.zju.edu.cn" if self.via_webvpn else "https://zjuam.zju.edu.cn"
+            )
+            pubkey_resp = client.get(f"{pubkey_host}/cas/v2/getPubKey")
             pubkey = pubkey_resp.json()
             rsa_password = _rsa_encrypt(password, pubkey["modulus"], pubkey["exponent"])
             response = client.post(
-                cas_url,
+                login_page.url,
                 data={
                     "username": username,
                     "password": rsa_password,
                     "execution": execution.group(1),
                     "_eventId": "submit",
-                    "authcode": "",
+                    "authcode": (authcode or "").strip(),
                 },
             )
             if "统一身份认证平台" in response.text:
-                # WebVPN + CAS will inject "loginView.sendsms.error" for
-                # unfamiliar devices/IPs; surface that explicitly so the
-                # caller knows they must complete an SMS challenge in the
-                # browser first.
-                if "sendsms.error" in response.text:
-                    raise XueZaiError("CAS 触发短信二次验证（sendsms.error）：请先在浏览器登录 webvpn 完成手机短信验证后重试")
+                # SMS path: CAS rejected the (username, password, optional
+                # authcode) triple and demanded an SMS round-trip.
+                if _page_indicates_sms(response.text):
+                    if not authcode:
+                        # First attempt: best-effort trigger the SMS so the
+                        # user has a code waiting when they re-submit.
+                        try:
+                            _trigger_sendsms(client, login_page.text, username)
+                        except Exception:
+                            pass
+                        raise SMSRequired(
+                            "需要短信验证码：已尝试触发短信发送，请查收并重新提交（附 authcode 字段）"
+                        )
+                    raise XueZaiError("短信验证码错误或已过期")
                 raise XueZaiError("学号或密码错误")
             # Prime the courses.zju.edu.cn cookie store.  Any GET that returns
             # 200 is fine — we just need the auth flow to complete.

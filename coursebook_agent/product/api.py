@@ -22,6 +22,7 @@ class UnifiedLoginRequest(BaseModel):
     username: str
     password: str
     webvpn: bool = False
+    authcode: str | None = None  # SMS verification code for 学在浙大 (second attempt)
 
 router = APIRouter(prefix="/api/product", tags=["product-workbench"])
 
@@ -183,15 +184,20 @@ async def unified_login(request: UnifiedLoginRequest):
 
     Zhiyun uses the existing JWT exchange; 学在浙大 uses the CAS public key
     RSA flow.  Both providers share the same university credentials.
+
+    The 学在浙大 half honours ``authcode`` so a second submission with the
+    6-digit SMS code completes a login that the first attempt flagged as
+    unfamiliar-device (see :class:`SMSRequired`).
     """
     import asyncio
 
-    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+    from coursebook_agent.sources.xuezai.assist import SMSRequired, XueZaiError, XueZaiSource
     from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 
     results: dict[str, object] = {}
     zhiyun_error: str | None = None
     xuezai_error: str | None = None
+    sms_required = False
     try:
         zhiyun_status = await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
         results["zhiyun"] = {"authenticated": True, "username": zhiyun_status.get("username", request.username)}
@@ -201,19 +207,32 @@ async def unified_login(request: UnifiedLoginRequest):
     try:
         xuezai = await asyncio.to_thread(
             XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai", via_webvpn=request.webvpn).login,
-            request.username, request.password,
+            request.username, request.password, request.authcode,
         )
         results["xue_zai_zju"] = xuezai
+    except SMSRequired as exc:
+        sms_required = True
+        xuezai_error = str(exc)
+        results["xue_zai_zju"] = {"authenticated": False, "username": ""}
     except XueZaiError as exc:
         xuezai_error = str(exc)
         results["xue_zai_zju"] = {"authenticated": False, "username": ""}
-    if zhiyun_error and xuezai_error:
+    if zhiyun_error and xuezai_error and not sms_required:
         raise HTTPException(status_code=502, detail=f"智云：{zhiyun_error}；学在浙大：{xuezai_error}")
     response: dict[str, object] = {"providers": results, "username": request.username}
+    if sms_required:
+        # 202 Accepted: client must re-submit with authcode. We don't 4xx because
+        # the username/password half is still valid; only the second factor is
+        # outstanding.
+        response["sms_required"] = True
+        response["sms_hint"] = "请查看手机短信，输入 6 位验证码后再次提交（带 authcode 字段）"
     if zhiyun_error:
-        response["warnings"] = [f"智云课堂登录未成功：{zhiyun_error}"]
+        response.setdefault("warnings", []).append(f"智云课堂登录未成功：{zhiyun_error}")
     if xuezai_error:
         response.setdefault("warnings", []).append(f"学在浙大登录未成功：{xuezai_error}")
+    if sms_required:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=202, content=response)
     return response
 
 
