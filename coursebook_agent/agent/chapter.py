@@ -377,12 +377,12 @@ async def generate_chapter(
 11. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
 12. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
 
-    data = await llm.complete_json(SYSTEM, prompt, max_tokens=20000)
+    data = await llm.complete_json(SYSTEM, prompt)
 
     # Retry with narrower contract if first attempt fails
     if not isinstance(data, dict):
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(SYSTEM, narrow, max_tokens=16000)
+        data = await LLMClient(max_retries=3, timeout=180).complete_json(SYSTEM, narrow)
 
     # Review pass
     if review:
@@ -400,7 +400,6 @@ async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstructi
         review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
             SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
-            max_tokens=2000,
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:
@@ -595,11 +594,11 @@ async def generate_chapter_from_context(
     payload = _build_context_payload(context)
     prompt = _build_chapter_prompt(context, payload, previous_draft)
     try:
-        data = await llm.complete_json(CHAPTER_AGENT_SYSTEM, prompt, max_tokens=20000)
+        data = await llm.complete_json(CHAPTER_AGENT_SYSTEM, prompt)
     except LLMError as exc:
         # Retry with a tighter contract on JSON failure.
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(CHAPTER_AGENT_SYSTEM, narrow, max_tokens=16000)
+        data = await LLMClient(max_retries=3, timeout=180).complete_json(CHAPTER_AGENT_SYSTEM, narrow)
 
     # If sections are missing, retry once with a tighter instruction.
     if review and isinstance(data, dict) and len(data.get("sections") or []) < 2:
@@ -607,7 +606,6 @@ async def generate_chapter_from_context(
             retry_data = await LLMClient(max_retries=1, timeout=180).complete_json(
                 CHAPTER_AGENT_SYSTEM,
                 prompt + "\n\n务必填写 3 个 sections，每节 content ≥ 2 段。不要省略 sections。",
-                max_tokens=16000,
             )
             if isinstance(retry_data, dict) and len(retry_data.get("sections") or []) >= len(data.get("sections") or []):
                 data = retry_data
@@ -745,7 +743,6 @@ async def _review_pass_chapter(llm: LLMClient, data: dict, instruction) -> dict:
         review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
             CHAPTER_AGENT_SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
-            max_tokens=2000,
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:

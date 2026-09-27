@@ -163,14 +163,13 @@ async def describe_resource(
         llm = client or LLMClient(max_retries=3, timeout=300)
         user = _build_user_prompt(parsed)
         try:
-            raw = await llm.complete(SYSTEM, user, max_tokens=4000, temperature=0.2)
+            raw = await llm.complete(SYSTEM, user, temperature=0.2)
             body = _strip_fences(raw)
             if not _five_part_ok(body):
                 # One format-repair pass before giving up on the LLM.
                 repair = await llm.complete(
                     SYSTEM,
                     REPAIR_TEMPLATE.format(output=body[:8000]),
-                    max_tokens=4000,
                     temperature=0,
                 )
                 repaired = _strip_fences(repair)

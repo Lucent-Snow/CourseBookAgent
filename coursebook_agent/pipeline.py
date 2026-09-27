@@ -166,7 +166,7 @@ class CourseBookPipeline:
             try:
                 plan = await plan_book_from_descriptions(
                     course, descriptions,
-                    client=LLMClient(max_retries=3, timeout=180),
+                    client=LLMClient(max_retries=3, timeout=900),
                     snapshot_id=snapshot_id,
                 )
             except Exception as exc:

@@ -160,7 +160,7 @@ async def plan_book(
 课程与摘要：
 {json.dumps(payload, ensure_ascii=False)}"""
 
-    data = await llm.complete_json(SYSTEM, prompt, max_tokens=16000)
+    data = await llm.complete_json(SYSTEM, prompt)
     plan = _coerce_plan(course, digests, data)
     return plan
 
@@ -383,7 +383,9 @@ async def plan_book_from_descriptions(
     if not descriptions:
         raise ValueError("没有任何资料描述可用于规划")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
+    # Plan calls feed every description body at once and can generate a very
+    # long BookPlan JSON; allow slow generations instead of cutting them.
+    llm = client or LLMClient(max_retries=3, timeout=max(900, config.llm.timeout))
     # The five-part description body is the main Agent's planning input;
     # keep light identity metadata alongside it.
     compact_descriptions = []
@@ -402,7 +404,7 @@ async def plan_book_from_descriptions(
         course=json.dumps(course.model_dump(), ensure_ascii=False),
         descriptions=json.dumps(payload, ensure_ascii=False),
     )
-    raw = await llm.complete(MAIN_AGENT_SYSTEM, prompt, max_tokens=24000, temperature=0.2)
+    raw = await llm.complete(MAIN_AGENT_SYSTEM, prompt, temperature=0.2)
     try:
         data = extract_json_object(raw)
     except (ValueError, KeyError, TypeError) as exc:
@@ -419,7 +421,7 @@ async def plan_book_from_descriptions(
             repair = await llm.complete(
                 "你是 JSON 生成器。只输出一个合法 JSON 对象，不解释。",
                 repair_user,
-                max_tokens=20000, temperature=0,
+                temperature=0,
             )
             data = extract_json_object(repair)
             if not isinstance(data, dict) or not data.get("chapters"):

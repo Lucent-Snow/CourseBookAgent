@@ -143,17 +143,17 @@ class LLMClient:
         self.transport = transport
         self.timeout = timeout or config.llm.timeout
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 5000, temperature: float = 0.2) -> str:
+    async def complete(self, system: str, user: str, *, temperature: float = 0.2) -> str:
         if not (config.llm.base_url and config.llm.api_key and config.llm.model):
             raise LLMError("请先配置模型端点、模型名和 API Key", "configuration")
         url = normalize_llm_base_url(config.llm.base_url) + "/chat/completions"
+        # No max_tokens cap: let the server decide the generation budget.
         payload = {
             "model": config.llm.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "max_tokens": max_tokens,
             "temperature": temperature,
         }
         headers = {"Authorization": f"Bearer {config.llm.api_key}", "Content-Type": "application/json"}
@@ -211,16 +211,15 @@ class LLMClient:
                     await asyncio.sleep((2 ** (attempt - 1)) + random.random())
         raise last_error
 
-    async def complete_json(self, system: str, user: str, *, max_tokens: int = 7000) -> dict[str, Any]:
-        # Reasoning models spend many tokens on thinking; leave headroom for the final JSON.
+    async def complete_json(self, system: str, user: str) -> dict[str, Any]:
+        # Reasoning models spend many tokens on thinking; the server-side
+        # generation budget is left uncapped so the final JSON can finish.
         hardened_system = (
             system
             + "\n\n最终答案必须是一个完整 JSON 对象，放在回答正文中。"
             + "不要只思考，不要输出解释或 Markdown 代码块之外的文字。"
         )
-        # Reserve budget for reasoning-heavy gateways.
-        effective_max = max(max_tokens, 6000)
-        raw = await self.complete(hardened_system, user, max_tokens=effective_max)
+        raw = await self.complete(hardened_system, user)
         try:
             return extract_json_object(raw)
         except (json.JSONDecodeError, ValueError) as first_error:
@@ -233,7 +232,6 @@ class LLMClient:
             repair = await self.complete(
                 "你是 JSON 生成器。只返回一个合法 JSON 对象，不解释、不使用 Markdown。不得编造任务外字段含义。",
                 regenerate_user,
-                max_tokens=max(effective_max, 8000),
                 temperature=0,
             )
             try:

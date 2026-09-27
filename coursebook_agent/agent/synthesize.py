@@ -65,7 +65,7 @@ async def synthesize_book(
 各章：{json.dumps(compact, ensure_ascii=False)}"""
 
     try:
-        data = await llm.complete_json(SYSTEM, prompt, max_tokens=10000)
+        data = await llm.complete_json(SYSTEM, prompt)
     except Exception:
         data = {}
 
@@ -322,7 +322,7 @@ async def synthesize_book(
 各章：{json.dumps(compact, ensure_ascii=False)}"""
 
     try:
-        data = await llm.complete_json(SYSTEM, prompt, max_tokens=10000)
+        data = await llm.complete_json(SYSTEM, prompt)
     except Exception:
         data = {}
 

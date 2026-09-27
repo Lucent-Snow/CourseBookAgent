@@ -96,7 +96,7 @@ async def compress_lecture(
 字幕材料：
 {source}"""
 
-    data = await llm.complete_json(SYSTEM, prompt, max_tokens=12000)
+    data = await llm.complete_json(SYSTEM, prompt)
     return _coerce_digest(data, lecture, chunks, total_chars)
 
 

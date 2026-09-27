@@ -228,7 +228,7 @@ class LabService:
             raise RuntimeError("plan 之前必须先跑 describe：当前 snapshot 没有可用 description")
 
         course = self._resolve_course(loaded)
-        llm = client or LLMClient(max_retries=3, timeout=180)
+        llm = client or LLMClient(max_retries=3, timeout=900)
         try:
             plan = await plan_book_from_descriptions(
                 course, descriptions, client=llm, snapshot_id=self.snapshot_id,

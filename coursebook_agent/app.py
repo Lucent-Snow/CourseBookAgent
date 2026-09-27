@@ -410,7 +410,7 @@ async def test_llm_connection():
     try:
         with usage_tracking(metrics):
             await LLMClient(max_retries=1, timeout=30).complete(
-                "你是连接测试助手。", "请只回复两个字符：OK", max_tokens=8, temperature=0
+                "你是连接测试助手。", "请只回复两个字符：OK", temperature=0
             )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=f"连接失败：{exc}") from exc
