@@ -28,7 +28,7 @@ from coursebook_agent.lab import LabService, STAGES, StageStatus
 
 def _emit(payload: Any) -> None:
     """Write the machine-readable result to stdout."""
-    json.dump(payload, _stdout_serializer(), ensure_ascii=False, indent=2, default=str)
+    json.dump(payload, sys.stdout, ensure_ascii=False, indent=2, default=_stdout_serializer())
     sys.stdout.write("\n")
     sys.stdout.flush()
 
