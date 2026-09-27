@@ -24,7 +24,7 @@ async def synthesize_book(
     plan: BookPlan | None = None,
     client: LLMClient | None = None,
 ) -> CourseBook:
-    llm = client or LLMClient(max_retries=2, timeout=120)
+    llm = client or LLMClient(max_retries=2, timeout=900)
     compact = []
     for ch in chapters:
         compact.append({
@@ -280,7 +280,7 @@ async def synthesize_book(
     plan: BookPlan | None = None,
     client: LLMClient | None = None,
 ) -> CourseBook:
-    llm = client or LLMClient(max_retries=2, timeout=120)
+    llm = client or LLMClient(max_retries=2, timeout=900)
     compact = []
     for ch in chapters:
         compact.append({

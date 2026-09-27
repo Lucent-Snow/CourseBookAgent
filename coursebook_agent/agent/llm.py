@@ -159,6 +159,9 @@ class LLMClient:
             ],
             "temperature": temperature,
             "stream": True,
+            # Ask the gateway to report token usage in a final chunk;
+            # without it streaming responses carry usage=null everywhere.
+            "stream_options": {"include_usage": True},
         }
         headers = {"Authorization": f"Bearer {config.llm.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None

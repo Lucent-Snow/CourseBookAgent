@@ -48,7 +48,7 @@ async def plan_book(
     if not digests:
         raise ValueError("没有可用于规划的讲次摘要")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
+    llm = client or LLMClient(max_retries=3, timeout=900)
     payload = {
         "course": course.model_dump(),
         "digests": [d.model_dump() for d in digests],

@@ -267,7 +267,7 @@ class CourseBookPipeline:
             progress(6, 7, "全书合成中")
 
         book = await synthesize_book(
-            course, results, plan=plan, client=LLMClient(max_retries=2, timeout=180),
+            course, results, plan=plan, client=LLMClient(max_retries=2, timeout=900),
         )
         book.warnings.extend(failures)
         book.components = plan.components

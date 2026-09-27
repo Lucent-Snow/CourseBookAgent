@@ -380,7 +380,7 @@ class LabService:
             except (OSError, ValueError):
                 pass
 
-        llm = LLMClient(max_retries=2, timeout=180)
+        llm = LLMClient(max_retries=2, timeout=900)
         book = await synthesize_book(course, chapters, plan=plan, client=llm)
         book.components = plan.components
         book.render_config = plan.render_config

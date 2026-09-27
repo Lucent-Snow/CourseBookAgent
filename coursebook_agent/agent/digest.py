@@ -50,7 +50,7 @@ async def compress_lecture(
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(120, config.llm.timeout))
+    llm = client or LLMClient(max_retries=3, timeout=300)
     source = _chunks_to_source(chunks)
     total_chars = sum(len(c.text) for c in chunks)
 

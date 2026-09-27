@@ -267,7 +267,7 @@ async def generate_chapter(
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(150, config.timeout if hasattr(config, 'timeout') else 150))
+    llm = client or LLMClient(max_retries=3, timeout=900)
     source = _chunks_to_source(chunks)
     context = _instruction_context(instruction, plan, previous_draft)
     system_prompt = inject_prompt_rules(SYSTEM)
@@ -382,7 +382,7 @@ async def generate_chapter(
     # Retry with narrower contract if first attempt fails
     if not isinstance(data, dict):
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(SYSTEM, narrow)
+        data = await LLMClient(max_retries=3, timeout=900).complete_json(SYSTEM, narrow)
 
     # Review pass
     if review:
@@ -397,7 +397,7 @@ async def generate_chapter(
 async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstruction | None, chunks: list[TimedChunk]) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
+        review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
             SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
         )
@@ -590,7 +590,7 @@ async def generate_chapter_from_context(
     if not context.chapter_resources and not context.global_resources:
         raise ValueError(f"chapter {instruction.chapter_id} has no resources")
 
-    llm = client or LLMClient(max_retries=3, timeout=180)
+    llm = client or LLMClient(max_retries=3, timeout=900)
     payload = _build_context_payload(context)
     prompt = _build_chapter_prompt(context, payload, previous_draft)
     try:
@@ -598,12 +598,12 @@ async def generate_chapter_from_context(
     except LLMError as exc:
         # Retry with a tighter contract on JSON failure.
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(CHAPTER_AGENT_SYSTEM, narrow)
+        data = await LLMClient(max_retries=3, timeout=900).complete_json(CHAPTER_AGENT_SYSTEM, narrow)
 
     # If sections are missing, retry once with a tighter instruction.
     if review and isinstance(data, dict) and len(data.get("sections") or []) < 2:
         try:
-            retry_data = await LLMClient(max_retries=1, timeout=180).complete_json(
+            retry_data = await LLMClient(max_retries=1, timeout=900).complete_json(
                 CHAPTER_AGENT_SYSTEM,
                 prompt + "\n\n务必填写 3 个 sections，每节 content ≥ 2 段。不要省略 sections。",
             )
@@ -740,7 +740,7 @@ def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draf
 async def _review_pass_chapter(llm: LLMClient, data: dict, instruction) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
+        review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
             CHAPTER_AGENT_SYSTEM,
             f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
         )
@@ -897,7 +897,7 @@ async def generate_chapter_from_context_with_fallback(
                 return await generate_chapter_from_context(
                     context,
                     previous_draft=previous_draft,
-                    client=LLMClient(max_retries=2, timeout=120),
+                    client=LLMClient(max_retries=2, timeout=300),
                     review=False,
                 )
             except Exception:
