@@ -13,6 +13,7 @@ CourseBookAgent — 把高校课堂资料（智云课堂字幕、学在浙大课
 
 ## 需要时读
 
+- `docs/DECOMPOSITION.md`：拆解设计——每一步解决什么问题、契约、判断标准、置信度（🟢策略级/🟡参数级）
 - `docs/PRD.md`：产品需求文档
 - `docs/COMPETITION.md`：比赛定位与申报话术
 - `docs/examples/OUTPUT_SPEC.md`：教辅书输出格式示例
