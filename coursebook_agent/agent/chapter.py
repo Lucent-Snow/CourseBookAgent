@@ -399,7 +399,7 @@ async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstructi
     try:
         review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
             SYSTEM,
-            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
+            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:40000]}",
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:
@@ -748,7 +748,7 @@ async def _review_pass_chapter(llm: LLMClient, data: dict, instruction) -> dict:
     try:
         review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
             CHAPTER_AGENT_SYSTEM,
-            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
+            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:40000]}",
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:
