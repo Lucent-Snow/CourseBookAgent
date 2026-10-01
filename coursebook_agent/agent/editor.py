@@ -362,7 +362,7 @@ MAIN_AGENT_USER_TEMPLATE = """课程信息：{course}
 3. 每个 chapter 必须有 must_cover、section_plan（≥1 小节）、depth_guidance、component_usage。
 4. resource_tags 的 value 是字符串数组：要么是 chapter_id（资料作为该章节的原始素材），要么是 "__global__"（资料作为全局上下文）。未列入 resource_tags 的资料本次不进入生成。
 5. 一份资料可以同时进入多个章节，也可以同时进入全局与某些章节。
-6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式。
+6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式，以及两条写作原则：**完整性优先**（每份资料中与章节主题相关的讲解、例子、推导、操作步骤都必须在正文有落点，禁止挑重点式摘要，宁可写全写细不要泛泛而谈）和**伪代码许**（资料中只有口述描述的代码/流程/图表，写作者应重写为标注「据口述重写」的示意代码/伪代码/结构化步骤；禁止的是编造资料中不存在的数值、结论与图表内容）。
 7. components 至少包含 worked_example、tip_box、warning 三种。
 8. section_plan 的 source_revision_ids 必须引用下面"所有资料描述"里出现的 revision_id 之一。
 9. 资料支撑不足（suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
