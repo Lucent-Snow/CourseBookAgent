@@ -22,6 +22,7 @@ from pathlib import Path
 from coursebook_agent.agent.chapter import generate_chapter_from_context_with_fallback
 from coursebook_agent.agent.describe import describe_with_cache
 from coursebook_agent.agent.editor import (
+    ensure_plan_source_coverage,
     heuristic_plan_by_topic,
     load_plan,
     plan_book_from_descriptions,
@@ -178,6 +179,11 @@ class CourseBookPipeline:
         if not plan.chapters:
             raise ValueError("主 Agent 未产出任何章节")
 
+        if progress:
+            progress(2, 7, "校验规划的资料覆盖，必要时修复 Tag")
+        plan = await ensure_plan_source_coverage(plan, descriptions)
+        save_plan(plan, plan_path)
+
         # Restrict to a subset of chapters if asked.
         selected = set(chapter_indices or list(range(1, len(plan.chapters) + 1)))
         selected_contexts = [c for i, c in enumerate(plan.chapters, start=1) if i in selected]
@@ -218,7 +224,7 @@ class CourseBookPipeline:
                 if draft_path.exists() and not regenerate:
                     try:
                         existing = LectureDraft.model_validate_json(draft_path.read_text(encoding="utf-8"))
-                        if existing.chapter_id == chapter_id:
+                        if _can_reuse_chapter(existing, ctx):
                             return existing
                     except (OSError, ValueError):
                         pass
@@ -282,6 +288,17 @@ class CourseBookPipeline:
         if progress:
             progress(7, 7, "课程教辅生成完成")
         return book
+
+
+def _can_reuse_chapter(draft: LectureDraft, context) -> bool:
+    expected = {r.revision_id for r in context.chapter_resources + context.global_resources}
+    return (
+        draft.chapter_id == context.chapter.chapter_id
+        and bool(expected)
+        and set(draft.used_resource_ids) == expected
+        and any(section.content.strip() for section in draft.sections)
+        and not any("确定性回退" in warning for warning in draft.warnings)
+    )
 
 
 def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) -> dict:

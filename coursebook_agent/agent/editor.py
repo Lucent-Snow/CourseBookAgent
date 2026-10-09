@@ -538,8 +538,20 @@ def _coerce_plan_from_descriptions(
         if cleaned:
             resource_tags[rev] = cleaned
 
-    # ── Fallback tags: every description is chapter-tagged; scope=course goes global. ──
-    if not resource_tags:
+    # Recover explicit source references before section_plan is reduced to headings.
+    if not resource_tags and raw_chapters:
+        for raw, chapter in zip(raw_chapters, chapters):
+            for section in raw.get("section_plan") or []:
+                if not isinstance(section, dict):
+                    continue
+                for rev in _str_list(section.get("source_revision_ids")):
+                    if rev in known_revs:
+                        tags = resource_tags.setdefault(rev, [])
+                        if chapter.chapter_id not in tags:
+                            tags.append(chapter.chapter_id)
+
+    # Position-based tags are only meaningful for the per-resource fallback plan.
+    if not resource_tags and not raw_chapters:
         for idx, d in enumerate(descriptions, start=1):
             cid = f"c{idx}"
             tags: list[str] = []
@@ -553,6 +565,8 @@ def _coerce_plan_from_descriptions(
     chapter_resources = _derive_chapter_resources(resource_tags, chapters)
 
     warnings = _str_list(data.get("warnings"))
+    if raw_chapters and not resource_tags:
+        warnings.append("主 Agent 未产出有效 Tag，须修复资料映射后才能生成")
     if not isinstance(data, dict) or not data.get("chapters"):
         warnings.append("主 Agent 未产出章节，已按资料自动分章")
 
@@ -576,6 +590,52 @@ def _coerce_plan_from_descriptions(
         global_resource_ids=sorted([rev for rev, tags in resource_tags.items() if "__global__" in tags]),
         snapshot_id=snapshot_id,
     )
+
+
+async def ensure_plan_source_coverage(
+    plan: BookPlan, descriptions: list[ResourceDescription], *, client=None,
+) -> BookPlan:
+    """Repair uncovered chapters once; never guess a source from its position."""
+    known_revs = {d.revision_id for d in descriptions}
+    known_chapters = {c.chapter_id for c in plan.chapters}
+
+    def uncovered(tags):
+        global_sources = any("__global__" in values for rev, values in tags.items() if rev in known_revs)
+        return [c.chapter_id for c in plan.chapters if not global_sources and not any(
+            c.chapter_id in values for rev, values in tags.items() if rev in known_revs
+        )]
+
+    if not uncovered(plan.resource_tags):
+        return plan
+    llm = client or LLMClient(max_retries=2, timeout=300)
+    payload = {
+        "chapters": [{"chapter_id": c.chapter_id, "title": c.book_title, "must_cover": c.must_cover, "section_plan": c.section_plan} for c in plan.chapters],
+        "descriptions": [{"revision_id": d.revision_id, "description": d.body or d.summary or d.topic} for d in descriptions],
+    }
+    raw = await llm.complete(
+        "你是课程资料编排编辑。仅输出合法 JSON。保留章节结构，只修复资料与章节的归属。",
+        "为下列章节补齐 resource_tags。只输出 {\"resource_tags\": {\"真实revision_id\": [\"c1\", \"c2\"]}}。"
+        "同一资料可进入多章；全局资料用 __global__。必须只用提供的 revision_id 和 chapter_id。"
+        "每章须有支持其主题的资料，不能按资料顺序分配；确无资料支持则在 warnings 中说明并保留该章未分配。\n"
+        + json.dumps(payload, ensure_ascii=False),
+        temperature=0,
+    )
+    data = extract_json_object(raw)
+    repaired = {}
+    for rev, values in (data.get("resource_tags") or {}).items():
+        if rev not in known_revs or not isinstance(values, list):
+            continue
+        tags = list(dict.fromkeys(str(v) for v in values if str(v) in known_chapters or v == "__global__"))
+        if tags:
+            repaired[rev] = tags
+    missing = uncovered(repaired)
+    if missing:
+        raise ValueError(f"规划章节缺少资料，Tag 修复后仍未覆盖：{', '.join(missing)}")
+    plan.resource_tags = repaired
+    plan.chapter_resources = _derive_chapter_resources(repaired, plan.chapters)
+    plan.global_resource_ids = sorted(rev for rev, values in repaired.items() if "__global__" in values)
+    plan.warnings.append("原规划存在无资料章节，已通过独立 Tag 修复补齐映射")
+    return plan
 
 
 def _derive_chapter_resources(
