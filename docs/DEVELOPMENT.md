@@ -73,6 +73,7 @@ uv run python scripts/check_offline.py   # 离线确定性回归
 cd frontend
 npm run build
 npm run lint
+npm test               # 工作台请求契约回归
 ```
 
 涉及 API 或用户流程时，还要启动后端和前端，使用真实浏览器走一遍相关流程。验证要记录实际结果，不把"代码看起来合理"当作端到端验证。LLM、智云或本机缓存不可用时，必须明确区分"离线确定性测试通过"和"真实外部链路未验证"。

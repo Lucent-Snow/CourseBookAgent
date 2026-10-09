@@ -19,10 +19,12 @@ function stageIndex(stage: StageProjection, phase: string, status: string): numb
  if (status === 'queued') return 0
  if (status === 'completed' || stage.rendered) return 6
  if (stage.synthesized) return 6
+ if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed === stage.chapters_total) return 5
  if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed < stage.chapters_total) return 4
  if (stage.assembled_total > 0 && stage.assembled < stage.assembled_total) return 3
  if (stage.planned) return 3
  if (stage.described_total > 0 && stage.described < stage.described_total) return 1
+ if (stage.described_total > 0 && stage.described === stage.described_total) return 2
  if (stage.parsed_total > 0 && stage.parsed < stage.parsed_total) return 0
  const phaseMap: Record<string, number> = { describe: 1, plan: 2, write: 4, synthesize: 5, quality: 5 }
  return phaseMap[phase] ?? 0
@@ -148,6 +150,9 @@ export function RunDetailPage() {
 
  const stage = run.stage
  const currentStageIdx = stageIndex(stage, run.phase, run.status)
+ const currentPhaseLabel = run.status === 'running' || run.status === 'retrying'
+  ? STAGE_ORDER[currentStageIdx].label.replace(/^\d+\. /, '')
+  : phaseLabel[run.phase] || '等待运行'
  const completedStages = run.status === 'completed' ? STAGE_ORDER.length : Math.max(currentStageIdx, 0)
  const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
  const chapterDone = stage.chapters_succeeded + stage.chapters_failed
@@ -183,7 +188,7 @@ export function RunDetailPage() {
  <div className="flex items-center justify-between">
  <div>
  <h2 className="text-base font-semibold">{run.message || '运行准备中'}</h2>
- <p className="mt-1 text-xs text-[#718183]">当前阶段：{phaseLabel[run.phase] || STAGE_ORDER[Math.max(currentStageIdx, 0)]?.label || '排队'}</p>
+ <p className="mt-1 text-xs text-[#718183]">当前阶段：{currentPhaseLabel}</p>
  </div>
  <strong className="text-2xl text-[#147d86]">{run.progress}%</strong>
  </div>
@@ -224,7 +229,7 @@ export function RunDetailPage() {
  )}
 
  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
- {[['整体进度', `${run.progress}%`, phaseLabel[run.phase] || '运行中'], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '供应商未返回'], ['模型耗时', formatLatency(metrics.latency_ms), metrics.retry_count ? `重试 ${metrics.retry_count} 次` : '无重试']].map(([label, value, hint]) => (
+ {[['整体进度', `${run.progress}%`, currentPhaseLabel], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '供应商未返回'], ['模型耗时', formatLatency(metrics.latency_ms), metrics.retry_count ? `重试 ${metrics.retry_count} 次` : '无重试']].map(([label, value, hint]) => (
  <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
  <p className="text-[11px] text-[#718183]">{label}</p>
  <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>

@@ -64,13 +64,12 @@ export const productApi = {
   deleteRun: (runId: string) => request<void>(`/api/product/runs/${runId}`, { method: 'DELETE' }),
   artifacts: async () => (await request<{ data: ArtifactSummary[] }>('/api/product/artifacts')).data,
   artifact: (artifactId: string) => request<ArtifactDetail>(`/api/product/artifacts/${artifactId}`),
-  startRun: (courseId: string, snapshotId: string, lectureIndices: number[], concurrency: number, review: boolean) => {
+  startRun: (courseId: string, snapshotId: string, concurrency: number, review: boolean) => {
     const payload: Record<string, unknown> = {
       snapshot_id: snapshotId,
       regenerate: false,
       review,
       concurrency,
-      chapter_indices: lectureIndices,
     }
     if (courseId) payload.course_id = courseId
     return request<JobState>('/api/generate', json(payload))
