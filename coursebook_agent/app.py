@@ -1,4 +1,10 @@
-"""FastAPI entrypoint for the coursebook demo."""
+"""FastAPI entrypoint for CourseBookAgent.
+
+The product workbench routes live in ``coursebook_agent.product.api``. This
+file owns the cross-cutting run lifecycle (``/api/generate``, ``/api/runs``)
+and shared infrastructure endpoints (settings, cache, zhiyun auth,
+health).
+"""
 
 from __future__ import annotations
 
@@ -12,22 +18,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from coursebook_agent.agent.llm import LLMClient, LLMError, UsageMetrics, usage_tracking
 from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
-from coursebook_agent.models import CourseBook, JobState, LectureDraft
-from coursebook_agent.pipeline import CourseBookPipeline, MultiResourceCourseBookPipeline
+from coursebook_agent.models import JobState, LectureDraft
+from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
-from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 from coursebook_agent.product.api import router as product_router
 
 app = FastAPI(title="CourseBookAgent", version="0.1.0")
 app.include_router(product_router)
-app.mount("/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static")
 jobs: dict[str, JobState] = {}
 generation_lock = asyncio.Lock()
 tasks: dict[str, asyncio.Task] = {}
@@ -48,163 +51,89 @@ def _persist_job(state: JobState) -> None:
              "message": state.message, "at": datetime.now(timezone.utc).isoformat(),
              "error_code": state.error_code, "retryable": state.status in {"failed", "partial", "interrupted"},
              "attempt": state.retry_count + 1}
-    if not state.events or any(state.events[-1].get(k) != event[k] for k in ("status", "step", "progress", "message")):
-        state.events.append(event)
-    atomic_write_text(path, state.model_dump_json(indent=2))
+    state.events.append(event)
+    state.events = state.events[-200:]
+    try:
+        history = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, ValueError):
+        history = {}
+    history["state"] = json.loads(state.model_dump_json())
+    history["events"] = (history.get("events") or []) + [event]
+    history["events"] = history["events"][-200:]
+    atomic_write_text(path, json.dumps(history, ensure_ascii=False, indent=2))
 
 
 def _update_job_metrics(state: JobState, snapshot: dict) -> None:
-    """Make model accounting visible while a run is still in progress."""
     state.metrics = snapshot
-    _persist_job(state)
 
 
 def _record_model_event(state: JobState, event: dict) -> None:
-    """Persist provider-level failures without recording response contents."""
-    code = event.get("error_code") or "model_error"
-    retryable = bool(event.get("retryable"))
-    action = "准备重试" if retryable else "不会自动重试"
     state.events.append({
-        "status": "retrying" if retryable else "failed",
+        "status": "failed",
         "step": "模型调用",
-        "progress": state.progress,
-        "message": f"模型请求失败：{code}，{action}",
+        "message": f"模型请求失败（{event.get('error_code') or 'unknown'}），{'可重试' if event.get('retryable') else '等待任务处理'}",
         "at": datetime.now(timezone.utc).isoformat(),
-        "error_code": code,
-        "retryable": retryable,
-        "attempt": int(event.get("attempt") or 1),
+        "error_code": event.get("error_code"),
+        "retryable": bool(event.get("retryable")),
+        "attempt": state.retry_count + 1,
     })
+    _persist_job(state)
 
 
 def _new_job_metrics(state: JobState) -> UsageMetrics:
-    """Create accounting for this attempt while retaining prior retries."""
-    metrics = UsageMetrics(
-        input_price_per_million=config.llm.input_price_per_million,
-        output_price_per_million=config.llm.output_price_per_million,
+    in_price = state.request.get("input_price_per_million")
+    out_price = state.request.get("output_price_per_million")
+    return UsageMetrics(
+        input_price_per_million=float(in_price) if in_price not in (None, "") else None,
+        output_price_per_million=float(out_price) if out_price not in (None, "") else None,
     )
-    previous = state.metrics or {}
-    for field_name in (
-        "request_count", "successful_requests", "failed_requests", "retry_count",
-        "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms",
-    ):
-        setattr(metrics, field_name, int(previous.get(field_name) or 0))
-    metrics.models = [str(item) for item in previous.get("models", [])]
-    return metrics
 
 
 def _attach_job_metrics(state: JobState, metrics: UsageMetrics) -> None:
     metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
     metrics.on_event = lambda event: _record_model_event(state, event)
+    state.metrics = metrics.snapshot()
 
 
 def _load_jobs() -> None:
+    """Rehydrate persisted jobs and mark anything that was running as interrupted.
+
+    A running job cannot survive a process restart, so flipping it to
+    'interrupted' is the honest state. The operator can then retry it.
+    """
+    if not JOB_DIR.exists():
+        return
     for path in JOB_DIR.glob("*.json"):
         try:
-            state = JobState.model_validate_json(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            history = json.loads(path.read_text(encoding="utf-8"))
+            state = JobState.model_validate(history["state"])
+            if state.status == "running":
+                state.status = "interrupted"
+                state.step = "中断"
+                state.message = "进程重启中断，可手动恢复"
+                state.error_code = "process_restart"
+                _persist_job(state)
+            jobs[state.job_id] = state
+        except (OSError, ValueError, KeyError):
             continue
-        if path.stem != state.job_id:
-            continue
-        if state.status in {"running", "queued"}:
-            state.status, state.step, state.message = "interrupted", "中断", "服务重启，等待手动恢复"
-            _persist_job(state)
-        jobs[state.job_id] = state
 
 
 _load_jobs()
 
 
+# ── Index ─────────────────────────────────────────────────────────────────
+
+
+@app.get("/", include_in_schema=False)
+async def index() -> RedirectResponse:
+    """Redirect the root URL into the React product workbench."""
+    return RedirectResponse(url="/datasets", status_code=307)
+
+
+# ── Generation entry ──────────────────────────────────────────────────────
+
+
 class GenerateRequest(BaseModel):
-    course_id: str = Field(default="82493", pattern=r"^[A-Za-z0-9_-]+$")
-    refresh_source: bool = False
-    regenerate: bool = False
-    review: bool = False
-    snapshot_id: str | None = None
-    preset_id: str = "coursebook"
-    lecture_indices: list[int] | None = None
-    concurrency: int = Field(default=3, ge=1, le=8)
-
-
-def _schedule(job_id: str, coroutine) -> None:
-    task = asyncio.create_task(coroutine)
-    tasks[job_id] = task
-    task.add_done_callback(lambda finished: tasks.pop(job_id, None) if tasks.get(job_id) is finished else None)
-
-
-class ZhiyunLoginRequest(BaseModel):
-    username: str
-    password: str
-    webvpn: bool = False
-
-
-class LLMSettingsRequest(BaseModel):
-    base_url: str
-    model: str
-    api_key: str = ""
-    input_price_per_million: float | None = Field(default=None, ge=0)
-    output_price_per_million: float | None = Field(default=None, ge=0)
-
-
-class ConfirmRequest(BaseModel):
-    note: str = ""
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index() -> FileResponse:
-    return FileResponse(Path(__file__).parent / "static" / "index.html")
-
-
-@app.get("/api/health")
-async def health():
-    return {
-        "ok": True,
-        "llm_configured": bool(config.llm.api_key and config.llm.base_url and config.llm.model),
-        "zhiyun_live_configured": config.zhiyun.has_credentials,
-        "demo_course_id": "82493",
-    }
-
-
-@app.get("/api/zhiyun/auth")
-async def zhiyun_auth_status():
-    return ZhiyunSource().auth_status()
-
-
-@app.post("/api/zhiyun/login")
-async def zhiyun_login(request: ZhiyunLoginRequest):
-    try:
-        return await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
-    except ZhiyunError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-
-
-@app.get("/api/courses")
-async def courses():
-    try:
-        values = await asyncio.to_thread(ZhiyunSource().list_courses)
-        return {"data": [item.model_dump() for item in values]}
-    except ZhiyunError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.get("/api/courses/{course_id}/lectures")
-async def course_lectures(course_id: str):
-    try:
-        values = await asyncio.to_thread(ZhiyunSource().list_lectures, course_id)
-        return {"data": [item.model_dump() for item in values]}
-    except ZhiyunError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.post("/api/generate", status_code=202)
-async def generate(request: GenerateRequest):
-    job_id = uuid.uuid4().hex[:12]
-    jobs[job_id] = JobState(job_id=job_id, course_id=request.course_id, request=request.model_dump(), status="queued", step="排队", progress=0, message="准备生成")
-    _persist_job(jobs[job_id])
-    _schedule(job_id, _run_job(job_id, request))
-    return jobs[job_id].model_dump()
-
-
-class GenerateV2Request(BaseModel):
     course_id: str | None = None
     snapshot_id: str | None = None
     regenerate: bool = False
@@ -213,8 +142,14 @@ class GenerateV2Request(BaseModel):
     chapter_indices: list[int] | None = None
 
 
-@app.post("/api/generate/v2", status_code=202)
-async def generate_v2(request: GenerateV2Request):
+def _schedule(job_id: str, coroutine) -> None:
+    task = asyncio.create_task(coroutine)
+    tasks[job_id] = task
+    task.add_done_callback(lambda finished: tasks.pop(job_id, None) if tasks.get(job_id) is finished else None)
+
+
+@app.post("/api/generate", status_code=202)
+async def generate(request: GenerateRequest):
     if not request.snapshot_id:
         raise HTTPException(status_code=400, detail="snapshot_id 必须提供；系统不再以课程为主键。")
     # Resolve dataset_id from snapshot so the run is bound to its source
@@ -227,26 +162,26 @@ async def generate_v2(request: GenerateV2Request):
         course_id=request.course_id or "",
         request=request.model_dump(),
         status="queued", step="排队", progress=0,
-        message="v2 多资料工作流准备",
+        message="多资料工作流准备",
     )
     # Dataset binding lives in request so projections can find it.
     job_state.request["dataset_id"] = snapshot_obj.dataset_id
     job_state.request["dataset_name"] = ProductService().get_dataset(snapshot_obj.dataset_id).name
     jobs[job_id] = job_state
     _persist_job(job_state)
-    _schedule(job_id, _run_job_v2(job_id, request))
+    _schedule(job_id, _run_job(job_id, request))
     return job_state.model_dump()
 
 
-async def _run_job_v2(job_id: str, request: GenerateV2Request) -> None:
+async def _run_job(job_id: str, request: GenerateRequest) -> None:
     state = jobs[job_id]
     async with generation_lock:
-        state.status, state.step, state.message = "running", "读取快照", "v2 多资料工作流启动"
+        state.status, state.step, state.message = "running", "读取快照", "多资料工作流启动"
         _persist_job(state)
-        await _generate_locked_v2(state, request)
+        await _generate_locked(state, request)
 
 
-async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> None:
+async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
     # Promote dataset binding to top-level fields so projection can render it.
     state.dataset_id = state.request.get("dataset_id", state.dataset_id)
     state.dataset_name = state.request.get("dataset_name", state.dataset_name)
@@ -257,19 +192,12 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         except ZeroDivisionError:
             pct = 0
         state.progress = pct
-        # Use the first 1-2 Chinese characters (or first word) as a step
-        # label so the projection has something stable to map. Avoid
-        # truncating long descriptive messages into a single garbled
-        # token.
         head = message.strip().split(" ", 1)[0]
         state.step = head[:4] if len(head) > 4 else head
         state.message = message
         if chapter:
             cid = chapter.get("chapter_id") or chapter.get("index")
-            # v2 sends chapter_id only; legacy sends index. Mirror an "index"
-            # field so the projection can sort by either.
             if chapter.get("chapter_id") and "index" not in chapter:
-                # Try to preserve explicit index from caller; otherwise assign by order.
                 chapter = {**chapter, "index": chapter.get("index", len(state.chapters) + 1)}
             state.chapters = sorted(
                 [c for c in state.chapters if c.get("chapter_id", c.get("index")) != cid] + [chapter],
@@ -282,7 +210,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
     state.metrics = metrics.snapshot()
     _persist_job(state)
     try:
-        pipeline = MultiResourceCourseBookPipeline()
+        pipeline = CourseBookPipeline()
         with usage_tracking(metrics):
             book = await asyncio.wait_for(pipeline.run(
                 snapshot_id=request.snapshot_id,
@@ -297,7 +225,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         if any(c.get("status") == "failed" for c in state.chapters):
             state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分章节生成失败，可重试失败章节", book
         else:
-            state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程讲义已生成", book
+            state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程教辅已生成", book
         _persist_job(state)
     except asyncio.TimeoutError:
         state.error_code = "task_timeout"
@@ -313,230 +241,7 @@ async def _generate_locked_v2(state: JobState, request: GenerateV2Request) -> No
         raise
 
 
-async def _run_job(job_id: str, request: GenerateRequest) -> None:
-    state = jobs[job_id]
-    # Block on the lock so this task actually starts when the previous run
-    # releases; the lock-fair queueing keeps it serialised.
-    async with generation_lock:
-        state.status, state.step, state.message = "running", "获取字幕", "正在读取课程讲次和字幕"
-        _persist_job(state)
-        await _generate_locked(state, request, only_indices=request.lecture_indices)
-
-
-async def _generate_locked(state: JobState, request: GenerateRequest, only_indices: list[int] | None = None) -> None:
-    def progress(done: int, total: int, message: str, chapter: dict | None = None) -> None:
-        state.progress = min(95, int(done / total * 95)) if total else 0
-        head = message.strip().split(" ", 1)[0]
-        state.step = head[:4] if len(head) > 4 else head
-        state.message = message
-        if chapter:
-            idx = chapter.get("index")
-            state.chapters = sorted(
-                [c for c in state.chapters if c.get("index") != idx] + [chapter],
-                key=lambda c: c.get("index", 0),
-            )
-        _persist_job(state)
-
-    metrics = _new_job_metrics(state)
-    _attach_job_metrics(state, metrics)
-    state.metrics = metrics.snapshot()
-    _persist_job(state)
-    try:
-        pipeline = CourseBookPipeline()
-        with usage_tracking(metrics):
-            book = await asyncio.wait_for(pipeline.generate_course(
-                request.course_id,
-                refresh_source=request.refresh_source,
-                regenerate=request.regenerate,
-                review=request.review,
-                progress=progress,
-                only_indices=only_indices,
-                checkpoint_dir=JOB_DIR / state.job_id,
-                concurrency=request.concurrency,
-            ), timeout=3600)
-        if any(c.get("status") == "failed" for c in state.chapters):
-            state.status, state.progress, state.step, state.message, state.book = "partial", 100, "部分完成", "部分讲次生成失败，可重试失败讲次", book
-        else:
-            state.status, state.progress, state.step, state.message, state.book = "completed", 100, "完成", "课程讲义已生成", book
-        _persist_job(state)
-    except asyncio.TimeoutError:
-        state.error_code = "task_timeout"
-        state.status, state.step, state.error, state.message = "failed", "超时", "任务超过 60 分钟", "生成超时，可恢复已完成章节"
-        _persist_job(state)
-    except Exception as exc:
-        state.error_code = getattr(exc, "code", "generation_error")
-        state.status, state.step, state.error, state.message = "failed", "失败", str(exc), "生成失败"
-        _persist_job(state)
-    except asyncio.CancelledError:
-        state.status, state.step, state.message = "interrupted", "中断", "生成中断，可手动恢复"
-        _persist_job(state)
-        raise
-
-
-@app.get("/api/jobs/{job_id}")
-async def job_status(job_id: str):
-    return _get_job(job_id).model_dump()
-
-
-@app.post("/api/jobs/{job_id}/retry", status_code=202)
-async def retry_failed_job(job_id: str):
-    state = _get_job(job_id)
-    if state.status not in {"failed", "partial", "interrupted"}:
-        raise HTTPException(status_code=409, detail="只有失败或部分完成的任务可以重试")
-    failed_indices = sorted(
-        int(item["index"])
-        for item in state.chapters
-        if item.get("status") == "failed" and str(item.get("index", "")).isdigit()
-    )
-    if not state.course_id:
-        raise HTTPException(status_code=409, detail="任务缺少课程信息，无法重试")
-    if not failed_indices and state.status == "partial":
-        raise HTTPException(status_code=409, detail="没有可重试的失败章节")
-    state.retry_count += 1
-    state.status = "queued"
-    state.step = "排队"
-    state.progress = 0
-    state.error = None
-    state.error_code = None
-    state.message = "准备恢复任务"
-    _persist_job(state)
-    _schedule(state.job_id, _run_retry_job(state.job_id, state.course_id, failed_indices))
-    return {"job_id": state.job_id, "retry_indices": failed_indices, **state.model_dump()}
-
-
-async def _run_retry_job(job_id: str, course_id: str, retry_indices: list[int]) -> None:
-    state = jobs[job_id]
-    async with generation_lock:
-        state.status, state.step, state.message = "running", "重试", f"正在重试 {len(retry_indices)} 个失败章节"
-        _persist_job(state)
-        try:
-            pipeline = CourseBookPipeline()
-            lectures = await asyncio.to_thread(pipeline.source.list_lectures, course_id)
-            successful = {c["index"] for c in state.chapters if c.get("status") == "done"}
-            successful = {i for i in successful if 1 <= i <= len(lectures)
-                          and (JOB_DIR / job_id / f"chapter-{lectures[i-1].lecture_id}.json").exists()}
-            retry_indices = sorted(set(retry_indices) | (set(range(1, len(lectures) + 1)) - successful))
-        except Exception as exc:
-            state.status, state.error, state.message = "failed", str(exc), "恢复准备失败"
-            _persist_job(state)
-            return
-        await _generate_locked(
-            state,
-            GenerateRequest(course_id=course_id, regenerate=True, refresh_source=False,
-                            review=bool(state.request.get("review", False))),
-            only_indices=retry_indices,
-        )
-
-
-@app.get("/api/jobs/{job_id}/book")
-async def job_book(job_id: str):
-    state = _get_job(job_id)
-    if state.status not in {"completed", "partial"} or not state.book:
-        raise HTTPException(status_code=409, detail="讲义尚未完成")
-    return state.book.model_dump()
-
-
-@app.post("/api/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str):
-    state = _get_job(job_id)
-    task = tasks.get(job_id)
-    if state.status not in {"queued", "running"} or not task:
-        raise HTTPException(status_code=409, detail="任务未在运行")
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    state.status, state.step, state.message = "interrupted", "中断", "用户停止任务，可手动恢复"
-    _persist_job(state)
-    return state.model_dump()
-
-
-@app.get("/api/jobs/{job_id}/chapters/{index}/sources/{chunk_id}")
-async def chapter_source(job_id: str, index: int, chunk_id: str):
-    state = _get_job(job_id)
-    manifest = JOB_DIR / job_id / "lectures.json"
-    if not manifest.exists():
-        raise HTTPException(status_code=404, detail="没有保存字幕证据")
-    lectures = json.loads(manifest.read_text(encoding="utf-8"))
-    if not 1 <= index <= len(lectures):
-        raise HTTPException(status_code=404, detail="章节不存在")
-    lecture_id = lectures[index - 1]["lecture_id"]
-    path = JOB_DIR / state.job_id / f"chunks-{lecture_id}.json"
-    if path.exists():
-        for chunk in json.loads(path.read_text(encoding="utf-8")):
-            if chunk["chunk_id"] == chunk_id and chunk["lecture_id"] == lecture_id:
-                return chunk
-    raise HTTPException(status_code=404, detail="字幕块不存在")
-
-
-@app.get("/api/jobs/{job_id}/download.md")
-async def download_markdown(job_id: str):
-    state = _get_job(job_id)
-    if state.status not in {"completed", "partial"} or not state.book:
-        raise HTTPException(status_code=409, detail="讲义尚未完成")
-    path = config.output_dir / f"coursebook-{state.book.course.course_id}.md"
-    atomic_write_text(path, render_coursebook(state.book))
-    return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=f"coursebook-{state.book.course.course_id}.md")
-
-
-@app.get("/api/runs/{run_id}/report")
-async def v2_run_report(run_id: str):
-    if run_id in jobs:
-        return _job_report(jobs[run_id])
-    path = config.data_dir / "runs" / run_id / "report" / "pilot-quality-report.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="V2 运行报告不存在")
-    import json
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-@app.get("/api/runs/{run_id}/chapters/{lecture_index}")
-async def v2_run_chapter(run_id: str, lecture_index: int):
-    if run_id in jobs and jobs[run_id].book:
-        chapters = jobs[run_id].book.chapters
-        if 1 <= lecture_index <= len(chapters):
-            return chapters[lecture_index - 1].model_dump()
-        raise HTTPException(status_code=404, detail="章节不存在")
-    base = config.data_dir / "runs" / run_id / "chapters"
-    matches = sorted(base.glob(f"chapter-{lecture_index:02d}-*.json"))
-    if not matches:
-        raise HTTPException(status_code=404, detail="V2 试点章节不存在")
-    return LectureDraft.model_validate_json(matches[0].read_text(encoding="utf-8")).model_dump()
-
-
-@app.get("/api/books")
-async def list_books():
-    intermediate = config.data_dir / "intermediate"
-    items = []
-    if intermediate.exists():
-        for p in sorted(intermediate.glob("coursebook-*.json")):
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            items.append({
-                "course_id": str(data.get("course", {}).get("course_id", p.stem.replace("coursebook-", ""))),
-                "title": data.get("title", ""),
-                "chapters": len(data.get("chapters", [])),
-            })
-    return {"data": items}
-
-
-@app.get("/api/books/{course_id}")
-async def persisted_book(course_id: str):
-    path = config.data_dir / "intermediate" / f"coursebook-{course_id}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="尚无已保存的课程讲义")
-    return CourseBook.model_validate_json(path.read_text(encoding="utf-8")).model_dump()
-
-
-@app.get("/api/books/{course_id}/download.md")
-async def download_persisted_markdown(course_id: str):
-    path = config.output_dir / f"coursebook-{course_id}.md"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="尚无已保存的课程讲义")
-    return FileResponse(path, media_type="text/markdown; charset=utf-8", filename=f"coursebook-{course_id}.md")
+# ── Run lifecycle ────────────────────────────────────────────────────────
 
 
 def _get_job(job_id: str) -> JobState:
@@ -552,7 +257,94 @@ def _get_job(job_id: str) -> JobState:
     return jobs[job_id]
 
 
+@app.get("/api/runs/{run_id}")
+async def run_status(run_id: str):
+    return _get_job(run_id).model_dump()
+
+
+@app.post("/api/runs/{run_id}/retry", status_code=202)
+async def retry_run(run_id: str):
+    state = _get_job(run_id)
+    if state.status not in {"failed", "partial", "interrupted"}:
+        raise HTTPException(status_code=409, detail="只有失败或部分完成的任务可以重试")
+    if not state.request.get("snapshot_id"):
+        raise HTTPException(status_code=409, detail="任务缺少 snapshot_id，无法重试")
+
+    state.retry_count += 1
+    state.status = "queued"
+    state.step = "排队"
+    state.progress = 0
+    state.error = None
+    state.error_code = None
+    state.message = "准备恢复任务"
+    _persist_job(state)
+    _schedule(run_id, _run_job(run_id, GenerateRequest(**state.request)))
+    return {"job_id": state.job_id, **state.model_dump()}
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    state = _get_job(run_id)
+    task = tasks.get(run_id)
+    if state.status not in {"queued", "running"} or not task:
+        raise HTTPException(status_code=409, detail="任务未在运行")
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    state.status, state.step, state.message = "interrupted", "中断", "用户停止任务，可手动恢复"
+    _persist_job(state)
+    return state.model_dump()
+
+
+@app.get("/api/runs/{run_id}/download.md")
+async def download_run_markdown(run_id: str):
+    state = _get_job(run_id)
+    if state.status not in {"completed", "partial"} or not state.book:
+        raise HTTPException(status_code=409, detail="教辅尚未完成")
+    course_id = state.book.course.course_id or run_id
+    path = config.output_dir / f"coursebook-{course_id}.md"
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=f"coursebook-{course_id}.md",
+    )
+
+
+# ── Health & zhiyun auth ──────────────────────────────────────────────────
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "ok": True,
+        "llm_configured": bool(config.llm.api_key and config.llm.base_url and config.llm.model),
+        "zhiyun_live_configured": config.zhiyun.has_credentials,
+    }
+
+
+class ZhiyunLoginRequest(BaseModel):
+    username: str
+    password: str
+    webvpn: bool = False
+
+
+@app.get("/api/zhiyun/auth")
+async def zhiyun_auth_status():
+    return ZhiyunSource().auth_status()
+
+
+@app.post("/api/zhiyun/login")
+async def zhiyun_login(request: ZhiyunLoginRequest):
+    try:
+        return await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
+    except ZhiyunError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
 # ── Settings ──────────────────────────────────────────────────────────────
+
 
 def _dir_size(path: Path) -> int:
     total = 0
@@ -585,6 +377,14 @@ async def settings():
             "course_count": course_count,
         },
     }
+
+
+class LLMSettingsRequest(BaseModel):
+    base_url: str
+    model: str
+    api_key: str = ""
+    input_price_per_million: float | None = Field(default=None, ge=0)
+    output_price_per_million: float | None = Field(default=None, ge=0)
 
 
 @app.put("/api/settings/llm")
@@ -621,7 +421,7 @@ async def test_llm_connection():
     try:
         with usage_tracking(metrics):
             await LLMClient(max_retries=1, timeout=30).complete(
-                "你是连接测试助手。", "请只回复两个字符：OK", max_tokens=8, temperature=0
+                "你是连接测试助手。", "请只回复两个字符：OK", temperature=0
             )
     except LLMError as exc:
         raise HTTPException(status_code=502, detail=f"连接失败：{exc}") from exc
@@ -647,7 +447,8 @@ async def clear_cache():
     return {"ok": True, "removed": removed}
 
 
-# ── V2 runs / quality ───────────────────────────────────────────────────
+# ── Run reports and quality ───────────────────────────────────────────────
+
 
 @app.get("/api/runs")
 async def list_runs():
@@ -669,6 +470,16 @@ async def list_runs():
             "indices": data.get("indices", []),
         })
     return {"data": items}
+
+
+@app.get("/api/runs/{run_id}/report")
+async def run_report(run_id: str):
+    if run_id in jobs:
+        return _job_report(jobs[run_id])
+    path = config.data_dir / "runs" / run_id / "report" / "pilot-quality-report.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="运行报告不存在")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _job_report(state: JobState) -> dict:
@@ -697,6 +508,10 @@ def _job_report(state: JobState) -> dict:
             "rejected": sum(not r["accepted"] for r in results)}
 
 
+class ConfirmRequest(BaseModel):
+    note: str = ""
+
+
 @app.post("/api/runs/{run_id}/chapters/{lecture_index}/confirm")
 async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmRequest):
     if run_id in jobs:
@@ -709,7 +524,7 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
         return {"ok": True}
     run_dir = config.data_dir / "runs" / run_id
     if not run_dir.exists():
-        raise HTTPException(status_code=404, detail="V2 运行不存在")
+        raise HTTPException(status_code=404, detail="运行不存在")
     review_dir = run_dir / "review"
     review_dir.mkdir(parents=True, exist_ok=True)
     (review_dir / f"confirm-{lecture_index:02d}.json").write_text(
@@ -720,74 +535,6 @@ async def confirm_run_chapter(run_id: str, lecture_index: int, request: ConfirmR
         encoding="utf-8",
     )
     return {"ok": True}
-
-
-# ── Single-lecture generation / regeneration ──────────────────────────────
-
-async def _start_single_lecture_job(course_id: str, index: int, regenerate: bool) -> JobState:
-    job_id = uuid.uuid4().hex[:12]
-    state = JobState(
-        job_id=job_id,
-        course_id=course_id,
-        request={"review": True, "only_indices": [index], "regenerate": regenerate},
-        status="queued",
-        step="排队",
-        progress=0,
-        message=f"准备{'重新' if regenerate else ''}生成第 {index} 讲",
-    )
-    jobs[job_id] = state
-    _persist_job(state)
-    _schedule(job_id, _run_single_lecture(job_id, course_id, index))
-    return state
-
-
-async def _run_single_lecture(job_id: str, course_id: str, index: int) -> None:
-    state = jobs[job_id]
-    async with generation_lock:
-        state.status, state.step, state.message = "running", "生成", f"正在生成第 {index} 讲"
-        _persist_job(state)
-        metrics = _new_job_metrics(state)
-        _attach_job_metrics(state, metrics)
-        state.metrics = metrics.snapshot()
-        _persist_job(state)
-        try:
-            pipeline = CourseBookPipeline()
-            with usage_tracking(metrics):
-                book = await asyncio.wait_for(
-                    pipeline.generate_single_lecture(course_id, index, review=True),
-                    timeout=3600,
-                )
-            state.book = book
-            lectures = await asyncio.to_thread(pipeline.source.list_lectures, course_id)
-            target_id = lectures[index - 1].lecture_id
-            chapter = next((c for c in book.chapters if c.lecture_id == target_id), book.chapters[-1])
-            state.chapters = [{
-                "index": index,
-                "title": chapter.title,
-                "status": "done",
-                "total_chars": sum(len(s.content) for s in chapter.sections),
-                "sections": [{"heading": s.heading, "chars": len(s.content), "components": len(s.components), "time_links": len(s.time_links)} for s in chapter.sections],
-                "warnings": chapter.warnings[:5],
-            }]
-            state.status, state.progress, state.step, state.message = "completed", 100, "完成", f"第 {index} 讲已生成"
-            _persist_job(state)
-        except asyncio.CancelledError:
-            state.status, state.step, state.message = "interrupted", "中断", "单讲生成中断，可手动恢复"
-            _persist_job(state)
-            raise
-        except Exception as exc:
-            state.error_code = getattr(exc, "code", "generation_error")
-            state.status, state.step, state.error, state.message = "failed", "失败", str(exc), f"第 {index} 讲生成失败"
-            _persist_job(state)
-
-
-@app.post("/api/courses/{course_id}/lectures/{index}/generate", status_code=202)
-async def generate_lecture(course_id: str, index: int):
-    return (await _start_single_lecture_job(course_id, index, False)).model_dump()
-
-@app.post("/api/courses/{course_id}/lectures/{index}/regenerate", status_code=202)
-async def regenerate_lecture(course_id: str, index: int):
-    return (await _start_single_lecture_job(course_id, index, True)).model_dump()
 
 
 if __name__ == "__main__":

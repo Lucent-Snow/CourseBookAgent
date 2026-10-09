@@ -35,7 +35,7 @@ class LLMConfig(BaseModel):
     api_key: str = os.getenv("LLM_API_KEY", "")
     base_url: str = os.getenv("LLM_BASE_URL", "")
     model: str = os.getenv("LLM_MODEL", "")
-    timeout: int = int(os.getenv("LLM_TIMEOUT", "120"))
+    timeout: int = int(os.getenv("LLM_TIMEOUT", "600"))
     input_price_per_million: float | None = _optional_float_env("LLM_INPUT_PRICE_PER_MILLION")
     output_price_per_million: float | None = _optional_float_env("LLM_OUTPUT_PRICE_PER_MILLION")
 

@@ -14,7 +14,11 @@ const sourceLabel = (resource: Resource) => {
 }
 const formatSize = (value = 0) => value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`
 const formatTime = (value: string | null) => value ? new Date(value).toLocaleString() : '—'
-const statusLabel = (status: string | null | undefined) => status === 'completed' ? '已完成' : status === 'partial' ? '部分完成' : status === 'failed' ? '失败' : status === 'running' ? '运行中' : status === 'queued' ? '排队' : '—'
+const runStatusLabels: Record<string, string> = {
+  completed: '已完成', partial: '部分完成', failed: '失败', running: '运行中',
+  queued: '排队', interrupted: '已中断', cancelled: '已取消', retrying: '重试中',
+}
+const statusLabel = (status: string | null | undefined) => status ? runStatusLabels[status] || '未知状态' : '—'
 
 export function DatasetDetailPage() {
  const { datasetId = '' } = useParams()

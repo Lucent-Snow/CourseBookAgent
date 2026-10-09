@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from coursebook_agent.config import config
+from coursebook_agent.lab import LabService
 from coursebook_agent.product.models import (
     DatasetCreate,
     ProviderInspection,
@@ -21,6 +22,7 @@ class UnifiedLoginRequest(BaseModel):
     username: str
     password: str
     webvpn: bool = False
+    authcode: str | None = None  # SMS verification code for 学在浙大 (second attempt)
 
 router = APIRouter(prefix="/api/product", tags=["product-workbench"])
 
@@ -182,15 +184,20 @@ async def unified_login(request: UnifiedLoginRequest):
 
     Zhiyun uses the existing JWT exchange; 学在浙大 uses the CAS public key
     RSA flow.  Both providers share the same university credentials.
+
+    The 学在浙大 half honours ``authcode`` so a second submission with the
+    6-digit SMS code completes a login that the first attempt flagged as
+    unfamiliar-device (see :class:`SMSRequired`).
     """
     import asyncio
 
-    from coursebook_agent.sources.xuezai.assist import XueZaiError, XueZaiSource
+    from coursebook_agent.sources.xuezai.assist import SMSRequired, XueZaiError, XueZaiSource
     from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 
     results: dict[str, object] = {}
     zhiyun_error: str | None = None
     xuezai_error: str | None = None
+    sms_required = False
     try:
         zhiyun_status = await ZhiyunSource().login(request.username, request.password, webvpn=request.webvpn)
         results["zhiyun"] = {"authenticated": True, "username": zhiyun_status.get("username", request.username)}
@@ -200,19 +207,32 @@ async def unified_login(request: UnifiedLoginRequest):
     try:
         xuezai = await asyncio.to_thread(
             XueZaiSource(cache_dir=config.data_dir / "cache" / "xuezai", via_webvpn=request.webvpn).login,
-            request.username, request.password,
+            request.username, request.password, request.authcode,
         )
         results["xue_zai_zju"] = xuezai
+    except SMSRequired as exc:
+        sms_required = True
+        xuezai_error = str(exc)
+        results["xue_zai_zju"] = {"authenticated": False, "username": ""}
     except XueZaiError as exc:
         xuezai_error = str(exc)
         results["xue_zai_zju"] = {"authenticated": False, "username": ""}
-    if zhiyun_error and xuezai_error:
+    if zhiyun_error and xuezai_error and not sms_required:
         raise HTTPException(status_code=502, detail=f"智云：{zhiyun_error}；学在浙大：{xuezai_error}")
     response: dict[str, object] = {"providers": results, "username": request.username}
+    if sms_required:
+        # 202 Accepted: client must re-submit with authcode. We don't 4xx because
+        # the username/password half is still valid; only the second factor is
+        # outstanding.
+        response["sms_required"] = True
+        response["sms_hint"] = "请查看手机短信，输入 6 位验证码后再次提交（带 authcode 字段）"
     if zhiyun_error:
-        response["warnings"] = [f"智云课堂登录未成功：{zhiyun_error}"]
+        response.setdefault("warnings", []).append(f"智云课堂登录未成功：{zhiyun_error}")
     if xuezai_error:
         response.setdefault("warnings", []).append(f"学在浙大登录未成功：{xuezai_error}")
+    if sms_required:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=202, content=response)
     return response
 
 
@@ -349,5 +369,181 @@ def get_artifact(artifact_id: str):
         if not artifact:
             raise KeyError("产物不存在")
         return {"artifact": artifact, "book": state.book}
+
+    return _call(resolve)
+
+
+# ── Lab: stage-by-stage operator surface ────────────────────────────────
+
+
+class LabRunRequest(BaseModel):
+    force: bool = False
+    revision_id: str | None = None
+    review: bool = True
+
+
+def _ensure_snapshot(snapshot_id: str) -> None:
+    """Snapshot id must be a known snapshot, not just any string."""
+    ProductService().get_snapshot(snapshot_id)
+
+
+@router.get("/snapshots/{snapshot_id}/lab/status")
+def lab_status(snapshot_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        status = service.status()
+        return {stage: {"state": s.state, "count": s.count, "files": s.files} for stage, s in status.items()}
+
+    return _call(resolve)
+
+
+@router.post("/snapshots/{snapshot_id}/lab/describe")
+async def lab_describe(snapshot_id: str, body: LabRunRequest | None = None):
+    body = body or LabRunRequest()
+    _ensure_snapshot(snapshot_id)
+    service = LabService(snapshot_id=snapshot_id)
+    if body.force:
+        service.clear_descriptions(body.revision_id)
+    descriptions = await service.run_describe(force=body.force, revision_id=body.revision_id)
+    return {"count": len(descriptions), "descriptions": descriptions}
+
+
+@router.post("/snapshots/{snapshot_id}/lab/plan")
+async def lab_plan(snapshot_id: str, body: LabRunRequest | None = None):
+    body = body or LabRunRequest()
+    _ensure_snapshot(snapshot_id)
+    service = LabService(snapshot_id=snapshot_id)
+    if body.force:
+        service.clear_plan()
+    plan = await service.run_plan(force=body.force)
+    return plan
+
+
+@router.post("/snapshots/{snapshot_id}/lab/assemble")
+async def lab_assemble(snapshot_id: str):
+    _ensure_snapshot(snapshot_id)
+    service = LabService(snapshot_id=snapshot_id)
+    contexts = await service.run_assemble()
+    return {"count": len(contexts), "contexts": contexts}
+
+
+@router.post("/snapshots/{snapshot_id}/lab/chapters/{chapter_id}/generate")
+async def lab_generate(snapshot_id: str, chapter_id: str, body: LabRunRequest | None = None):
+    body = body or LabRunRequest()
+    _ensure_snapshot(snapshot_id)
+    service = LabService(snapshot_id=snapshot_id)
+    if body.force:
+        service.clear_chapter(chapter_id)
+    draft = await service.run_generate(chapter_id=chapter_id, force=body.force, review=body.review)
+    return draft
+
+
+@router.post("/snapshots/{snapshot_id}/lab/synthesize")
+async def lab_synthesize(snapshot_id: str, body: LabRunRequest | None = None):
+    body = body or LabRunRequest()
+    _ensure_snapshot(snapshot_id)
+    service = LabService(snapshot_id=snapshot_id)
+    if body.force:
+        loaded = service.load()
+        course_id = loaded.course.course_id if loaded.course and loaded.course.course_id else ""
+        path = service.coursebook_path(course_id)
+        if path.exists():
+            path.unlink()
+    book = await service.run_synthesize(force=body.force)
+    return book
+
+
+@router.get("/snapshots/{snapshot_id}/lab/descriptions")
+def lab_list_descriptions(snapshot_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        descriptions = service.list_descriptions()
+        return {"count": len(descriptions), "descriptions": descriptions}
+
+    return _call(resolve)
+
+
+@router.get("/snapshots/{snapshot_id}/lab/descriptions/{revision_id}")
+def lab_get_description(snapshot_id: str, revision_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        desc = service._read_description(revision_id)
+        if desc is None:
+            raise HTTPException(status_code=404, detail="description 缓存不存在")
+        return desc
+
+    return _call(resolve)
+
+
+@router.get("/snapshots/{snapshot_id}/lab/plan")
+def lab_get_plan(snapshot_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        plan = service._read_plan()
+        if plan is None:
+            raise HTTPException(status_code=404, detail="plan 缓存不存在")
+        return plan
+
+    return _call(resolve)
+
+
+@router.get("/snapshots/{snapshot_id}/lab/chapters")
+def lab_list_chapters(snapshot_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        chapters = service.list_chapters()
+        return {"count": len(chapters), "chapters": chapters}
+
+    return _call(resolve)
+
+
+@router.get("/snapshots/{snapshot_id}/lab/chapters/{chapter_id}")
+def lab_get_chapter(snapshot_id: str, chapter_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        loaded = service.load()
+        cid = loaded.course.course_id if loaded.course and loaded.course.course_id else ""
+        draft = service._read_chapter(cid, chapter_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="chapter 缓存不存在")
+        return draft
+
+    return _call(resolve)
+
+
+@router.delete("/snapshots/{snapshot_id}/lab/descriptions")
+def lab_clear_descriptions(snapshot_id: str, revision_id: str | None = None):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        return {"removed": service.clear_descriptions(revision_id)}
+
+    return _call(resolve)
+
+
+@router.delete("/snapshots/{snapshot_id}/lab/plan")
+def lab_clear_plan(snapshot_id: str):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        return {"removed": service.clear_plan()}
+
+    return _call(resolve)
+
+
+@router.delete("/snapshots/{snapshot_id}/lab/chapters")
+def lab_clear_chapters(snapshot_id: str, chapter_id: str | None = None):
+    def resolve():
+        _ensure_snapshot(snapshot_id)
+        service = LabService(snapshot_id=snapshot_id)
+        if chapter_id is not None:
+            return {"removed": service.clear_chapter(chapter_id)}
+        return {"removed": service.clear_chapters()}
 
     return _call(resolve)

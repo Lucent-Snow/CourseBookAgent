@@ -3,6 +3,7 @@ import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ChapterView } from './ChapterView'
+import { GenerationNotes } from './GenerationNotes'
 import { MathText } from '@/components/math/MathText'
 import type { CourseBook } from '@/types'
 
@@ -27,6 +28,7 @@ function FrontMatter({ book }: { book: CourseBook }) {
   return (
     <div className="min-w-0">
       <h2 className="text-2xl font-bold leading-snug">{book.title}</h2>
+      <GenerationNotes notes={book.warnings} />
       {courseMeta && (
         <p className="mt-2 text-sm text-muted-foreground">{courseMeta}</p>
       )}

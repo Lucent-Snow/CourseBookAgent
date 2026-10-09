@@ -215,6 +215,8 @@ class LectureDraft(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     # v2: list of resource revision ids the chapter actually used.
     used_resource_ids: list[str] = Field(default_factory=list)
+    # Exact context provenance for pipeline cache reuse; old drafts have no proof.
+    context_fingerprint: str = ""
     # Book-aware fields
     chapter_role: str = "core"
     learning_goals: list[str] = Field(default_factory=list)
@@ -322,6 +324,10 @@ class ResourceDescription(BaseModel):
     source_type: str
     provider: str
     title: str
+    # Five-part Markdown description (form, content blocks, unique value,
+    # terminology/keywords, placement suggestions). This is the primary
+    # payload the main Agent reads; the fields below are light metadata.
+    body: str = ""
     topic: str = ""
     knowledge_topics: list[str] = Field(default_factory=list)
     scope: str = "lecture"  # course | module | lecture | topic

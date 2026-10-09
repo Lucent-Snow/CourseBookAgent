@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { AlertTriangle, ArrowLeft, Bot, Clock3, FileText, Gauge, Layers, Pause, RefreshCw, ShieldAlert, Tag } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { api } from '@/api/client'
 import { productApi } from '@/api/product'
 import type { QualityReport, ResourceProjection, RunProjection, StageProjection } from '@/product-types'
 
@@ -18,12 +17,20 @@ const STAGE_ORDER: Array<{ key: keyof StageProjection | 'rendered'; label: strin
 
 function stageIndex(stage: StageProjection, phase: string, status: string): number {
  if (status === 'queued') return 0
- if (status === 'completed' || stage.rendered) return 6
+ if (status === 'completed') return 6
+ // Retry projections can still include results from the previous attempt.
+ if (status === 'running' || status === 'retrying') {
+  if (phase === 'write') return 4
+  if (phase === 'synthesize' || phase === 'quality') return 5
+ }
+ if (stage.rendered) return 6
  if (stage.synthesized) return 6
+ if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed === stage.chapters_total) return 5
  if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed < stage.chapters_total) return 4
  if (stage.assembled_total > 0 && stage.assembled < stage.assembled_total) return 3
  if (stage.planned) return 3
  if (stage.described_total > 0 && stage.described < stage.described_total) return 1
+ if (stage.described_total > 0 && stage.described === stage.described_total) return 2
  if (stage.parsed_total > 0 && stage.parsed < stage.parsed_total) return 0
  const phaseMap: Record<string, number> = { describe: 1, plan: 2, write: 4, synthesize: 5, quality: 5 }
  return phaseMap[phase] ?? 0
@@ -133,16 +140,30 @@ export function RunDetailPage() {
  return () => window.clearInterval(timer)
  }, [])
 
- async function action(kind: 'retry' | 'cancel') { try { if (kind === 'retry') await api.retryJob(runId); else await api.cancelJob(runId); } catch (err) { setError((err as Error).message) } }
+ async function action(kind: 'retry' | 'cancel') {
+    try {
+      const res = await fetch(`/api/runs/${runId}/${kind}`, { method: 'POST' })
+      if (!res.ok) {
+        const detail = await res.json().then((b) => b?.detail).catch(() => '')
+        throw new Error(detail || `请求失败（${res.status}）`)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
 
  if (!run) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取运行状态…'}</div>
 
  const stage = run.stage
  const currentStageIdx = stageIndex(stage, run.phase, run.status)
+ const currentPhaseLabel = run.status === 'running' || run.status === 'retrying'
+  ? STAGE_ORDER[currentStageIdx].label.replace(/^\d+\. /, '')
+  : phaseLabel[run.phase] || '等待运行'
  const completedStages = run.status === 'completed' ? STAGE_ORDER.length : Math.max(currentStageIdx, 0)
  const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
  const chapterDone = stage.chapters_succeeded + stage.chapters_failed
  const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
+ const degradedChapters = run.quality.filter((q) => q.warnings.some((warning) => warning.includes('确定性回退')))
  const metrics = run.metrics || {}
  const hasTokenData = (metrics.total_tokens ?? 0) > 0
 
@@ -166,6 +187,9 @@ export function RunDetailPage() {
  </header>
 
  {error && <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+ {degradedChapters.length > 0 && <div role="alert" className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+  检测到 {degradedChapters.length} 章使用了资料片段回退。当前完成数量包含这些草稿，请查看质量说明后再使用。
+ </div>}
 
  <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_340px]">
  <main className="space-y-5">
@@ -174,7 +198,7 @@ export function RunDetailPage() {
  <div className="flex items-center justify-between">
  <div>
  <h2 className="text-base font-semibold">{run.message || '运行准备中'}</h2>
- <p className="mt-1 text-xs text-[#718183]">当前阶段：{phaseLabel[run.phase] || STAGE_ORDER[Math.max(currentStageIdx, 0)]?.label || '排队'}</p>
+ <p className="mt-1 text-xs text-[#718183]">当前阶段：{currentPhaseLabel}</p>
  </div>
  <strong className="text-2xl text-[#147d86]">{run.progress}%</strong>
  </div>
@@ -215,7 +239,7 @@ export function RunDetailPage() {
  )}
 
  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
- {[['整体进度', `${run.progress}%`, phaseLabel[run.phase] || '运行中'], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '供应商未返回'], ['模型耗时', formatLatency(metrics.latency_ms), metrics.retry_count ? `重试 ${metrics.retry_count} 次` : '无重试']].map(([label, value, hint]) => (
+ {[['整体进度', `${run.progress}%`, currentPhaseLabel], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '等待调用返回'], ['模型耗时', metrics.request_count ? formatLatency(metrics.latency_ms) : '—', metrics.retry_count ? `重试 ${metrics.retry_count} 次` : metrics.request_count ? '无重试' : '等待调用返回']].map(([label, value, hint]) => (
  <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
  <p className="text-[11px] text-[#718183]">{label}</p>
  <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>
@@ -227,7 +251,7 @@ export function RunDetailPage() {
  <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
  <div className="flex items-center justify-between">
  <h2 className="flex items-center gap-2 text-base font-semibold"><Gauge size={16} />模型调用统计</h2>
- <span className="text-xs text-[#718183]">实时累计</span>
+ <span className="text-xs text-[#718183]">本轮尝试累计</span>
  </div>
  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
  {[['输入 Token', formatTokens(metrics.prompt_tokens)], ['输出 Token', formatTokens(metrics.completion_tokens)], ['请求失败', String(metrics.failed_requests ?? 0)], ['估算成本', metrics.cost_configured && metrics.estimated_cost !== null && metrics.estimated_cost !== undefined ? `${metrics.estimated_cost} ${metrics.cost_currency || 'CNY'}` : '未配置单价']].map(([label, value]) => (
@@ -350,8 +374,8 @@ export function RunDetailPage() {
  {run.failed_agents > 0 && (
  <section className="rounded-lg border border-red-200 bg-red-50 p-5">
  <div className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertTriangle size={16} />存在失败任务</div>
- <p className="mt-2 text-xs leading-5 text-red-700/80">当前后端支持复用检查点，只重新生成失败或未完成章节。</p>
- <Button variant="outline" className="mt-4 border-red-300 bg-white text-red-700" onClick={() => void action('retry')}><RefreshCw size={14} />重试失败任务</Button>
+ <p className="mt-2 text-xs leading-5 text-red-700/80">任务结束后，可保留有效章节并重试失败或未完成的章节。</p>
+ <Button variant="outline" disabled={run.status === 'running' || run.status === 'queued'} className="mt-4 border-red-300 bg-white text-red-700" onClick={() => void action('retry')}><RefreshCw size={14} />重试失败任务</Button>
  </section>
  )}
 

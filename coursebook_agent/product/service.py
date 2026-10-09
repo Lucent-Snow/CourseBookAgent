@@ -439,7 +439,9 @@ class ProductService:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            if data.get("dataset_id") != dataset_id:
+            if isinstance(data.get("state"), dict):
+                data = data["state"]
+            if (data.get("dataset_id") or (data.get("request") or {}).get("dataset_id")) != dataset_id:
                 continue
             runs.append({
                 "job_id": data.get("job_id") or path.stem,

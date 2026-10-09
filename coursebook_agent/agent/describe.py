@@ -1,26 +1,28 @@
 """Per-resource description generator.
 
 The description is the unit that the main Agent actually reads before
-planning chapters and assigning resource Tags. It must therefore be:
+planning chapters and assigning resource Tags.  Design (agreed 2026-09-26,
+see docs/DECOMPOSITION.md):
 
-1. short (cheap to aggregate into one prompt);
-2. factual about *what is in the resource* and *how it relates to other
-   resources*, not about user value;
-3. free of hallucinations: when the LLM call fails, fall back to a
-   deterministic extraction from the parsed units so the workflow can
-   still run.
+1. Every material type goes through the LLM.  The description is a lossy
+   compression optimised for planning decisions — transcripts are the
+   densest case and need it most, so there is no transcript fast path.
+2. The body is a fixed five-part Markdown document covering form, content
+   blocks, unique value, terminology/keywords and placement suggestions.
+   The frame is carrier-agnostic: transcripts, slides, notes, papers and
+   syllabi all fit the same five questions.
+3. The heuristic extractor only runs when the LLM fails, so the workflow
+   can still continue; such descriptions are clearly marked as fallback.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections import Counter
 from pathlib import Path
 
-from coursebook_agent.agent.llm import LLMClient, extract_json_object, LLMError
-from coursebook_agent.config import config
+from coursebook_agent.agent.llm import LLMClient, LLMError
 from coursebook_agent.models import (
     ParsedResource,
     ResourceDescription,
@@ -29,20 +31,52 @@ from coursebook_agent.models import (
 logger = logging.getLogger(__name__)
 
 
-SYSTEM = """你是一名高校课程资料编目员。
+SYSTEM = """你是一名高校课程资料编目员。你的读者是"课程成书"工作流的主 Agent：它无法阅读资料原文，只能靠你的描述来规划全书章节、决定每份资料用在哪些章节。你的描述是它决策的全部依据。
 
-你的任务是阅读一份资料（可能是字幕、PPT、PDF、DOCX、教学大纲等），输出一段严格 JSON，用于让主 Agent 在不直接阅读原文的情况下，准确判断这份资料的内容、覆盖范围与适合的用法。
+这份资料可能是课堂转写、课件、讲义、论文、教学大纲、习题等任意一种。无论载体是什么，请输出一份 Markdown 描述，必须包含以下五个二级标题（顺序固定）：
 
-字段说明：
-- topic：用一两句话概括资料的主题。
-- knowledge_topics：覆盖到的关键知识点或章节名（数组，最多 12 项）。
-- scope：资料覆盖范围，取值 "course" / "module" / "lecture" / "topic"。
-- usable_content_kinds：资料中实际包含的内容类型，可多选：definition | derivation | example | procedure | exercise | policy。
-- suggested_role：建议主 Agent 如何使用这份资料，取值 primary | global_constraint | auxiliary | ignore。
-- summary：3-5 句话描述资料内容；不允许编造原文未出现的事实。
-- overlap_notes：与其他资料可能重复或互补的地方（数组，最多 4 项）。
+## 形态与性质
+3-5 条：资料类型（讲授转写/课件/讲义/论文/大纲/习题…）、形式特征、来源与载体质量（噪声、乱码、缺失、不可辨处）、体量。资料类型必须明确判定；载体质量问题必须写。
 
-不要返回 Markdown，只返回 JSON。"""
+## 内容板块
+按内容出现顺序分块，数量由内容决定（一般 4-8 块）。每块写：主题名 + 2-4 句（讲了什么、怎么讲/怎么呈现的）+ 篇幅占比。硬性要求：覆盖全文，各块占比合计约 100%，不许只挑重点。
+
+## 独特价值
+3-6 条：只写这份资料独有的内容——讲解、点评、案例、推导、直觉解释。每条注明出自哪个板块。不许写其他资料也有的通用内容。
+
+## 术语、关键词与可用性
+术语与关键词 5-15 条：核心术语、人名/模型名/缩写的规范写法；若资料中的写法有误或不一致（转写错字、简称、异写），给出「资料写法 → 规范写法」对照。可用性 2-5 条：可跳过或压缩的部分、不完整处、口语化/噪声程度。
+
+## 章节归属建议
+2-5 条：这份资料适合进入教辅书的哪些主题章节，角色是什么（主干素材/案例/附录）。每条带一句理由。这是建议，不是结论。
+
+忠实性规则：
+1. 只写资料中出现的内容，禁止用外部知识补充细节或顺手介绍背景。
+2. 原文听不清、自相矛盾或明显有误之处，标注 [待核]。
+3. 数字、人名、研究结论必须来自原文。
+4. 全文 1200-2500 字。"""
+
+REPAIR_TEMPLATE = """下面是一份课程资料描述，但它没有按规定的五个二级标题组织。请把它整理为规定格式，只保留原描述中出现过的内容，不要新增事实。
+
+规定格式（顺序固定）：
+## 形态与性质
+## 内容板块
+## 独特价值
+## 术语、关键词与可用性
+## 章节归属建议
+
+原描述：
+<<<
+{output}
+>>>"""
+
+HEADINGS = (
+    "## 形态与性质",
+    "## 内容板块",
+    "## 独特价值",
+    "## 术语、关键词与可用性",
+    "## 章节归属建议",
+)
 
 # Quick heuristics for Chinese "大纲/教学大纲/课程安排/教学要求" → scope=course.
 _COURSE_KEYWORDS = ("教学大纲", "课程大纲", "课程安排", "教学要求", "syllabus", "教学日历")
@@ -87,26 +121,35 @@ def _extract_candidate_terms(text: str, k: int = 12) -> list[str]:
     return out
 
 
-def _build_payload(parsed: ParsedResource) -> dict:
-    head_units = parsed.units[:8]
-    units_payload = [
-        {
-            "unit_id": u.unit_id,
-            "text": u.text[:280],
-            "location": u.location.model_dump() if u.location else None,
-        }
-        for u in head_units
-    ]
-    return {
-        "kind": parsed.kind,
-        "source_type": parsed.source_type,
-        "provider": parsed.provider,
-        "title": parsed.title,
-        "page_count": parsed.page_count,
-        "unit_count": len(parsed.units),
-        "raw_text_excerpt": parsed.raw_text[:2400],
-        "head_units": units_payload,
-    }
+def _build_user_prompt(parsed: ParsedResource) -> str:
+    """Carrier facts + full parsed text.  The filename/position in the title
+    is real evidence and is passed through; inferring "lecture N" from it is
+    the LLM's judgement, not ours."""
+    page_info = f"{parsed.page_count} 页" if parsed.page_count else "页数未知"
+    return (
+        "资料载体事实：\n"
+        f"- 标题/文件名：{parsed.title}\n"
+        f"- 资料类型：{parsed.kind}\n"
+        f"- 来源：{parsed.provider or parsed.source_type}\n"
+        f"- 结构单元数：{len(parsed.units)}（{page_info}）\n\n"
+        "资料原文：\n<<<\n"
+        f"{parsed.raw_text}\n"
+        ">>>"
+    )
+
+
+def _strip_fences(text: str) -> str:
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n", "", t)
+        t = re.sub(r"\n```$", "", t)
+    return t.strip()
+
+
+def _five_part_ok(body: str) -> bool:
+    if not body:
+        return False
+    return "## 内容板块" in body and sum(h in body for h in HEADINGS) >= 4
 
 
 async def describe_resource(
@@ -114,101 +157,97 @@ async def describe_resource(
     *,
     client: LLMClient | None = None,
 ) -> ResourceDescription:
-    """Generate one resource description; fall back deterministically on failure.
-
-    Transcripts are described heuristically because:
-    1. their content is dense and the LLM description adds little signal;
-    2. the heuristic captures scope=lecture, role=primary, and topic =
-       the lecture title, which is what the main Agent actually needs.
-    """
-
-    # Fast path: transcripts skip the LLM (avoid blowing the input budget).
-    if parsed.kind == "transcript":
-        return _heuristic_description_obj(parsed)
-
-    payload = _build_payload(parsed)
-    user = (
-        "请为以下课程资料生成描述 JSON。\n\n"
-        + json.dumps(payload, ensure_ascii=False)
-    )
-    data: dict | None = None
+    """Generate one five-part description via the LLM; fall back on failure."""
+    body = ""
     if parsed.raw_text:
-        llm = client or LLMClient(max_retries=2, timeout=120)
+        llm = client or LLMClient(max_retries=3, timeout=300)
+        user = _build_user_prompt(parsed)
         try:
-            raw = await llm.complete(SYSTEM, user, max_tokens=2000, temperature=0.1)
-            data = extract_json_object(raw)
-            if not isinstance(data, dict) or "topic" not in data:
-                # Try one repair pass.
-                repair_user = (
-                    "把以下输出整理为一个合法 JSON 对象，字段必须包含 topic / knowledge_topics / scope / usable_content_kinds / suggested_role / summary。只输出 JSON。\n\n"
-                    f"原始任务：\n{user[:4000]}\n\n模型输出：\n{raw[:6000]}"
-                )
+            raw = await llm.complete(SYSTEM, user, temperature=0.2)
+            body = _strip_fences(raw)
+            if not _five_part_ok(body):
+                # One format-repair pass before giving up on the LLM.
                 repair = await llm.complete(
-                    "你是 JSON 生成器。只输出一个合法 JSON 对象。",
-                    repair_user,
-                    max_tokens=2000, temperature=0,
+                    SYSTEM,
+                    REPAIR_TEMPLATE.format(output=body[:8000]),
+                    temperature=0,
                 )
-                data = extract_json_object(repair)
-        except (LLMError, ValueError, KeyError, TypeError) as exc:
+                repaired = _strip_fences(repair)
+                if _five_part_ok(repaired):
+                    body = repaired
+        except (LLMError, ValueError, TypeError) as exc:
             logger.warning("describe_resource(%s) LLM failed: %s; using heuristic", parsed.revision_id, exc)
-    if not isinstance(data, dict):
-        data = _heuristic_description(parsed, reason="llm_failed")
-    return _coerce(parsed, data)
+            body = ""
+    if not _five_part_ok(body):
+        return _heuristic_description_obj(parsed)
+    return _coerce(parsed, body)
 
 
-def _heuristic_description(parsed: ParsedResource, reason: str = "llm_failed") -> dict:
-    text = parsed.raw_text or " ".join(u.text for u in parsed.units[:20])
-    topic = (parsed.title or "").strip()
-    if not topic and text:
-        topic = text.splitlines()[0][:60].strip()
-    terms = _extract_candidate_terms(text, k=10)
+def _section_text(body: str, heading: str) -> str:
+    if heading not in body:
+        return ""
+    tail = body.split(heading, 1)[1]
+    for h in HEADINGS:
+        if h != heading and h in tail:
+            tail = tail.split(h, 1)[0]
+    return tail.strip()
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        line = line.strip().lstrip("#*-—· ").strip()
+        if line:
+            return line
+    return ""
+
+
+def _derive_structured(parsed: ParsedResource, text: str) -> dict:
+    """Deterministic scope/role/usable derivation shared by both paths."""
     if _looks_like_course_scope(parsed.title, text):
-        scope = "course"
-        suggested_role = "global_constraint"
-        usable = ["policy"]
+        scope, role, usable = "course", "global_constraint", ["policy"]
     elif _looks_like_topic_supplement(parsed.title, text):
-        scope = "topic"
-        suggested_role = "auxiliary"
-        usable = ["example", "exercise"]
+        scope, role, usable = "topic", "auxiliary", ["example", "exercise"]
     elif parsed.kind == "transcript":
-        scope = "lecture"
-        suggested_role = "primary"
-        usable = ["definition", "example"]
+        scope, role, usable = "lecture", "primary", ["definition", "example"]
     else:
-        scope = "topic"
-        suggested_role = "primary"
-        usable = ["definition"]
-    return {
-        "topic": topic,
-        "knowledge_topics": terms,
-        "scope": scope,
-        "usable_content_kinds": usable,
-        "suggested_role": suggested_role,
-        "summary": (
-            f"{parsed.kind} 资料，共 {len(parsed.units)} 个结构单元，"
-            f"约 {len(text)} 字符。"
-            + ("" if reason == "transcript_fast_path" else "（本描述由本地规则生成，因模型调用失败）")
-        ),
-        "overlap_notes": [],
-    }
+        scope, role, usable = "topic", "primary", ["definition"]
+    return {"scope": scope, "suggested_role": role, "usable_content_kinds": usable}
+
+
+def _heuristic_body(parsed: ParsedResource, text: str, terms: list[str]) -> str:
+    """Deterministic five-part body used only when the LLM fails."""
+    units = len(parsed.units)
+    chars = len(text)
+    return (
+        "## 形态与性质\n"
+        f"- 类型：{parsed.kind}（来源 {parsed.provider or parsed.source_type}），共 {units} 个结构单元，约 {chars} 字符。\n"
+        "- **本描述由本地规则生成（模型调用失败或返回不合格式），语义信息缺失，仅保证结构。**\n\n"
+        "## 内容板块\n"
+        f"- {parsed.title or '未命名资料'}：原文结构单元若干，内容未经理解，需人工或后续重跑补全。\n\n"
+        "## 独特价值\n"
+        "- 未知（本地规则无法提取语义价值）。\n\n"
+        "## 术语、关键词与可用性\n"
+        "- 术语候选（按词频机械提取，未校验）：" + "、".join(terms[:10]) + "。\n"
+        "- 可用性未知；本描述为降级产物，规划时应列入待核。\n\n"
+        "## 章节归属建议\n"
+        "- 无法给出可靠建议（降级产物）。\n"
+    )
 
 
 def _heuristic_description_obj(parsed: ParsedResource) -> ResourceDescription:
-    return _coerce(parsed, _heuristic_description(parsed, reason="transcript_fast_path"))
+    text = parsed.raw_text or " ".join(u.text for u in parsed.units[:20])
+    terms = _extract_candidate_terms(text, k=10)
+    body = _heuristic_body(parsed, text, terms)
+    return _coerce(parsed, body, fallback=True)
 
 
-def _coerce(parsed: ParsedResource, data: dict) -> ResourceDescription:
-    topic = str(data.get("topic") or parsed.title or "").strip()
-    knowledge = [str(x).strip() for x in (data.get("knowledge_topics") or []) if str(x).strip()]
-    scope = str(data.get("scope") or "topic")
-    if scope not in {"course", "module", "lecture", "topic"}:
-        scope = "topic"
-    usable = [str(x).strip() for x in (data.get("usable_content_kinds") or []) if str(x).strip()]
-    suggested = str(data.get("suggested_role") or "auxiliary")
-    if suggested not in {"primary", "global_constraint", "auxiliary", "ignore"}:
-        suggested = "auxiliary"
-    summary = str(data.get("summary") or "").strip()
-    overlap = [str(x).strip() for x in (data.get("overlap_notes") or []) if str(x).strip()]
+def _coerce(parsed: ParsedResource, body: str, *, fallback: bool = False) -> ResourceDescription:
+    derived = _derive_structured(parsed, body)
+    content = _section_text(body, "## 内容板块")
+    topic = _first_line(content)[:60] or (parsed.title or "").strip()
+    plain = re.sub(r"[#*`>\-—·]", "", body)
+    summary = re.sub(r"\s+", " ", plain).strip()[:160]
+    knowledge = _extract_candidate_terms(body, k=12)
     return ResourceDescription(
         revision_id=parsed.revision_id,
         resource_id=parsed.resource_id,
@@ -216,14 +255,18 @@ def _coerce(parsed: ParsedResource, data: dict) -> ResourceDescription:
         source_type=parsed.source_type,
         provider=parsed.provider,
         title=parsed.title,
+        body=body,
         topic=topic,
         knowledge_topics=knowledge,
-        scope=scope,
+        scope=derived["scope"],
         related_lecture_ids=[],
-        usable_content_kinds=usable,
-        suggested_role=suggested,
-        summary=summary,
-        overlap_notes=overlap,
+        usable_content_kinds=derived["usable_content_kinds"],
+        suggested_role=derived["suggested_role"],
+        summary=summary if not fallback else (
+            f"{parsed.kind} 资料，共 {len(parsed.units)} 个结构单元，约 "
+            f"{len(parsed.raw_text)} 字符。（本描述由本地规则生成，因模型调用失败）"
+        ),
+        overlap_notes=[],
     )
 
 

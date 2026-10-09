@@ -280,8 +280,8 @@ async def llm_quality_gate(
 3. 教学信号利用：老师在字幕中强调的重点是否在讲义中体现为重点标注？老师的提问是否转化为引导式讲解？
 4. 结构检查：各小节是否有实质内容而非过渡句？知识点是按教学逻辑组织还是按时间顺序线性堆砌？"""
     try:
-        response = await LLMClient(max_retries=2, timeout=180).complete_json(
-            "你是只依据提供证据审校的编辑。只输出 JSON。", prompt, max_tokens=5000
+        response = await LLMClient(max_retries=2, timeout=300).complete_json(
+            "你是只依据提供证据审校的编辑。只输出 JSON。", prompt
         )
     except LLMError as exc:
         return QualityResult(False, [f"LLM 审校失败：{exc}"], {"review_status": "failed"})
@@ -362,12 +362,11 @@ async def fact_verification_gate(
 - 如果字幕证据中没有相关信息，标记为 supported=false
 - 不要因为是合理的常识就判为 supported"""
 
-    llm = client or LLMClient(max_retries=1, timeout=120)
+    llm = client or LLMClient(max_retries=1, timeout=300)
     try:
         response = await llm.complete_json(
             "你是只依据提供证据做核验的编辑。只输出 JSON 数组。",
             prompt,
-            max_tokens=2000,
         )
     except Exception as exc:
         return QualityResult(False, [f"事实抽检失败：{exc}"], {"fact_check": "failed"})

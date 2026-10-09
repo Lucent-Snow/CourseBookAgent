@@ -1,11 +1,17 @@
-"""Tests for the v2 multi-resource workflow data contracts and assembler."""
+"""Tests for the multi-resource workflow data contracts and assembler."""
 
 from __future__ import annotations
 
 import unittest
 
-from coursebook_agent.agent.describe import _heuristic_description_obj, _extract_candidate_terms
-from coursebook_agent.agent.editor import _coerce_plan_v2, _derive_chapter_resources, plan_book_v2
+from coursebook_agent.agent.describe import (
+    HEADINGS,
+    _extract_candidate_terms,
+    _five_part_ok,
+    _heuristic_description_obj,
+    describe_resource,
+)
+from coursebook_agent.agent.editor import _coerce_plan_from_descriptions, _derive_chapter_resources, plan_book_from_descriptions
 from coursebook_agent.assembly.assemble import assemble_chapter_contexts
 from coursebook_agent.models import (
     BookPlan,
@@ -98,7 +104,52 @@ class DescribeHeuristicTests(unittest.TestCase):
         self.assertGreater(len(terms), 0)
 
 
-class CoercePlanV2Tests(unittest.TestCase):
+class DescribeLLMTests(unittest.IsolatedAsyncioTestCase):
+    class _FakeClient:
+        def __init__(self, content: str):
+            self.content = content
+            self.calls = 0
+
+        async def complete(self, system, user, **kwargs):
+            self.calls += 1
+            return self.content
+
+    @staticmethod
+    def _body() -> str:
+        return (
+            "## 形态与性质\n- 类型：讲授转写，ASR 噪声较多。\n\n"
+            "## 内容板块\n- 极限的定义：讲解极限概念与 epsilon-delta 表述（40%）。\n"
+            "- 连续性：连续函数性质（60%）。\n\n"
+            "## 独特价值\n- 课堂用切蛋糕类比极限（出自板块 1）。\n\n"
+            "## 术语、关键词与可用性\n- 术语：极限、连续、epsilon-delta。\n- 开场点名可跳过。\n\n"
+            "## 章节归属建议\n- 适合进入「极限与连续」章作为主干素材。\n"
+        )
+
+    async def test_transcript_goes_through_llm(self):
+        parsed = _transcript("r9", "极限与连续")
+        client = self._FakeClient(self._body())
+        d = await describe_resource(parsed, client=client)
+        self.assertEqual(client.calls, 1, "transcripts must not skip the LLM")
+        self.assertIn("## 内容板块", d.body)
+        self.assertIn("极限", d.topic)
+        self.assertTrue(_five_part_ok(d.body))
+
+    async def test_body_stores_five_part_headings(self):
+        parsed = _pdf("r10", "讲义")
+        d = await describe_resource(parsed, client=self._FakeClient(self._body()))
+        for h in HEADINGS:
+            self.assertIn(h, d.body)
+
+    async def test_bad_format_triggers_repair_then_fallback(self):
+        parsed = _transcript("r11", "杂谈")
+        client = self._FakeClient("完全不合格式的输出")
+        d = await describe_resource(parsed, client=client)
+        self.assertEqual(client.calls, 2, "one repair pass before falling back")
+        self.assertIn("本地规则生成", d.body)
+        self.assertEqual(d.suggested_role, "primary")
+
+
+class CoercePlanFromDescriptionsTests(unittest.TestCase):
     def test_main_agent_chapters_are_preserved(self):
         course = Course(course_id="c1", name="课程")
         descriptions = [_desc("r1", "A"), _desc("r2", "B")]
@@ -112,7 +163,7 @@ class CoercePlanV2Tests(unittest.TestCase):
             "components": [{"name": "worked_example", "description": "x", "fields": ["title"], "usage_instruction": "x"}],
             "writer_system_prompt": "只输出内容",
         }
-        plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=None)
         self.assertEqual(len(plan.chapters), 2)
         self.assertEqual(plan.chapters[0].chapter_id, "c1")
         self.assertEqual(plan.chapters[0].book_title, "第一章")
@@ -130,7 +181,7 @@ class CoercePlanV2Tests(unittest.TestCase):
             "chapters": [{"chapter_id": "c1", "book_title": "第一章"}],
             "resource_tags": {"r1": ["c1"], "r2": ["__global__"]},
         }
-        plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=None)
         self.assertEqual(plan.global_resource_ids, ["r2"])
         self.assertEqual(plan.chapter_resources["c1"], ["r1"])
 
@@ -142,7 +193,7 @@ class CoercePlanV2Tests(unittest.TestCase):
             "chapters": [{"chapter_id": "c1", "book_title": "第一章"}],
             "resource_tags": {"r1": ["c1"], "unknown": ["c1"]},
         }
-        plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=None)
         self.assertNotIn("unknown", plan.resource_tags)
 
     def test_no_tag_resources_are_excluded(self):
@@ -156,14 +207,14 @@ class CoercePlanV2Tests(unittest.TestCase):
             ],
             "resource_tags": {"r1": ["c1"]},  # r2 has no tag → excluded
         }
-        plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=None)
         self.assertNotIn("r2", plan.resource_tags)
         self.assertEqual(plan.chapter_resources["c2"], [])
 
     def test_empty_chapters_falls_back_to_per_resource(self):
         course = Course(course_id="c1", name="课程")
         descriptions = [_desc("r1", "A"), _desc("r2", "B", scope="course", role="global_constraint")]
-        plan = _coerce_plan_v2(course, descriptions, {}, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, {}, snapshot_id=None)
         self.assertEqual(len(plan.chapters), 2)
         self.assertEqual(plan.chapter_resources["c1"], ["r1"])
         self.assertEqual(plan.global_resource_ids, ["r2"])
@@ -179,7 +230,7 @@ class CoercePlanV2Tests(unittest.TestCase):
                 {"chapter_id": "c1", "book_title": "第二章"},
             ],
         }
-        plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=None)
+        plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=None)
         chapter_ids = {c.chapter_id for c in plan.chapters}
         self.assertEqual(len(chapter_ids), 2)
 
@@ -229,9 +280,9 @@ class AssemblerTests(unittest.TestCase):
         self.assertNotIn("r2", all_used)
 
 
-class PlanBookV2SignatureTests(unittest.IsolatedAsyncioTestCase):
-    async def test_plan_book_v2_falls_back_to_heuristic_on_empty_llm(self):
-        """Smoke test: when the LLM call returns empty, plan_book_v2 still
+class PlanBookFromDescriptionsSignatureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plan_book_from_descriptions_falls_back_to_heuristic_on_empty_llm(self):
+        """Smoke test: when the LLM call returns empty, plan_book_from_descriptions still
         produces a BookPlan via the descriptions-only fallback."""
         course = Course(course_id="c1", name="课程")
         descriptions = [_desc("r1", "A"), _desc("r2", "B", scope="course", role="global_constraint")]
@@ -241,11 +292,11 @@ class PlanBookV2SignatureTests(unittest.IsolatedAsyncioTestCase):
                 return ""
 
         try:
-            plan = await plan_book_v2(course, descriptions, client=_StubClient(), snapshot_id=None)
+            plan = await plan_book_from_descriptions(course, descriptions, client=_StubClient(), snapshot_id=None)
         except Exception:
-            # Even when LLMError bubbles, the caller can use heuristic_book_plan_v2.
-            from coursebook_agent.agent.editor import heuristic_book_plan_v2
-            plan = heuristic_book_plan_v2(course, descriptions, snapshot_id=None)
+            # Even when LLMError bubbles, the caller can use heuristic_plan_by_topic.
+            from coursebook_agent.agent.editor import heuristic_plan_by_topic
+            plan = heuristic_plan_by_topic(course, descriptions, snapshot_id=None)
         self.assertGreater(len(plan.chapters), 0)
 
     def test_heuristic_fallback_merges_by_topic(self):
@@ -255,7 +306,7 @@ class PlanBookV2SignatureTests(unittest.IsolatedAsyncioTestCase):
         in the same chapter; the resulting plan must carry a warning
         that this is a fallback so the front-end can surface it.
         """
-        from coursebook_agent.agent.editor import heuristic_book_plan_v2
+        from coursebook_agent.agent.editor import heuristic_plan_by_topic
         from coursebook_agent.models import Course, ResourceDescription
 
         course = Course(course_id="c1", name="示例")
@@ -281,7 +332,7 @@ class PlanBookV2SignatureTests(unittest.IsolatedAsyncioTestCase):
                 topic="假设检验", knowledge_topics=["t 检验", "配对"], scope="lecture",
             ),
         ]
-        plan = heuristic_book_plan_v2(course, descriptions)
+        plan = heuristic_plan_by_topic(course, descriptions)
         self.assertLessEqual(len(plan.chapters), 2, f"expected <= 2 chapters, got {len(plan.chapters)}")
         self.assertEqual(plan.resource_tags["r1"], plan.resource_tags["r2"])
         self.assertEqual(plan.resource_tags["r3"], plan.resource_tags["r4"])

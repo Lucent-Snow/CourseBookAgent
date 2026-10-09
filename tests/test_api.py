@@ -18,15 +18,19 @@ class ApiTests(unittest.TestCase):
             self.assertFalse(self.client.get("/api/health").json()["llm_configured"])
         self.assertIn("zhiyun_live_configured", response.json())
 
-    def test_unknown_job_is_404(self):
+    def test_unknown_run_is_404(self):
+        response = self.client.get("/api/runs/does-not-exist")
+        self.assertEqual(response.status_code, 404)
+
+    def test_legacy_jobs_endpoint_is_404(self):
         response = self.client.get("/api/jobs/does-not-exist")
         self.assertEqual(response.status_code, 404)
 
-    def test_missing_book_is_404(self):
+    def test_legacy_books_endpoint_is_404(self):
         response = self.client.get("/api/books/not-a-course")
         self.assertEqual(response.status_code, 404)
 
-    def test_missing_v2_run_is_404(self):
+    def test_missing_run_is_404(self):
         response = self.client.get("/api/runs/not-a-run/report")
         self.assertEqual(response.status_code, 404)
 

@@ -143,34 +143,34 @@ class LLMClient:
         self.transport = transport
         self.timeout = timeout or config.llm.timeout
 
-    async def complete(self, system: str, user: str, *, max_tokens: int = 5000, temperature: float = 0.2) -> str:
+    async def complete(self, system: str, user: str, *, temperature: float = 0.2) -> str:
         if not (config.llm.base_url and config.llm.api_key and config.llm.model):
             raise LLMError("请先配置模型端点、模型名和 API Key", "configuration")
         url = normalize_llm_base_url(config.llm.base_url) + "/chat/completions"
+        # No max_tokens cap: let the server decide the generation budget.
+        # Streaming transport: gateways cut non-streaming responses whose
+        # generation runs past ~126s (Cloudflare 524 / origin 503), so long
+        # generations must arrive incrementally.
         payload = {
             "model": config.llm.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "max_tokens": max_tokens,
             "temperature": temperature,
+            "stream": True,
+            # Ask the gateway to report token usage in a final chunk;
+            # without it streaming responses carry usage=null everywhere.
+            "stream_options": {"include_usage": True},
         }
         headers = {"Authorization": f"Bearer {config.llm.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             started = time.perf_counter()
             try:
-                async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-                    response = await asyncio.wait_for(client.post(url, json=payload, headers=headers), timeout=self.timeout)
-                if response.status_code in {408, 409, 429} or response.status_code >= 500:
-                    raise LLMError(f"模型服务暂时不可用（HTTP {response.status_code}）",
-                                   "rate_limit" if response.status_code == 429 else "service", True)
-                if response.is_error:
-                    raise LLMError(f"模型请求失败（HTTP {response.status_code}）",
-                                   "authentication" if response.status_code in {401, 403} else "request")
-                body = response.json()
-                content = _extract_message_text(body)
+                content, usage = await asyncio.wait_for(
+                    self._stream_chat(url, payload, headers), timeout=self.timeout
+                )
                 content = _strip_reasoning_blocks(content)
                 if not content.strip():
                     raise LLMError("模型未返回最终内容", "empty_response", True)
@@ -179,7 +179,7 @@ class LLMClient:
                     tracker.record(
                         model=config.llm.model,
                         latency_ms=int((time.perf_counter() - started) * 1000),
-                        usage=body.get("usage") if isinstance(body, dict) else None,
+                        usage=usage,
                         success=True,
                         retried=attempt > 1,
                     )
@@ -211,16 +211,63 @@ class LLMClient:
                     await asyncio.sleep((2 ** (attempt - 1)) + random.random())
         raise last_error
 
-    async def complete_json(self, system: str, user: str, *, max_tokens: int = 7000) -> dict[str, Any]:
-        # Reasoning models spend many tokens on thinking; leave headroom for the final JSON.
+    async def _stream_chat(self, url: str, payload: dict, headers: dict) -> tuple[str, dict | None]:
+        """POST a chat completion and consume it incrementally.
+
+        Returns ``(content, usage)``.  SSE chunks are accumulated from
+        ``delta.content``; ``reasoning``/``reasoning_content`` deltas are
+        ignored.  A non-SSE response body is parsed as plain JSON so mock
+        transports and non-streaming gateways keep working.
+        """
+        parts: list[str] = []
+        usage: dict | None = None
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code in {408, 409, 429} or response.status_code >= 500:
+                    await response.aread()
+                    raise LLMError(f"模型服务暂时不可用（HTTP {response.status_code}）",
+                                   "rate_limit" if response.status_code == 429 else "service", True)
+                if response.is_error:
+                    await response.aread()
+                    raise LLMError(f"模型请求失败（HTTP {response.status_code}）",
+                                   "authentication" if response.status_code in {401, 403} else "request")
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" not in content_type:
+                    await response.aread()
+                    body = json.loads(response.content.decode("utf-8"))
+                    usage = body.get("usage") if isinstance(body, dict) else None
+                    return _extract_message_text(body), usage
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    for choice in chunk.get("choices") or []:
+                        delta = choice.get("delta") or {}
+                        piece = delta.get("content")
+                        if isinstance(piece, str):
+                            parts.append(piece)
+        return "".join(parts), usage
+
+    async def complete_json(self, system: str, user: str) -> dict[str, Any]:
+        # Reasoning models spend many tokens on thinking; the server-side
+        # generation budget is left uncapped so the final JSON can finish.
         hardened_system = (
             system
             + "\n\n最终答案必须是一个完整 JSON 对象，放在回答正文中。"
             + "不要只思考，不要输出解释或 Markdown 代码块之外的文字。"
         )
-        # Reserve budget for reasoning-heavy gateways.
-        effective_max = max(max_tokens, 6000)
-        raw = await self.complete(hardened_system, user, max_tokens=effective_max)
+        raw = await self.complete(hardened_system, user)
         try:
             return extract_json_object(raw)
         except (json.JSONDecodeError, ValueError) as first_error:
@@ -233,7 +280,6 @@ class LLMClient:
             repair = await self.complete(
                 "你是 JSON 生成器。只返回一个合法 JSON 对象，不解释、不使用 Markdown。不得编造任务外字段含义。",
                 regenerate_user,
-                max_tokens=max(effective_max, 8000),
                 temperature=0,
             )
             try:
@@ -345,5 +391,7 @@ def extract_json_object(text: str) -> dict[str, Any]:
 def _json_candidates(candidate: str) -> list[str]:
     raw = candidate.strip()
     cleaned = re.sub(r",\s*([}\]])", r"\1", raw)  # trailing commas
-    cleaned = cleaned.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
-    return [cleaned]
+    quote_repaired = cleaned.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    # Chinese quotation marks are valid inside JSON strings. Parse the original
+    # first; broad quote repair must never corrupt an already valid document.
+    return list(dict.fromkeys([raw, cleaned, quote_repaired]))

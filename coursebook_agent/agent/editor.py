@@ -48,7 +48,7 @@ async def plan_book(
     if not digests:
         raise ValueError("没有可用于规划的讲次摘要")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
+    llm = client or LLMClient(max_retries=3, timeout=900)
     payload = {
         "course": course.model_dump(),
         "digests": [d.model_dump() for d in digests],
@@ -60,7 +60,7 @@ async def plan_book(
 
 {profile_context}
 
-V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、每章 component_usage、depth_guidance 和 common_mistakes。章节类型（core / guest / review / mixed）必须按课程编辑配置中的模板区分，不得用同一套模板套所有讲次。
+蓝图不可降级：必须完整填写 components、writer_system_prompt、每章 component_usage、depth_guidance 和 common_mistakes。章节类型（core / guest / review / mixed）必须按课程编辑配置中的模板区分，不得用同一套模板套所有讲次。
 
 返回严格 JSON：
 {{
@@ -160,7 +160,7 @@ V2 蓝图不可降级：必须完整填写 components、writer_system_prompt、�
 课程与摘要：
 {json.dumps(payload, ensure_ascii=False)}"""
 
-    data = await llm.complete_json(SYSTEM, prompt, max_tokens=16000)
+    data = await llm.complete_json(SYSTEM, prompt)
     plan = _coerce_plan(course, digests, data)
     return plan
 
@@ -267,10 +267,10 @@ def load_plan(path: Path) -> BookPlan:
     return BookPlan.model_validate_json(path.read_text(encoding="utf-8"))
 
 
-# ── v2: main Agent consumes ResourceDescriptions ────────────────────────────
+# ── Main agent: consumes ResourceDescriptions ──────────────────────────────
 
 
-V2_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排）**。
+MAIN_AGENT_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排）**。
 
 你的工作是把多份零散的课堂资料**重新组织成一本书**，不是按时间顺序把它们切成一节一节的概要。
 
@@ -301,7 +301,7 @@ V2_SYSTEM = """你是高校课程教辅书的**主 Agent（主编 + 资料编排
 只返回 JSON。"""
 
 
-V2_USER_TEMPLATE = """课程信息：{course}
+MAIN_AGENT_USER_TEMPLATE = """课程信息：{course}
 
 所有资料描述（按 revision_id 列出）：
 {descriptions}
@@ -362,7 +362,7 @@ V2_USER_TEMPLATE = """课程信息：{course}
 3. 每个 chapter 必须有 must_cover、section_plan（≥1 小节）、depth_guidance、component_usage。
 4. resource_tags 的 value 是字符串数组：要么是 chapter_id（资料作为该章节的原始素材），要么是 "__global__"（资料作为全局上下文）。未列入 resource_tags 的资料本次不进入生成。
 5. 一份资料可以同时进入多个章节，也可以同时进入全局与某些章节。
-6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式。
+6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式，以及两条写作原则：**完整性优先**（每份资料中与章节主题相关的讲解、例子、推导、操作步骤都必须在正文有落点，禁止挑重点式摘要，宁可写全写细不要泛泛而谈）和**伪代码许**（资料中只有口述描述的代码/流程/图表，写作者应重写为标注「据口述重写」的示意代码/伪代码/结构化步骤；禁止的是编造资料中不存在的数值、结论与图表内容）。
 7. components 至少包含 worked_example、tip_box、warning 三种。
 8. section_plan 的 source_revision_ids 必须引用下面"所有资料描述"里出现的 revision_id 之一。
 9. 资料支撑不足（suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
@@ -372,45 +372,43 @@ V2_USER_TEMPLATE = """课程信息：{course}
 """
 
 
-async def plan_book_v2(
+async def plan_book_from_descriptions(
     course: Course,
     descriptions: list,
     client: LLMClient | None = None,
     *,
     snapshot_id: str | None = None,
 ) -> BookPlan:
-    """v2 main Agent: ingest resource descriptions, output BookPlan with resource_tags."""
+    """Main Agent: ingest resource descriptions, output BookPlan with resource_tags."""
     if not descriptions:
         raise ValueError("没有任何资料描述可用于规划")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(180, config.llm.timeout))
-    # Keep payload small enough to leave room for reasoning + JSON.
+    # Plan calls feed every description body at once and can generate a very
+    # long BookPlan JSON; allow slow generations instead of cutting them.
+    llm = client or LLMClient(max_retries=3, timeout=max(900, config.llm.timeout))
+    # The five-part description body is the main Agent's planning input;
+    # keep light identity metadata alongside it.
     compact_descriptions = []
     for d in descriptions:
-        topic = d.topic or d.title or ""
-        summary = d.summary or topic
         compact_descriptions.append({
             "revision_id": d.revision_id,
             "kind": d.kind,
             "provider": d.provider,
             "title": (d.title or "")[:80],
-            "topic": topic[:120],
-            "knowledge_topics": [str(k)[:24] for k in (d.knowledge_topics or [])][:8],
             "scope": d.scope,
-            "usable_content_kinds": list(d.usable_content_kinds or [])[:5],
             "suggested_role": d.suggested_role,
-            "summary": summary[:160],
+            "description": d.body or d.summary or d.topic,
         })
     payload = {"course": course.model_dump(), "descriptions": compact_descriptions}
-    prompt = V2_USER_TEMPLATE.format(
+    prompt = MAIN_AGENT_USER_TEMPLATE.format(
         course=json.dumps(course.model_dump(), ensure_ascii=False),
         descriptions=json.dumps(payload, ensure_ascii=False),
     )
-    raw = await llm.complete(V2_SYSTEM, prompt, max_tokens=24000, temperature=0.2)
+    raw = await llm.complete(MAIN_AGENT_SYSTEM, prompt, temperature=0.2)
     try:
         data = extract_json_object(raw)
     except (ValueError, KeyError, TypeError) as exc:
-        logger.warning("plan_book_v2: failed to extract JSON: %s", exc)
+        logger.warning("plan_book_from_descriptions: failed to extract JSON: %s", exc)
         data = {}
     if (not isinstance(data, dict)) or not data.get("chapters"):
         # Retry once with a tighter, JSON-only instruction; do not waste tokens.
@@ -423,29 +421,29 @@ async def plan_book_v2(
             repair = await llm.complete(
                 "你是 JSON 生成器。只输出一个合法 JSON 对象，不解释。",
                 repair_user,
-                max_tokens=20000, temperature=0,
+                temperature=0,
             )
             data = extract_json_object(repair)
             if not isinstance(data, dict) or not data.get("chapters"):
-                logger.warning("plan_book_v2 repair returned no chapters: %s", str(data)[:200])
+                logger.warning("plan_book_from_descriptions repair returned no chapters: %s", str(data)[:200])
         except (LLMError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("plan_book_v2 repair failed: %s", exc)
+            logger.warning("plan_book_from_descriptions repair failed: %s", exc)
             data = {}
-    plan = _coerce_plan_v2(course, descriptions, data, snapshot_id=snapshot_id)
+    plan = _coerce_plan_from_descriptions(course, descriptions, data, snapshot_id=snapshot_id)
     return plan
 
 
-def _coerce_plan_v2(
+def _coerce_plan_from_descriptions(
     course: Course,
     descriptions: list,
     data: dict,
     *,
     snapshot_id: str | None,
 ) -> BookPlan:
-    """Coerce + sanitise LLM output into a BookPlan v2.
+    """Coerce + sanitise LLM output into a multi-resource BookPlan.
 
     If the LLM produced no chapters (model failure / truncated output),
-    fall back to a minimal-but-correct v2 plan: each description gets its
+    fall back to a minimal-but-correct plan: each description gets its
     own chapter; resources with scope=course are tagged __global__.
     """
     components: list[ComponentSpec] = []
@@ -504,7 +502,7 @@ def _coerce_plan_v2(
 
     # ── Fallback: derive a minimal plan from the descriptions themselves ──
     if not chapters:
-        logger.warning("plan_book_v2: empty chapters after coerce; using descriptions-only fallback")
+        logger.warning("plan_book_from_descriptions: empty chapters after coerce; using descriptions-only fallback")
         for idx, d in enumerate(descriptions, start=1):
             cid = f"c{idx}"
             chapters.append(ChapterInstruction(
@@ -540,8 +538,20 @@ def _coerce_plan_v2(
         if cleaned:
             resource_tags[rev] = cleaned
 
-    # ── Fallback tags: every description is chapter-tagged; scope=course goes global. ──
-    if not resource_tags:
+    # Recover explicit source references before section_plan is reduced to headings.
+    if not resource_tags and raw_chapters:
+        for raw, chapter in zip(raw_chapters, chapters):
+            for section in raw.get("section_plan") or []:
+                if not isinstance(section, dict):
+                    continue
+                for rev in _str_list(section.get("source_revision_ids")):
+                    if rev in known_revs:
+                        tags = resource_tags.setdefault(rev, [])
+                        if chapter.chapter_id not in tags:
+                            tags.append(chapter.chapter_id)
+
+    # Position-based tags are only meaningful for the per-resource fallback plan.
+    if not resource_tags and not raw_chapters:
         for idx, d in enumerate(descriptions, start=1):
             cid = f"c{idx}"
             tags: list[str] = []
@@ -555,6 +565,8 @@ def _coerce_plan_v2(
     chapter_resources = _derive_chapter_resources(resource_tags, chapters)
 
     warnings = _str_list(data.get("warnings"))
+    if raw_chapters and not resource_tags:
+        warnings.append("主 Agent 未产出有效 Tag，须修复资料映射后才能生成")
     if not isinstance(data, dict) or not data.get("chapters"):
         warnings.append("主 Agent 未产出章节，已按资料自动分章")
 
@@ -580,6 +592,52 @@ def _coerce_plan_v2(
     )
 
 
+async def ensure_plan_source_coverage(
+    plan: BookPlan, descriptions: list[ResourceDescription], *, client=None,
+) -> BookPlan:
+    """Repair uncovered chapters once; never guess a source from its position."""
+    known_revs = {d.revision_id for d in descriptions}
+    known_chapters = {c.chapter_id for c in plan.chapters}
+
+    def uncovered(tags):
+        global_sources = any("__global__" in values for rev, values in tags.items() if rev in known_revs)
+        return [c.chapter_id for c in plan.chapters if not global_sources and not any(
+            c.chapter_id in values for rev, values in tags.items() if rev in known_revs
+        )]
+
+    if not uncovered(plan.resource_tags):
+        return plan
+    llm = client or LLMClient(max_retries=2, timeout=300)
+    payload = {
+        "chapters": [{"chapter_id": c.chapter_id, "title": c.book_title, "must_cover": c.must_cover, "section_plan": c.section_plan} for c in plan.chapters],
+        "descriptions": [{"revision_id": d.revision_id, "description": d.body or d.summary or d.topic} for d in descriptions],
+    }
+    raw = await llm.complete(
+        "你是课程资料编排编辑。仅输出合法 JSON。保留章节结构，只修复资料与章节的归属。",
+        "为下列章节补齐 resource_tags。只输出 {\"resource_tags\": {\"真实revision_id\": [\"c1\", \"c2\"]}}。"
+        "同一资料可进入多章；全局资料用 __global__。必须只用提供的 revision_id 和 chapter_id。"
+        "每章须有支持其主题的资料，不能按资料顺序分配；确无资料支持则在 warnings 中说明并保留该章未分配。\n"
+        + json.dumps(payload, ensure_ascii=False),
+        temperature=0,
+    )
+    data = extract_json_object(raw)
+    repaired = {}
+    for rev, values in (data.get("resource_tags") or {}).items():
+        if rev not in known_revs or not isinstance(values, list):
+            continue
+        tags = list(dict.fromkeys(str(v) for v in values if str(v) in known_chapters or v == "__global__"))
+        if tags:
+            repaired[rev] = tags
+    missing = uncovered(repaired)
+    if missing:
+        raise ValueError(f"规划章节缺少资料，Tag 修复后仍未覆盖：{', '.join(missing)}")
+    plan.resource_tags = repaired
+    plan.chapter_resources = _derive_chapter_resources(repaired, plan.chapters)
+    plan.global_resource_ids = sorted(rev for rev, values in repaired.items() if "__global__" in values)
+    plan.warnings.append("原规划存在无资料章节，已通过独立 Tag 修复补齐映射")
+    return plan
+
+
 def _derive_chapter_resources(
     resource_tags: dict[str, list[str]],
     chapters: list[ChapterInstruction],
@@ -593,13 +651,13 @@ def _derive_chapter_resources(
     return mapping
 
 
-def heuristic_book_plan_v2(
+def heuristic_plan_by_topic(
     course: Course,
     descriptions: list,
     *,
     snapshot_id: str | None = None,
 ) -> BookPlan:
-    """Deterministic fallback for v2.
+    """Deterministic fallback for the multi-resource planner.
 
     The main Agent is supposed to merge descriptions by theme.  When the
     LLM is unavailable we still must NOT emit one chapter per resource

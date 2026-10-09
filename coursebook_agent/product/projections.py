@@ -117,8 +117,8 @@ def project_run(state: JobState) -> RunProjection:
             summaries_by_chapter[str(cid)] = item
 
     # Read the plan cache for the canonical chapter order. The cache file is
-    # written by MultiResourceCourseBookPipeline under data/plans/ with the
-    # name pattern bookplan-{snapshot_id}.json or bookplan-{course_id}.json.
+    # written by CourseBookPipeline.run() under data/plans/ with the name
+    # pattern bookplan-{snapshot_id}.json or bookplan-{course_id}.json.
     canonical_chapter_ids: list[str] = []
     plan: dict | None = None
     snapshot_id = state.request.get("snapshot_id")
@@ -177,7 +177,8 @@ def project_run(state: JobState) -> RunProjection:
         )
         status_value = chapter.get("status")
         cached_status = (cached or {}).get("status") if cached else None
-        if status_value == "failed" or cached_status == "failed":
+        degraded = any("确定性回退" in str(w) for w in (cached or {}).get("warnings", []))
+        if status_value == "failed" or cached_status == "failed" or degraded:
             status = "failed"
         elif status_value in {"done", "succeeded"} or cached is not None:
             status = "succeeded"
@@ -188,7 +189,7 @@ def project_run(state: JobState) -> RunProjection:
             label=title,
             status=status,
             step="quality" if status == "succeeded" else "write",
-            message=chapter.get("error") or ("章节已生成" if status == "succeeded" else "等待章节生成"),
+            message=chapter.get("error") or ("章节未正常生成，可重试" if status == "failed" else "章节已生成" if status == "succeeded" else "等待章节生成"),
             attempt=state.retry_count + 1,
             retryable=status == "failed",
             error=chapter.get("error"),

@@ -24,7 +24,7 @@ async def synthesize_book(
     plan: BookPlan | None = None,
     client: LLMClient | None = None,
 ) -> CourseBook:
-    llm = client or LLMClient(max_retries=2, timeout=120)
+    llm = client or LLMClient(max_retries=2, timeout=900)
     compact = []
     for ch in chapters:
         compact.append({
@@ -65,7 +65,7 @@ async def synthesize_book(
 各章：{json.dumps(compact, ensure_ascii=False)}"""
 
     try:
-        data = await llm.complete_json(SYSTEM, prompt, max_tokens=10000)
+        data = await llm.complete_json(SYSTEM, prompt)
     except Exception:
         data = {}
 
@@ -280,7 +280,7 @@ async def synthesize_book(
     plan: BookPlan | None = None,
     client: LLMClient | None = None,
 ) -> CourseBook:
-    llm = client or LLMClient(max_retries=2, timeout=120)
+    llm = client or LLMClient(max_retries=2, timeout=900)
     compact = []
     for ch in chapters:
         compact.append({
@@ -322,7 +322,7 @@ async def synthesize_book(
 各章：{json.dumps(compact, ensure_ascii=False)}"""
 
     try:
-        data = await llm.complete_json(SYSTEM, prompt, max_tokens=10000)
+        data = await llm.complete_json(SYSTEM, prompt)
     except Exception:
         data = {}
 

@@ -267,7 +267,7 @@ async def generate_chapter(
     if not chunks:
         raise ValueError(f"讲次 {lecture.lecture_id} 没有可用字幕")
 
-    llm = client or LLMClient(max_retries=3, timeout=max(150, config.timeout if hasattr(config, 'timeout') else 150))
+    llm = client or LLMClient(max_retries=3, timeout=900)
     source = _chunks_to_source(chunks)
     context = _instruction_context(instruction, plan, previous_draft)
     system_prompt = inject_prompt_rules(SYSTEM)
@@ -377,12 +377,12 @@ async def generate_chapter(
 11. examples 只能是人可读字符串，绝不能输出对象、字典或 JSON。
 12. component_type 只能是 worked_example、tip_box、warning、side_note、procedure；所有组件统一使用 title、body、source_ref 字段，procedure 可额外使用 when_to_use。"""
 
-    data = await llm.complete_json(SYSTEM, prompt, max_tokens=20000)
+    data = await llm.complete_json(SYSTEM, prompt)
 
     # Retry with narrower contract if first attempt fails
     if not isinstance(data, dict):
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(SYSTEM, narrow, max_tokens=16000)
+        data = await LLMClient(max_retries=3, timeout=900).complete_json(SYSTEM, narrow)
 
     # Review pass
     if review:
@@ -397,10 +397,9 @@ async def generate_chapter(
 async def _review_pass(llm: LLMClient, data: dict, instruction: ChapterInstruction | None, chunks: list[TimedChunk]) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
+        review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
             SYSTEM,
-            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
-            max_tokens=2000,
+            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:40000]}",
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:
@@ -576,10 +575,10 @@ def _collect_ranges(sections: list[ChapterSection], chunks: list[TimedChunk]) ->
     return result
 
 
-# ── v2: chapter Agent that consumes a ChapterContext ──────────────────────
+# ── Chapter agent: consumes a ChapterContext ──────────────────────────────
 
 
-async def generate_chapter_v2(
+async def generate_chapter_from_context(
     context: "ChapterContext",
     *,
     previous_draft: "LectureDraft | None" = None,
@@ -591,23 +590,22 @@ async def generate_chapter_v2(
     if not context.chapter_resources and not context.global_resources:
         raise ValueError(f"chapter {instruction.chapter_id} has no resources")
 
-    llm = client or LLMClient(max_retries=3, timeout=180)
+    llm = client or LLMClient(max_retries=3, timeout=900)
     payload = _build_context_payload(context)
-    prompt = _build_v2_prompt(context, payload, previous_draft)
+    prompt = _build_chapter_prompt(context, payload, previous_draft)
     try:
-        data = await llm.complete_json(V2_SYSTEM, prompt, max_tokens=20000)
+        data = await llm.complete_json(CHAPTER_AGENT_SYSTEM, prompt)
     except LLMError as exc:
         # Retry with a tighter contract on JSON failure.
         narrow = prompt + "\n\n若上下文过长：sections 只写 4 节，每节 content 2 段。必须返回完整 JSON。"
-        data = await LLMClient(max_retries=3, timeout=180).complete_json(V2_SYSTEM, narrow, max_tokens=16000)
+        data = await LLMClient(max_retries=3, timeout=900).complete_json(CHAPTER_AGENT_SYSTEM, narrow)
 
     # If sections are missing, retry once with a tighter instruction.
     if review and isinstance(data, dict) and len(data.get("sections") or []) < 2:
         try:
-            retry_data = await LLMClient(max_retries=1, timeout=180).complete_json(
-                V2_SYSTEM,
+            retry_data = await LLMClient(max_retries=1, timeout=900).complete_json(
+                CHAPTER_AGENT_SYSTEM,
                 prompt + "\n\n务必填写 3 个 sections，每节 content ≥ 2 段。不要省略 sections。",
-                max_tokens=16000,
             )
             if isinstance(retry_data, dict) and len(retry_data.get("sections") or []) >= len(data.get("sections") or []):
                 data = retry_data
@@ -615,10 +613,10 @@ async def generate_chapter_v2(
             pass
 
     if review and isinstance(data, dict):
-        data = await _review_pass_v2(llm, data, instruction)
+        data = await _review_pass_chapter(llm, data, instruction)
 
-    data = _normalize_v2(data, instruction)
-    draft = _validate_and_fix_v2(data, context, previous_draft)
+    data = _normalize_chapter_data(data, instruction)
+    draft = _validate_and_fix_chapter(data, context, previous_draft)
     return draft
 
 
@@ -643,7 +641,7 @@ def _build_context_payload(context: "ChapterContext") -> str:
         lines = [f"[{parsed.revision_id}] {parsed.title} ({parsed.kind})"]
         if parsed.meta.get("filename"):
             lines.append(f"  file: {parsed.meta['filename']}")
-        for unit in parsed.units[:24]:
+        for unit in parsed.units:
             loc = unit.location
             label = ""
             if loc is not None:
@@ -670,7 +668,7 @@ def _build_context_payload(context: "ChapterContext") -> str:
     return "\n".join(chapter_lines)
 
 
-V2_SYSTEM = """你是高校课程教辅书的分章写作者。
+CHAPTER_AGENT_SYSTEM = """你是高校课程教辅书的分章写作者。
 
 你的输入：
 - 全局写作提示词和全书组件规范
@@ -678,12 +676,17 @@ V2_SYSTEM = """你是高校课程教辅书的分章写作者。
 - 该章节的"全局资料"原文（每份都标了 revision_id）
 - 该章节的"本章资料"原文（每份都标了 revision_id）
 
-你的任务：用这些资料组织成一个完整、可独立阅读的章节。允许合并多份资料。不要使用资料里没有的内容；不确定的内容写 [不确定：…] 并加入 warnings。
+你的任务：用这些资料组织成一个完整、可独立阅读的章节。允许合并多份资料。
+
+写作原则（按优先级）：
+1. **完整性优先**：每份资料中与本章主题相关的内容——讲解、例子、口述的推导、操作步骤——都必须在正文中有落点，禁止挑重点式摘要；宁可写全写细，不要泛泛而谈。写完后自查：每份本章资料的主要内容是否都已覆盖，舍弃了什么、为什么。
+2. **不编造，但许可整理**：不要使用资料里没有的数值、结论、文献；不确定的内容写 [不确定：…] 并加入 warnings。但资料中以口述方式描述的代码、操作流程、图表，应重写为标注「据口述重写」的示意代码/伪代码/结构化步骤——这是整理不是编造。资料中确实不存在的图表/输出不得复原，写明「原课件此处有图」即可。
+3. 术语以 canonical_glossary 的规范写法为准，转写讹误一律回改。
 
 只返回 JSON。"""
 
 
-def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
+def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
     instruction = context.chapter
     component_specs = "\n".join(
         (
@@ -736,16 +739,16 @@ def _build_v2_prompt(context: "ChapterContext", payload: str, previous_draft: "L
         "6. components 里每个元素必须是 {\"component_type\": \"...\", \"data\": {...}}；所有组件字段一律放进 data 对象内，component_type 之外不要出现其他字段。\n"
         "7. 数学公式请用 $...$ 包裹（行内用单个 $，独立成行用 $$...$$），例如 $\\frac{1}{n}$、$\\lim_{n\\to\\infty} a_n$；不要输出 Markdown 数学代码块之外的裸 LaTeX。\n"
         "8. warnings 只能是字符串数组（用于标注 ASR 不确定与覆盖缺口），绝不能把 components 对象放进 warnings；所有组件一律放在 sections[].components 里。\n"
+        "9. 覆盖对账：每份本章资料中与本章主题相关的主要内容都必须在 sections 中出现；允许舍弃的仅是纯行政/点名/与本章无关的内容，舍弃项需在 warnings 里说明。示意代码/伪代码用代码块呈现并标注「据口述重写」。\n"
     )
 
 
-async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
+async def _review_pass_chapter(llm: LLMClient, data: dict, instruction) -> dict:
     must_cover = instruction.must_cover if instruction else []
     try:
-        review_result = await LLMClient(max_retries=1, timeout=min(90, llm.timeout)).complete_json(
-            V2_SYSTEM,
-            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:8000]}",
-            max_tokens=2000,
+        review_result = await LLMClient(max_retries=1, timeout=300).complete_json(
+            CHAPTER_AGENT_SYSTEM,
+            f"审校以下讲义草稿，只返回 JSON：{{\"approved\": true, \"issues\": [...], \"missing_must_cover\": [...]}}\n\nmust_cover：{json.dumps(must_cover)}\n\n草稿：{json.dumps(data, ensure_ascii=False)[:40000]}",
         )
         warnings = list(data.get("warnings") or [])
         for issue in review_result.get("issues") or []:
@@ -760,7 +763,7 @@ async def _review_pass_v2(llm: LLMClient, data: dict, instruction) -> dict:
     return data
 
 
-def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
+def _normalize_chapter_data(data: dict, instruction: ChapterInstruction) -> dict:
     if not isinstance(data, dict):
         raise LLMError("章节结果不是对象")
     data.setdefault("chapter_id", instruction.chapter_id)
@@ -825,7 +828,7 @@ def _normalize_v2(data: dict, instruction: ChapterInstruction) -> dict:
     return data
 
 
-def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) -> "LectureDraft":
+def _validate_and_fix_chapter(data: dict, context: "ChapterContext", previous_draft) -> "LectureDraft":
     instruction = context.chapter
     used_ids = {r.revision_id for r in context.chapter_resources} | {r.revision_id for r in context.global_resources}
     try:
@@ -872,7 +875,7 @@ def _validate_and_fix_v2(data: dict, context: "ChapterContext", previous_draft) 
     return draft
 
 
-async def generate_chapter_v2_with_fallback(
+async def generate_chapter_from_context_with_fallback(
     context: "ChapterContext",
     *,
     previous_draft: "LectureDraft | None" = None,
@@ -883,11 +886,11 @@ async def generate_chapter_v2_with_fallback(
     """Generate one chapter; on LLM failure, fall back to a deterministic
     chapter built directly from the resource units.
 
-    This guarantees the v2 pipeline always produces a chapter draft for
-    every chapter in the plan, even when the model is flaky.
+    This guarantees the multi-resource pipeline always produces a chapter
+    draft for every chapter in the plan, even when the model is flaky.
     """
     try:
-        return await generate_chapter_v2(
+        return await generate_chapter_from_context(
             context,
             previous_draft=previous_draft,
             client=client,
@@ -897,18 +900,18 @@ async def generate_chapter_v2_with_fallback(
         # One last LLM retry with a tighter prompt + smaller scope.
         if fallback_llm_budget > 0:
             try:
-                return await generate_chapter_v2(
+                return await generate_chapter_from_context(
                     context,
                     previous_draft=previous_draft,
-                    client=LLMClient(max_retries=2, timeout=120),
+                    client=LLMClient(max_retries=2, timeout=300),
                     review=False,
                 )
             except Exception:
                 pass
-        return _deterministic_chapter_v2(context, previous_draft, reason=str(exc))
+        return _deterministic_chapter(context, previous_draft, reason=str(exc))
 
 
-def _deterministic_chapter_v2(
+def _deterministic_chapter(
     context: "ChapterContext",
     previous_draft: "LectureDraft | None",
     *,
