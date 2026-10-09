@@ -16,6 +16,7 @@ are not used in the run.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 
@@ -235,13 +236,16 @@ class CourseBookPipeline:
                     prev_path = self._chapter_cache_path(course.course_id, snapshot_id, prev_id)
                     if prev_path.exists():
                         try:
-                            prev_draft = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+                            candidate = LectureDraft.model_validate_json(prev_path.read_text(encoding="utf-8"))
+                            if _can_reuse_chapter(candidate, contexts[idx - 1]):
+                                prev_draft = candidate
                         except (OSError, ValueError):
                             pass
                 try:
                     draft = await generate_chapter_from_context_with_fallback(
                         ctx, previous_draft=prev_draft, review=review,
                     )
+                    draft.context_fingerprint = _chapter_input_fingerprint(ctx)
                     atomic_write_text(draft_path, draft.model_dump_json(indent=2))
                     return draft
                 except Exception as exc:
@@ -290,10 +294,16 @@ class CourseBookPipeline:
         return book
 
 
+def _chapter_input_fingerprint(context) -> str:
+    payload = "full-source-v1\n" + context.model_dump_json()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _can_reuse_chapter(draft: LectureDraft, context) -> bool:
     expected = {r.revision_id for r in context.chapter_resources + context.global_resources}
     return (
         draft.chapter_id == context.chapter.chapter_id
+        and draft.context_fingerprint == _chapter_input_fingerprint(context)
         and bool(expected)
         and set(draft.used_resource_ids) == expected
         and any(section.content.strip() for section in draft.sections)

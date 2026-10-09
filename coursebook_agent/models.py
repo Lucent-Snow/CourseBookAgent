@@ -215,6 +215,8 @@ class LectureDraft(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     # v2: list of resource revision ids the chapter actually used.
     used_resource_ids: list[str] = Field(default_factory=list)
+    # Exact context provenance for pipeline cache reuse; old drafts have no proof.
+    context_fingerprint: str = ""
     # Book-aware fields
     chapter_role: str = "core"
     learning_goals: list[str] = Field(default_factory=list)

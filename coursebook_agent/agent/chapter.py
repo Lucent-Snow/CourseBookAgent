@@ -641,7 +641,7 @@ def _build_context_payload(context: "ChapterContext") -> str:
         lines = [f"[{parsed.revision_id}] {parsed.title} ({parsed.kind})"]
         if parsed.meta.get("filename"):
             lines.append(f"  file: {parsed.meta['filename']}")
-        for unit in parsed.units[:24]:
+        for unit in parsed.units:
             loc = unit.location
             label = ""
             if loc is not None:

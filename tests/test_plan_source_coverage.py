@@ -4,8 +4,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from coursebook_agent.agent.editor import _coerce_plan_from_descriptions, ensure_plan_source_coverage
-from coursebook_agent.models import Course, ResourceDescription, LectureDraft, ChapterSection
-from coursebook_agent.pipeline import _can_reuse_chapter
+from coursebook_agent.models import Course, ResourceDescription, LectureDraft, ChapterSection, ChapterContext, ChapterInstruction, ParsedResource, ParsedResourceUnit
+from coursebook_agent.pipeline import _can_reuse_chapter, _chapter_input_fingerprint
 
 
 class PlanSourceCoverageTests(unittest.TestCase):
@@ -61,9 +61,15 @@ class PlanRepairTests(unittest.IsolatedAsyncioTestCase):
 
 class ChapterCacheTests(unittest.TestCase):
     def test_empty_fallback_or_changed_sources_are_not_reused(self):
-        context = SimpleNamespace(chapter=SimpleNamespace(chapter_id='c1'), chapter_resources=[SimpleNamespace(revision_id='r1')], global_resources=[])
+        resource = ParsedResource(revision_id='r1', resource_id='res1', kind='transcript', source_type='zhiyun', provider='zhiyun', title='资料', units=[ParsedResourceUnit(unit_id='u1', text='课堂内容')])
+        context = ChapterContext(chapter=ChapterInstruction(chapter_id='c1', book_title='章', module_name=''), chapter_resources=[resource])
         draft = LectureDraft(chapter_id='c1', title='章', overview='概述', used_resource_ids=['r1'], sections=[ChapterSection(heading='节', content='正文')])
+        self.assertFalse(_can_reuse_chapter(draft, context))  # Legacy cache lacks provenance.
+        draft.context_fingerprint = _chapter_input_fingerprint(context)
         self.assertTrue(_can_reuse_chapter(draft, context))
+        resource.units[0].text = '修改后的课堂内容'
+        self.assertFalse(_can_reuse_chapter(draft, context))
+        draft.context_fingerprint = _chapter_input_fingerprint(context)
         draft.used_resource_ids = ['r2']
         self.assertFalse(_can_reuse_chapter(draft, context))
         draft.used_resource_ids = ['r1']
