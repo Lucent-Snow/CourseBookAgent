@@ -17,7 +17,13 @@ const STAGE_ORDER: Array<{ key: keyof StageProjection | 'rendered'; label: strin
 
 function stageIndex(stage: StageProjection, phase: string, status: string): number {
  if (status === 'queued') return 0
- if (status === 'completed' || stage.rendered) return 6
+ if (status === 'completed') return 6
+ // Retry projections can still include results from the previous attempt.
+ if (status === 'running' || status === 'retrying') {
+  if (phase === 'write') return 4
+  if (phase === 'synthesize' || phase === 'quality') return 5
+ }
+ if (stage.rendered) return 6
  if (stage.synthesized) return 6
  if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed === stage.chapters_total) return 5
  if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed < stage.chapters_total) return 4
