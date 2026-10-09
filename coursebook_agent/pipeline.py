@@ -246,6 +246,8 @@ class CourseBookPipeline:
                         ctx, previous_draft=prev_draft, review=review,
                     )
                     draft.context_fingerprint = _chapter_input_fingerprint(ctx)
+                    if _chapter_generation_failed(draft):
+                        failures.append(f"章节 {chapter_id} 未正常生成，需重试")
                     atomic_write_text(draft_path, draft.model_dump_json(indent=2))
                     return draft
                 except Exception as exc:
@@ -312,10 +314,12 @@ def _can_reuse_chapter(draft: LectureDraft, context) -> bool:
 
 
 def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) -> dict:
+    failed = failed or _chapter_generation_failed(chapter)
     return {
         "chapter_id": chapter.chapter_id,
         "title": chapter.title,
         "status": "failed" if failed else "done",
+        "error": (chapter.warnings[0] if chapter.warnings else "章节无有效正文") if failed else None,
         "module_name": chapter.module_name,
         "chapter_role": chapter.chapter_role,
         "sections": [
@@ -330,3 +334,9 @@ def _chapter_progress_summary(chapter: LectureDraft, *, failed: bool = False) ->
         "warnings": chapter.warnings[:5],
         "used_resource_ids": chapter.used_resource_ids,
     }
+
+
+def _chapter_generation_failed(chapter: LectureDraft) -> bool:
+    return not any(section.content.strip() for section in chapter.sections) or any(
+        "确定性回退" in warning for warning in chapter.warnings
+    )

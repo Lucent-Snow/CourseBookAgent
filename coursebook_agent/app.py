@@ -68,7 +68,16 @@ def _update_job_metrics(state: JobState, snapshot: dict) -> None:
 
 
 def _record_model_event(state: JobState, event: dict) -> None:
-    pass  # placeholder kept for API stability; events are persisted via _persist_job.
+    state.events.append({
+        "status": "failed",
+        "step": "模型调用",
+        "message": f"模型请求失败（{event.get('error_code') or 'unknown'}），{'可重试' if event.get('retryable') else '等待任务处理'}",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "error_code": event.get("error_code"),
+        "retryable": bool(event.get("retryable")),
+        "attempt": state.retry_count + 1,
+    })
+    _persist_job(state)
 
 
 def _new_job_metrics(state: JobState) -> UsageMetrics:
@@ -81,6 +90,8 @@ def _new_job_metrics(state: JobState) -> UsageMetrics:
 
 
 def _attach_job_metrics(state: JobState, metrics: UsageMetrics) -> None:
+    metrics.on_update = lambda snapshot: _update_job_metrics(state, snapshot)
+    metrics.on_event = lambda event: _record_model_event(state, event)
     state.metrics = metrics.snapshot()
 
 

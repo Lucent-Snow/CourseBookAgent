@@ -157,6 +157,7 @@ export function RunDetailPage() {
  const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
  const chapterDone = stage.chapters_succeeded + stage.chapters_failed
  const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
+ const degradedChapters = run.quality.filter((q) => q.warnings.some((warning) => warning.includes('确定性回退')))
  const metrics = run.metrics || {}
  const hasTokenData = (metrics.total_tokens ?? 0) > 0
 
@@ -180,6 +181,9 @@ export function RunDetailPage() {
  </header>
 
  {error && <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+ {degradedChapters.length > 0 && <div role="alert" className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+  检测到 {degradedChapters.length} 章使用了资料片段回退。当前完成数量包含这些草稿，请查看质量说明后再使用。
+ </div>}
 
  <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_340px]">
  <main className="space-y-5">
@@ -229,7 +233,7 @@ export function RunDetailPage() {
  )}
 
  <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
- {[['整体进度', `${run.progress}%`, currentPhaseLabel], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '供应商未返回'], ['模型耗时', formatLatency(metrics.latency_ms), metrics.retry_count ? `重试 ${metrics.retry_count} 次` : '无重试']].map(([label, value, hint]) => (
+ {[['整体进度', `${run.progress}%`, currentPhaseLabel], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '等待调用返回'], ['模型耗时', metrics.request_count ? formatLatency(metrics.latency_ms) : '—', metrics.retry_count ? `重试 ${metrics.retry_count} 次` : metrics.request_count ? '无重试' : '等待调用返回']].map(([label, value, hint]) => (
  <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
  <p className="text-[11px] text-[#718183]">{label}</p>
  <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>
@@ -241,7 +245,7 @@ export function RunDetailPage() {
  <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
  <div className="flex items-center justify-between">
  <h2 className="flex items-center gap-2 text-base font-semibold"><Gauge size={16} />模型调用统计</h2>
- <span className="text-xs text-[#718183]">实时累计</span>
+ <span className="text-xs text-[#718183]">本轮尝试累计</span>
  </div>
  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
  {[['输入 Token', formatTokens(metrics.prompt_tokens)], ['输出 Token', formatTokens(metrics.completion_tokens)], ['请求失败', String(metrics.failed_requests ?? 0)], ['估算成本', metrics.cost_configured && metrics.estimated_cost !== null && metrics.estimated_cost !== undefined ? `${metrics.estimated_cost} ${metrics.cost_currency || 'CNY'}` : '未配置单价']].map(([label, value]) => (
@@ -364,8 +368,8 @@ export function RunDetailPage() {
  {run.failed_agents > 0 && (
  <section className="rounded-lg border border-red-200 bg-red-50 p-5">
  <div className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertTriangle size={16} />存在失败任务</div>
- <p className="mt-2 text-xs leading-5 text-red-700/80">当前后端支持复用检查点，只重新生成失败或未完成章节。</p>
- <Button variant="outline" className="mt-4 border-red-300 bg-white text-red-700" onClick={() => void action('retry')}><RefreshCw size={14} />重试失败任务</Button>
+ <p className="mt-2 text-xs leading-5 text-red-700/80">任务结束后，可保留有效章节并重试失败或未完成的章节。</p>
+ <Button variant="outline" disabled={run.status === 'running' || run.status === 'queued'} className="mt-4 border-red-300 bg-white text-red-700" onClick={() => void action('retry')}><RefreshCw size={14} />重试失败任务</Button>
  </section>
  )}
 

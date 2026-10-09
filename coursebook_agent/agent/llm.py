@@ -391,5 +391,7 @@ def extract_json_object(text: str) -> dict[str, Any]:
 def _json_candidates(candidate: str) -> list[str]:
     raw = candidate.strip()
     cleaned = re.sub(r",\s*([}\]])", r"\1", raw)  # trailing commas
-    cleaned = cleaned.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
-    return [cleaned]
+    quote_repaired = cleaned.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+    # Chinese quotation marks are valid inside JSON strings. Parse the original
+    # first; broad quote repair must never corrupt an already valid document.
+    return list(dict.fromkeys([raw, cleaned, quote_repaired]))
