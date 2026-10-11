@@ -7,3 +7,8 @@ data/
 output/
 .DS_Store
 .pi-subagents/
+
+# Local deployment bundle; never commit classroom artifacts
+frontend/public/demo-assets/
+.vercel/
+frontend/.vercel/

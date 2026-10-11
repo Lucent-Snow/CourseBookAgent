@@ -85,9 +85,9 @@ data/
 ```
 
 - 章节按快照隔离，description 按 revision 跨快照复用。
-- 产品按 Job ID 阅读存于 Job 的书稿；全书 JSON/Markdown 仍按 course/snapshot 命名，同键重跑可覆盖文件。下载端点按 course_id 或 run_id 查找文件，与产物身份并未完全统一，需验证旧版本下载不会串书。
+- 产品按 Job ID 阅读存于 Job 的书稿；全书 JSON/Markdown 仍按 course/snapshot 命名，同键重跑可覆盖文件。10-11 下载端点改为渲染 Job 内保存的书稿，与历史阅读版本一致；文件缓存命名仍未统一。
 - Lab 阶段缓存不自动成为产品 Job/Artifact；真实示例的工作台接入是待办。
-- data、会话、原字幕和输出受 Git 忽略。公网部署/演示交接需单独安排数据与持久磁盘，不依赖临时容器目录。
+- data、会话、原字幕和输出受 Git 忽略。公开静态演示通过显式导出书稿投影构建，不含原文件或私人后端；实时生成部署仍需持久磁盘，见 DEPLOYMENT.md。
 
 ## 6. 长任务与可靠性
 
