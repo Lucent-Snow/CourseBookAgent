@@ -3,7 +3,6 @@ import { Badge } from '@/components/ui/badge'
 import { ComponentBlock } from './ComponentBlock'
 import { MathText } from '@/components/math/MathText'
 import { sanitizeList } from '@/lib/sanitize'
-import { GenerationNotes } from './GenerationNotes'
 import type { LectureDraft } from '@/types'
 
 const ROLE_LABELS: Record<string, string> = {
@@ -62,7 +61,6 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
   return (
     <article className="min-w-0">
       <h2 className="text-2xl font-bold leading-snug">{chapter.title}</h2>
-      <GenerationNotes notes={chapter.warnings} />
       {(chapter.module_name || role) && (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {chapter.module_name && <Badge variant="secondary">模块：{chapter.module_name}</Badge>}
@@ -115,7 +113,7 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
       {chapter.sections.map((section, i) => (
         <section key={i} className="mt-8">
           <h3 className="flex flex-wrap items-center gap-2 text-base font-semibold">
-            {chapter.sections.length > 1 && <span className="text-muted-foreground">{i + 1}.</span>}
+            {chapter.sections.length > 1 && !/^\d+(?:\.\d+)+/.test(section.heading) && <span className="text-muted-foreground">{i + 1}.</span>}
             <span>{section.heading}</span>
             {section.emphasis === 'key' && <Badge variant="secondary">重点</Badge>}
             {section.emphasis === 'review' && <Badge variant="outline">回顾</Badge>}

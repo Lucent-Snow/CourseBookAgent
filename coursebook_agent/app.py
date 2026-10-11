@@ -16,9 +16,10 @@ import uuid
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import Response, RedirectResponse
 from pydantic import BaseModel, Field
 
 from coursebook_agent.agent.llm import LLMClient, LLMError, UsageMetrics, usage_tracking
@@ -26,6 +27,7 @@ from coursebook_agent.config import config, normalize_llm_base_url, save_llm_set
 from coursebook_agent.models import JobState, LectureDraft
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
+from coursebook_agent.renderer.markdown import render_coursebook
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 from coursebook_agent.product.api import router as product_router
 
@@ -304,11 +306,10 @@ async def download_run_markdown(run_id: str):
     if state.status not in {"completed", "partial"} or not state.book:
         raise HTTPException(status_code=409, detail="教辅尚未完成")
     course_id = state.book.course.course_id or run_id
-    path = config.output_dir / f"coursebook-{course_id}.md"
-    return FileResponse(
-        path,
+    return Response(
+        render_coursebook(state.book),
         media_type="text/markdown; charset=utf-8",
-        filename=f"coursebook-{course_id}.md",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(f'coursebook-{course_id}.md', safe='')},
     )
 
 

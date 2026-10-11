@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from coursebook_agent.models import CourseBook, LectureDraft, ChapterSection, ChapterComponent
-from coursebook_agent.quality_categories import group_warnings
+from coursebook_agent.renderer.presentation import reader_projection
 
 
 def _is_empty_chapter(chapter: LectureDraft) -> bool:
@@ -82,6 +82,7 @@ def _render_component(comp: ChapterComponent) -> str:
 
 
 def render_chapter(chapter: LectureDraft) -> str:
+    chapter = LectureDraft.model_validate(reader_projection(chapter.model_dump()))
     role_label = {
         "core": "核心方法", "review": "复习整合", "guest": "专题/嘉宾",
         "admin": "课程说明", "mixed": "综合",
@@ -152,22 +153,15 @@ def render_chapter(chapter: LectureDraft) -> str:
     if chapter.bridge_to_next:
         lines.extend(["", "## 启下", "", chapter.bridge_to_next.strip()])
 
-    lines.extend(["", "## 来源", ""])
-    lines.extend(f"- {x}" for x in chapter.source_ranges)
-    if chapter.warnings:
-        lines.extend(["", "## 教师备注", ""])
-        for group in group_warnings(chapter.warnings):
-            lines.append(f"### {group['label']}")
-            lines.extend(f"- {x}" for x in group["items"])
-            lines.append("")
     return "\n".join(lines).strip() + "\n"
 
 
 def render_coursebook(book: CourseBook) -> str:
+    book = CourseBook.model_validate(reader_projection(book.model_dump()))
     lines = [
         f"# {book.title}",
         "",
-        f"> 根据智云课堂字幕自动整理为复习教辅。课程：{book.course.name}；教师：{book.course.teacher or '未提供'}；学期：{book.course.term or '未提供'}。",
+        f"> 课程：{book.course.name}；教师：{book.course.teacher or '未提供'}；学期：{book.course.term or '未提供'}。",
         "",
     ]
 

@@ -95,7 +95,7 @@ class GenerationSafetyTests(unittest.TestCase):
             chapter_role="core",
         )
         text = render_chapter(draft)
-        for heading in ["承上", "学习目标", "本章导读", "本章重点", "易错点", "本章小结", "启下", "来源", "（重点）"]:
+        for heading in ["承上", "学习目标", "本章导读", "本章重点", "易错点", "本章小结", "启下", "（重点）"]:
             self.assertIn(heading, text)
 
 
@@ -237,7 +237,7 @@ class ComponentTests(unittest.TestCase):
         )
         text = render_chapter(draft)
         self.assertIn("步骤", text)
-        self.assertIn("字幕时间段", text)
+        self.assertNotIn("字幕时间段", text)
 
 
 class BookWorkflowTests(unittest.TestCase):

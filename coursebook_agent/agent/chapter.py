@@ -36,10 +36,10 @@ SYSTEM = """你是高校课程教辅书的分章写作者。
 写作框架：问题驱动 → 概念阐释 → 方法步骤 → 实例演示 → 易错警示。
 
 关键规则：
-- 只用字幕内容，不编造
+- 以课程资料确定主题，允许补充必要的学科解释和例题
 - 核心方法要写清步骤、判定规则、适用条件
 - 例题要完整展示解题过程
-- 每个知识点标注来源（chunk_id + 时间段）
+- 来源只记录于结构化字段，不写入正文
 - 按总编辑定义的组件格式展示例题/Tips/警告
 - 不写"根据字幕"等元话语
 - 直接进入主题，不要用"首先让我们来了解""接下来我们将探讨"等过渡句开头
@@ -49,8 +49,10 @@ SYSTEM = """你是高校课程教辅书的分章写作者。
 - 像一本好的大学教辅那样写作：平实、精确、不啰嗦"""
 
 
-from coursebook_agent.agent.style_rules import inject_prompt_rules
+from coursebook_agent.agent.style_rules import inject_prompt_rules, BOOK_WRITING_POLICY
 from coursebook_agent.config import config
+
+SYSTEM = inject_prompt_rules(SYSTEM)
 
 
 def _coerce_component_list(raw_components) -> list[dict]:
@@ -245,7 +247,7 @@ def _instruction_context(
         parts.append(f"【本章指令】\n{json.dumps(instruction.model_dump(), ensure_ascii=False)}")
         if instruction.must_verify:
             verify_items = "\n".join(f"- {item}" for item in instruction.must_verify)
-            parts.append(f"【字幕支撑不足，须谨慎处理】\n以下知识点在字幕中的支撑不充分，写作时须格外注意：只能依据字幕实际内容撰写，不得按学科常识补造。如字幕无法支持细节，应在 warnings 中标注。\n{verify_items}")
+            parts.append(f"【字幕支撑不足，须谨慎处理】\n以下知识点在字幕中的支撑不充分，写作时须格外注意：可用学科知识补充必要解释，实在不清楚的细节省略，不在正文标注疑问。\n{verify_items}")
     if prev_draft:
         parts.append(f"【上一章摘要】\ntitle={prev_draft.title}\nbridge_to_next={prev_draft.bridge_to_next}\nkey_points={prev_draft.key_points[:5]}")
     return "\n\n".join(parts) if parts else "（无额外上下文）"
@@ -679,11 +681,11 @@ CHAPTER_AGENT_SYSTEM = """你是高校课程教辅书的分章写作者。
 你的任务：用这些资料组织成一个完整、可独立阅读的章节。允许合并多份资料。
 
 写作原则（按优先级）：
-1. **完整性优先**：每份资料中与本章主题相关的内容——讲解、例子、口述的推导、操作步骤——都必须在正文中有落点，禁止挑重点式摘要；宁可写全写细，不要泛泛而谈。写完后自查：每份本章资料的主要内容是否都已覆盖，舍弃了什么、为什么。
-2. **不编造，但许可整理**：不要使用资料里没有的数值、结论、文献；不确定的内容写 [不确定：…] 并加入 warnings。但资料中以口述方式描述的代码、操作流程、图表，应重写为标注「据口述重写」的示意代码/伪代码/结构化步骤——这是整理不是编造。资料中确实不存在的图表/输出不得复原，写明「原课件此处有图」即可。
+1. **完整性优先**：每份资料中与本章主题相关的内容——讲解、例子、口述的推导、操作步骤——都必须在正文中有落点，禁止挑重点式摘要；宁可写全写细，不要泛泛而谈；实在无法判断的细节可以省略。写完后自查：每份本章资料的主要内容是否都已覆盖，舍弃了什么、为什么。
+2. **完整书面表达**：允许补充必要的定义、背景、推导步骤、示例和示意代码；无法判断的具体细节省略。正文直接讲述知识，不出现待核或资料来源措辞。
 3. 术语以 canonical_glossary 的规范写法为准，转写讹误一律回改。
 
-只返回 JSON。"""
+只返回 JSON。""" + "\n\n" + BOOK_WRITING_POLICY
 
 
 def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draft: "LectureDraft | None") -> str:
@@ -730,7 +732,7 @@ def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draf
         '  "summary": [...],\n'
         '  "warnings": [...]\n'
         "}\n\n"
-        "规则：\n"
+        + BOOK_WRITING_POLICY + "\n规则：\n"
         "1. source_revision_ids 必须从本章或全局资料的 revision_id 中选取，不要编造。\n"
         "2. 每个 section 的 content 必须充实，禁止空洞过渡句。\n"
         "3. 核心方法章必须有 procedure 组件；每章至少 1 个 worked_example 组件。\n"
@@ -739,7 +741,7 @@ def _build_chapter_prompt(context: "ChapterContext", payload: str, previous_draf
         "6. components 里每个元素必须是 {\"component_type\": \"...\", \"data\": {...}}；所有组件字段一律放进 data 对象内，component_type 之外不要出现其他字段。\n"
         "7. 数学公式请用 $...$ 包裹（行内用单个 $，独立成行用 $$...$$），例如 $\\frac{1}{n}$、$\\lim_{n\\to\\infty} a_n$；不要输出 Markdown 数学代码块之外的裸 LaTeX。\n"
         "8. warnings 只能是字符串数组（用于标注 ASR 不确定与覆盖缺口），绝不能把 components 对象放进 warnings；所有组件一律放在 sections[].components 里。\n"
-        "9. 覆盖对账：每份本章资料中与本章主题相关的主要内容都必须在 sections 中出现；允许舍弃的仅是纯行政/点名/与本章无关的内容，舍弃项需在 warnings 里说明。示意代码/伪代码用代码块呈现并标注「据口述重写」。\n"
+        "9. 覆盖对账：每份本章资料中与本章主题相关的主要内容都必须在 sections 中出现；允许舍弃的是无法判断的具体细节、纯行政/点名/与本章无关的内容，舍弃项需在 warnings 里说明。示意代码/伪代码用代码块呈现，解释其用途。\n"
     )
 
 

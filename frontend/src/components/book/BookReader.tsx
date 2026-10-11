@@ -3,7 +3,7 @@ import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ChapterView } from './ChapterView'
-import { GenerationNotes } from './GenerationNotes'
+import { readerBook } from '@/lib/book-presentation'
 import { MathText } from '@/components/math/MathText'
 import type { CourseBook } from '@/types'
 
@@ -28,7 +28,6 @@ function FrontMatter({ book }: { book: CourseBook }) {
   return (
     <div className="min-w-0">
       <h2 className="text-2xl font-bold leading-snug">{book.title}</h2>
-      <GenerationNotes notes={book.warnings} />
       {courseMeta && (
         <p className="mt-2 text-sm text-muted-foreground">{courseMeta}</p>
       )}
@@ -53,8 +52,10 @@ function FrontMatter({ book }: { book: CourseBook }) {
   )
 }
 
-export function BookReader({ book, onRegenerate }: { book: CourseBook; onRegenerate?: (index: number) => void }) {
+export function BookReader({ book: originalBook, onRegenerate }: { book: CourseBook; onRegenerate?: (index: number) => void }) {
+  const book = readerBook(originalBook)
   const [active, setActive] = useState(-1)
+  const [tocOpen, setTocOpen] = useState(false)
   const chapter = active >= 0 ? book.chapters[active] : null
 
   const tocItems = [
@@ -68,7 +69,7 @@ export function BookReader({ book, onRegenerate }: { book: CourseBook; onRegener
         <button
           key={item.index}
           type="button"
-          onClick={() => setActive(item.index)}
+          onClick={() => { setActive(item.index); setTocOpen(false) }}
           className={`block w-full rounded-md px-3 py-2 text-left text-sm leading-snug transition-colors ${
             active === item.index
               ? 'bg-accent font-medium text-accent-foreground'
@@ -91,7 +92,7 @@ export function BookReader({ book, onRegenerate }: { book: CourseBook; onRegener
       </aside>
 
       <div className="lg:hidden">
-        <Sheet>
+        <Sheet open={tocOpen} onOpenChange={setTocOpen}>
           <SheetTrigger render={<Button variant="outline" size="sm" />}>
             <Menu className="mr-2 size-4" />
             目录

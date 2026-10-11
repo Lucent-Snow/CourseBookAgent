@@ -297,7 +297,7 @@ class CourseBookPipeline:
 
 
 def _chapter_input_fingerprint(context) -> str:
-    payload = "full-source-v1\n" + context.model_dump_json()
+    payload = "full-source-book-style-v2\n" + context.model_dump_json()
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

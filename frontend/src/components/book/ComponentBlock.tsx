@@ -98,7 +98,6 @@ export function ComponentBlock({ component }: { component: ChapterComponent }) {
   const config = CONFIG[component.component_type] ?? FALLBACK
   const data = (component.data ?? {}) as Record<string, unknown>
   const title = asString(data.title)
-  const sourceRef = asString(data.source_ref)
   const whenToUse = asString(data.when_to_use)
   const steps = asStringList(data.steps)
   const body = asStringList(data.body)
@@ -158,7 +157,6 @@ export function ComponentBlock({ component }: { component: ChapterComponent }) {
           适用：<MathText text={whenToUse} />
         </p>
       )}
-      {sourceRef && <p className="mt-2 text-xs text-muted-foreground">来源：{sourceRef}</p>}
     </div>
   )
 }
