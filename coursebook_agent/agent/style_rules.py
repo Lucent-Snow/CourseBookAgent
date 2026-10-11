@@ -41,6 +41,14 @@ ALL_BANNED = BANNED_TRANSITIONS + BANNED_EMPTY + BANNED_FAKE_INTERACTION + BANNE
 
 # ── Positive style rules ────────────────────────────────────────────────────
 
+BOOK_WRITING_POLICY = """【成书规范：优先于旧规划中的写作约束】
+以正式出版的高校教辅为表达标准：准确、清楚、连贯，直接讲述概念与方法。
+课程资料用于确定主题、重点和案例，允许运用学科知识补充背景、定义、推导步骤、适用条件、示例与示意代码，使章节独立可读，不要求每句话都有字幕依据。
+明确的内容直接写；实在无法判断的具体细节省略，不把疑问交给读者。
+正文、例题、前言和小结不得出现待核、待核查、待核实、“不确定：…”、出自原资料、据字幕整理、据口述重写等编辑性表述，不逐段讲述素材来源。来源字段只供系统内部记录。
+补充示例直接作为例题说明，不声称它是教师原话、真实实验数据或真实引用。不要伪造文献。
+"""
+
 POSITIVE_RULES = """【文风要求（必须遵守）】
 1. 直接进入主题，不要用"首先让我们来了解""接下来我们将探讨"等过渡句开头。
 2. 用具体的知识内容、计算步骤、判定规则填充每个小节，禁止只写空洞的概述句（如"本节将介绍…""本节主要讨论…"）。
@@ -53,9 +61,11 @@ POSITIVE_RULES = """【文风要求（必须遵守）】
 
 def inject_prompt_rules(system_prompt: str) -> str:
     """Append style rules to a SYSTEM prompt string."""
-    if POSITIVE_RULES in system_prompt:
-        return system_prompt
-    return system_prompt + "\n\n" + POSITIVE_RULES
+    if POSITIVE_RULES not in system_prompt:
+        system_prompt += "\n\n" + POSITIVE_RULES
+    if BOOK_WRITING_POLICY not in system_prompt:
+        system_prompt += "\n\n" + BOOK_WRITING_POLICY
+    return system_prompt
 
 
 def check_content(text: str) -> list[str]:

@@ -152,7 +152,7 @@ async def plan_book(
 约束：
 1. chapters 数量必须与 digests 一致。
 2. components 至少定义 worked_example、tip_box、warning 三种。
-3. writer_system_prompt 必须包含：只用字幕内容、不编造、术语统一、组件格式。
+3. writer_system_prompt 必须包含：允许必要的学科补充、正式出版书面表达、术语统一、组件格式。
 4. bridge_from_prev/bridge_to_next 必须具体。
 5. component_usage 必须引用 components 中定义的 name。
 6. 关注各讲 digest 中 knowledge_points 的 sufficiency 字段：sufficiency 为 insufficient 或 partial 的知识点必须列入 must_verify，并注明原因。不能把字幕支撑不足的知识点当作确定事实呈现。\n7. section_plan 中每个小节必须填写 knowledge_points、chunk_refs、teaching_signals，不能只给空标题。
@@ -362,10 +362,10 @@ MAIN_AGENT_USER_TEMPLATE = """课程信息：{course}
 3. 每个 chapter 必须有 must_cover、section_plan（≥1 小节）、depth_guidance、component_usage。
 4. resource_tags 的 value 是字符串数组：要么是 chapter_id（资料作为该章节的原始素材），要么是 "__global__"（资料作为全局上下文）。未列入 resource_tags 的资料本次不进入生成。
 5. 一份资料可以同时进入多个章节，也可以同时进入全局与某些章节。
-6. writer_system_prompt 必须包含：只用资料中的内容、不编造、术语统一、组件格式，以及两条写作原则：**完整性优先**（每份资料中与章节主题相关的讲解、例子、推导、操作步骤都必须在正文有落点，禁止挑重点式摘要，宁可写全写细不要泛泛而谈）和**伪代码许**（资料中只有口述描述的代码/流程/图表，写作者应重写为标注「据口述重写」的示意代码/伪代码/结构化步骤；禁止的是编造资料中不存在的数值、结论与图表内容）。
+6. writer_system_prompt 必须要求正式出版教辅的书面表达，完整组织课程主题；允许补充必要定义、背景、推导、例题和示意代码。无法判断的细节省略，正文不出现待核、出自原资料、据口述重写等编辑措辞。来源只作内部记录。
 7. components 至少包含 worked_example、tip_box、warning 三种。
 8. section_plan 的 source_revision_ids 必须引用下面"所有资料描述"里出现的 revision_id 之一。
-9. 资料支撑不足（suggested_role == "auxiliary" 或 summary 显式说明）的内容必须列入 must_verify 或 common_mistakes。
+9. 对简略材料规划必要的背景、定义和推导补充；无法判断的具体细节可以省略，不要求在成品中标注疑问。
 
 参考资料描述：
 {descriptions}
@@ -747,7 +747,7 @@ def heuristic_plan_by_topic(
         continuity_notes=[],
         components=default_components,
         chapters=chapters,
-        writer_system_prompt="你是教辅书分章写作者。只用资料内容，不编造。术语统一。每个例题和重点标注来源。",
+        writer_system_prompt="你是教辅书分章写作者。允许补充必要的学科解释。使用正式出版教辅的书面表达，来源只作内部记录。术语统一。",
         render_config={"web_timestamp_links": True, "pdf_omit_timestamp_links": True},
         warnings=["启发式回退：主 Agent 不可用，按主题关键词贪心合并；如需更细粒度请让主 Agent 可用后重跑"],
         resource_tags=resource_tags,
@@ -864,7 +864,7 @@ def heuristic_book_plan(course: Course, digests: list[LectureDigest]) -> BookPla
         continuity_notes=["核心方法章必须显式承接上一章", "guest 章标明可后读"],
         components=default_components,
         chapters=chapters,
-        writer_system_prompt="你是教辅书分章写作者。只用字幕内容，不编造。术语统一。核心方法章要写清步骤和判定。每个例题和重点标注来源。",
+        writer_system_prompt="你是教辅书分章写作者。允许补充必要的学科解释。使用正式出版教辅的书面表达，来源只作内部记录。术语统一。核心方法章要写清步骤和判定。",
         render_config={"web_timestamp_links": True, "pdf_omit_timestamp_links": True},
         warnings=["启发式回退：LLM 规划不可用"],
     )

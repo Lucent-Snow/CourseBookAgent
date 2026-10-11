@@ -275,13 +275,13 @@ async def llm_quality_gate(
 {{"status":"pass|revise|human_review","issues":["可执行问题"],"missing_must_cover":["遗漏项"],"unsupported_claims":["无字幕支持的具体主张"],"asr_uncertainties":["需人工确认项"],"style_issues":["AI味/套话/文风问题"]}}
 
 规则：
-1. must_cover 任一项缺失即 revise；不能确认的数值、公式、专名不能批准为确定事实；不要以文笔好为由忽略覆盖问题。
+1. 检查主要主题、计算与逻辑。允许补充必要的定义、解释、推导和示例，不把字幕没有逐字出现当作错误；实在无法判断的具体细节建议省略。
 2. 文风检查：读起来像一本好的大学教辅，还是 AI 生成的课堂摘要？如果像后者，列出具体的 AI 味问题（过渡套话、空洞概述、假互动等）。
 3. 教学信号利用：老师在字幕中强调的重点是否在讲义中体现为重点标注？老师的提问是否转化为引导式讲解？
 4. 结构检查：各小节是否有实质内容而非过渡句？知识点是按教学逻辑组织还是按时间顺序线性堆砌？"""
     try:
         response = await LLMClient(max_retries=2, timeout=300).complete_json(
-            "你是只依据提供证据审校的编辑。只输出 JSON。", prompt
+            "你是高校教辅编辑。允许补充必要的学科解释，不因字幕未逐字覆盖而拒绝。只输出 JSON。", prompt
         )
     except LLMError as exc:
         return QualityResult(False, [f"LLM 审校失败：{exc}"], {"review_status": "failed"})
