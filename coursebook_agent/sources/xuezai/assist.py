@@ -22,6 +22,7 @@ from urllib.parse import unquote
 import httpx
 
 from coursebook_agent.storage import atomic_write_text
+from coursebook_agent.config import config, _workspace_config
 
 
 CAS_LOGIN_URL = "https://zjuam.zju.edu.cn/cas/login"
@@ -144,7 +145,7 @@ class XueZaiSource:
 
     cache_dir: Path
     username: str = ""
-    session_file: Path = field(default_factory=lambda: Path(os.getenv("XUEZAI_SESSION_FILE", "./data/xuezai/session.json")).expanduser())
+    session_file: Path = field(default_factory=lambda: config.data_dir / "xuezai/session.json" if _workspace_config.get() is not None else Path(os.getenv("XUEZAI_SESSION_FILE", "./data/xuezai/session.json")).expanduser())
     via_webvpn: bool = False
 
     def __post_init__(self) -> None:

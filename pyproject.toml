@@ -2,7 +2,7 @@
 name = "coursebook-agent"
 version = "0.1.0"
 description = "基于智云课堂字幕的课程教辅生成智能体"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi",
     "uvicorn",
@@ -14,8 +14,13 @@ dependencies = [
     "python-pptx",
     "pypdf",
     "python-docx",
+    "vercel>=0.11.6",
+    "vercel-workflow>=0.11.1",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[[tool.vercel.workflows]]
+entrypoint = "coursebook_agent.hosting.workflows:wf"

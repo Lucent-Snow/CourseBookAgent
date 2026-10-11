@@ -73,8 +73,8 @@ class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     zhiyun: ZhiyunConfig = ZhiyunConfig()
 
-    data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
-    output_dir: Path = Path(os.getenv("OUTPUT_DIR", "./data/output"))
+    data_dir: Path = Path(os.getenv("DATA_DIR", "/tmp/coursebook-bootstrap" if os.getenv("COURSEBOOK_CLOUD") == "1" else "./data"))
+    output_dir: Path = Path(os.getenv("OUTPUT_DIR", "/tmp/coursebook-bootstrap/output" if os.getenv("COURSEBOOK_CLOUD") == "1" else "./data/output"))
 
     def validate(self) -> None:
         """验证必要配置。"""
@@ -93,7 +93,24 @@ class AppConfig(BaseModel):
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
-config = AppConfig()
+from contextvars import ContextVar
+
+_base_config = AppConfig()
+_workspace_config: ContextVar[AppConfig | None] = ContextVar("workspace_config", default=None)
+
+
+class ConfigProxy:
+    def __getattr__(self, name):
+        return getattr(_workspace_config.get() or _base_config, name)
+
+    def __delattr__(self, name):
+        delattr(_workspace_config.get() or _base_config, name)
+
+    def __setattr__(self, name, value):
+        setattr(_workspace_config.get() or _base_config, name, value)
+
+
+config = ConfigProxy()
 
 try:
     config.validate()
@@ -146,6 +163,16 @@ def save_llm_settings(
         updates["LLM_INPUT_PRICE_PER_MILLION"] = str(max(0.0, input_price_per_million))
     if output_price_per_million is not None:
         updates["LLM_OUTPUT_PRICE_PER_MILLION"] = str(max(0.0, output_price_per_million))
+    scoped = _workspace_config.get()
+    if scoped is not None:
+        from coursebook_agent.storage import atomic_write_text
+        scoped.llm = LLMConfig(
+            base_url=base_url, model=model, api_key=api_key,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+        )
+        atomic_write_text(scoped.data_dir / "llm-settings.json", scoped.llm.model_dump_json())
+        return
     lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
     seen: set[str] = set()
     out: list[str] = []

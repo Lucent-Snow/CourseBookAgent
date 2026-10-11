@@ -144,6 +144,16 @@ class LLMClient:
         self.timeout = timeout or config.llm.timeout
 
     async def complete(self, system: str, user: str, *, temperature: float = 0.2) -> str:
+        from coursebook_agent.hosting.replay import execution_context
+        execution = execution_context.get()
+        if execution is not None:
+            return await execution.complete(
+                self, system, user, temperature,
+                lambda: self._complete_live(system, user, temperature=temperature),
+            )
+        return await self._complete_live(system, user, temperature=temperature)
+
+    async def _complete_live(self, system: str, user: str, *, temperature: float = 0.2) -> str:
         if not (config.llm.base_url and config.llm.api_key and config.llm.model):
             raise LLMError("请先配置模型端点、模型名和 API Key", "configuration")
         url = normalize_llm_base_url(config.llm.base_url) + "/chat/completions"

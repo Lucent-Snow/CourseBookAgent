@@ -25,6 +25,9 @@ from pydantic import BaseModel, Field
 from coursebook_agent.agent.llm import LLMClient, LLMError, UsageMetrics, usage_tracking
 from coursebook_agent.config import config, normalize_llm_base_url, save_llm_settings
 from coursebook_agent.models import JobState, LectureDraft
+from coursebook_agent.hosting.middleware import GuestWorkspaceMiddleware
+from coursebook_agent.hosting.workspaces import ScopedMapping
+import os
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.renderer.markdown import render_coursebook
@@ -33,9 +36,10 @@ from coursebook_agent.product.api import router as product_router
 
 app = FastAPI(title="CourseBookAgent", version="0.1.0")
 app.include_router(product_router)
-jobs: dict[str, JobState] = {}
+app.add_middleware(GuestWorkspaceMiddleware)
+jobs = ScopedMapping()
 generation_lock = asyncio.Lock()
-tasks: dict[str, asyncio.Task] = {}
+tasks = ScopedMapping()
 JOB_DIR = config.data_dir / "jobs"
 JOB_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -43,7 +47,7 @@ JOB_DIR.mkdir(parents=True, exist_ok=True)
 def _job_path(job_id: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", job_id):
         raise HTTPException(status_code=400, detail="任务标识无效")
-    return JOB_DIR / f"{job_id}.json"
+    return (config.data_dir / "jobs" if os.getenv("COURSEBOOK_CLOUD") == "1" or os.getenv("COURSEBOOK_GUEST_MODE") == "1" else JOB_DIR) / f"{job_id}.json"
 
 
 def _persist_job(state: JobState) -> None:
@@ -154,6 +158,8 @@ def _schedule(job_id: str, coroutine) -> None:
 async def generate(request: GenerateRequest):
     if not request.snapshot_id:
         raise HTTPException(status_code=400, detail="snapshot_id 必须提供；系统不再以课程为主键。")
+    if os.getenv("COURSEBOOK_CLOUD") == "1" and not (config.llm.api_key and config.llm.model and config.llm.base_url):
+        raise HTTPException(status_code=409, detail="请先在系统设置中配置自己的模型；已有预设可直接阅读")
     # Resolve dataset_id from snapshot so the run is bound to its source
     # dataset instead of a course.
     from coursebook_agent.product.service import ProductService
@@ -171,7 +177,15 @@ async def generate(request: GenerateRequest):
     job_state.request["dataset_name"] = ProductService().get_dataset(snapshot_obj.dataset_id).name
     jobs[job_id] = job_state
     _persist_job(job_state)
-    _schedule(job_id, _run_job(job_id, request))
+    if os.getenv("COURSEBOOK_CLOUD") == "1":
+        from coursebook_agent.hosting.workflows import launch
+        try:
+            await launch(job_id, job_state.retry_count)
+        except Exception:
+            job_state.status, job_state.error = "failed", "云端任务启动失败，请重试"
+            _persist_job(job_state)
+    else:
+        _schedule(job_id, _run_job(job_id, request))
     return job_state.model_dump()
 
 
@@ -208,6 +222,10 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
         _persist_job(state)
 
     metrics = _new_job_metrics(state)
+    if os.getenv("COURSEBOOK_CLOUD") == "1":
+        for field in ("request_count", "successful_requests", "failed_requests", "retry_count", "prompt_tokens", "completion_tokens", "total_tokens", "latency_ms", "models"):
+            if field in state.metrics:
+                setattr(metrics, field, state.metrics[field])
     _attach_job_metrics(state, metrics)
     state.metrics = metrics.snapshot()
     _persist_job(state)
@@ -243,30 +261,54 @@ async def _generate_locked(state: JobState, request: GenerateRequest) -> None:
         raise
 
 
+def persisted_jobs() -> list[JobState]:
+    from coursebook_agent.hosting.workspaces import enabled
+    if not enabled():
+        return list(jobs.values())
+    result = []
+    for path in (config.data_dir / "jobs").glob("*.json"):
+        try:
+            history = json.loads(path.read_text())
+            result.append(JobState.model_validate(history.get("state", history)))
+        except (OSError, ValueError):
+            continue
+    return result
+
+
 # ── Run lifecycle ────────────────────────────────────────────────────────
 
 
 def _get_job(job_id: str) -> JobState:
-    if job_id not in jobs:
+    if os.getenv("COURSEBOOK_CLOUD") == "1" or job_id not in jobs:
         path = _job_path(job_id)
         if path.exists():
             try:
-                jobs[job_id] = JobState.model_validate_json(path.read_text(encoding="utf-8"))
+                history = json.loads(path.read_text(encoding="utf-8"))
+                jobs[job_id] = JobState.model_validate(history.get("state", history))
             except (OSError, ValueError):
                 pass
+    if os.getenv("COURSEBOOK_CLOUD") == "1" and not _job_path(job_id).exists():
+        raise HTTPException(status_code=404, detail="任务不存在")
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="任务不存在")
     return jobs[job_id]
 
 
+async def reconcile_job(state):
+    if os.getenv("COURSEBOOK_CLOUD") == "1":
+        from coursebook_agent.hosting.workflows import reconcile
+        return await reconcile(state)
+    return state
+
+
 @app.get("/api/runs/{run_id}")
 async def run_status(run_id: str):
-    return _get_job(run_id).model_dump()
+    return (await reconcile_job(_get_job(run_id))).model_dump()
 
 
 @app.post("/api/runs/{run_id}/retry", status_code=202)
 async def retry_run(run_id: str):
-    state = _get_job(run_id)
+    state = await reconcile_job(_get_job(run_id))
     if state.status not in {"failed", "partial", "interrupted"}:
         raise HTTPException(status_code=409, detail="只有失败或部分完成的任务可以重试")
     if not state.request.get("snapshot_id"):
@@ -280,13 +322,34 @@ async def retry_run(run_id: str):
     state.error_code = None
     state.message = "准备恢复任务"
     _persist_job(state)
-    _schedule(run_id, _run_job(run_id, GenerateRequest(**state.request)))
+    if os.getenv("COURSEBOOK_CLOUD") == "1":
+        from coursebook_agent.hosting.workflows import launch
+        try:
+            await launch(run_id, state.retry_count)
+        except Exception:
+            state.status, state.step = "failed", "失败"
+            state.error_code = "cloud_launch_failed"
+            state.error = "云端任务启动失败，请重试"
+            state.message = "已保留完成的步骤，可恢复任务"
+            _persist_job(state)
+    else:
+        _schedule(run_id, _run_job(run_id, GenerateRequest(**state.request)))
     return {"job_id": state.job_id, **state.model_dump()}
 
 
 @app.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: str):
     state = _get_job(run_id)
+    if os.getenv("COURSEBOOK_CLOUD") == "1":
+        if state.status not in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="任务未在运行")
+        state.status, state.step, state.message = "interrupted", "中断", "用户停止任务，可手动恢复"
+        _persist_job(state)
+        from coursebook_agent.hosting.workspaces import request_workspace
+        await asyncio.to_thread(request_workspace.get().flush)
+        from coursebook_agent.hosting.workflows import terminate
+        await terminate(run_id)
+        return state.model_dump()
     task = tasks.get(run_id)
     if state.status not in {"queued", "running"} or not task:
         raise HTTPException(status_code=409, detail="任务未在运行")
@@ -314,6 +377,14 @@ async def download_run_markdown(run_id: str):
 
 
 # ── Health & zhiyun auth ──────────────────────────────────────────────────
+
+
+@app.get("/api/session")
+async def session():
+    from coursebook_agent.hosting.workspaces import enabled
+    preset = config.data_dir / "preset-imported.json"
+    return {"guest": enabled(), "cloud": os.getenv("COURSEBOOK_CLOUD") == "1",
+            "preset": json.loads(preset.read_text()) if preset.exists() else None}
 
 
 @app.get("/api/health")

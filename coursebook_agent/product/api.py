@@ -319,16 +319,16 @@ def list_workflow_presets():
 
 @router.get("/runs")
 def list_run_projections():
-    from coursebook_agent.app import jobs
+    from coursebook_agent.app import persisted_jobs
 
-    return {"data": [project_run(state) for state in reversed(list(jobs.values()))]}
+    return {"data": [project_run(state) for state in reversed(persisted_jobs())]}
 
 
 @router.get("/runs/{run_id}")
-def get_run_projection(run_id: str):
-    from coursebook_agent.app import _get_job
+async def get_run_projection(run_id: str):
+    from coursebook_agent.app import _get_job, reconcile_job
 
-    return _call(lambda: project_run(_get_job(run_id)))
+    return project_run(await reconcile_job(_get_job(run_id)))
 
 
 @router.get("/datasets/{dataset_id}/runs")
@@ -354,9 +354,9 @@ def delete_run(run_id: str):
 
 @router.get("/artifacts")
 def list_artifacts():
-    from coursebook_agent.app import jobs
+    from coursebook_agent.app import persisted_jobs
 
-    return {"data": [artifact for state in reversed(list(jobs.values())) if (artifact := project_artifact(state))]}
+    return {"data": [artifact for state in reversed(persisted_jobs()) if (artifact := project_artifact(state))]}
 
 
 @router.get("/artifacts/{artifact_id}")
@@ -547,3 +547,69 @@ def lab_clear_chapters(snapshot_id: str, chapter_id: str | None = None):
         return {"removed": service.clear_chapters()}
 
     return _call(resolve)
+
+# Chunked uploads keep large courseware below Vercel's per-request body limit.
+class UploadStart(BaseModel):
+    dataset_id: str
+    filename: str
+    mime_type: str = "application/octet-stream"
+    size: int
+
+
+@router.post('/uploads', status_code=201)
+def start_upload(request: UploadStart):
+    import uuid
+    import json
+    from coursebook_agent.storage import atomic_write_text
+    _call(lambda: service().get_dataset(request.dataset_id))
+    if not 0 < request.size <= 64 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail='单份文件支持 1 B 至 64 MB')
+    upload_id = uuid.uuid4().hex
+    atomic_write_text(config.data_dir / 'uploads' / upload_id / 'metadata.json', request.model_dump_json())
+    return {'upload_id': upload_id, 'chunk_size': 2 * 1024 * 1024}
+
+
+def _upload_folder(upload_id: str):
+    import re
+    if not re.fullmatch(r'[a-f0-9]{32}', upload_id):
+        raise HTTPException(status_code=400, detail='上传标识无效')
+    folder = config.data_dir / 'uploads' / upload_id
+    if not (folder / 'metadata.json').exists():
+        raise HTTPException(status_code=404, detail='上传不存在')
+    return folder
+
+
+from fastapi import Request
+
+
+@router.put('/uploads/{upload_id}/chunks/{index}')
+async def upload_chunk(upload_id: str, index: int, request: Request):
+    import json
+    folder = _upload_folder(upload_id)
+    metadata = json.loads((folder / 'metadata.json').read_text())
+    chunk_size = 2 * 1024 * 1024
+    count = (metadata['size'] + chunk_size - 1) // chunk_size
+    if not 0 <= index < count:
+        raise HTTPException(status_code=400, detail='分片序号无效')
+    data = await request.body()
+    if len(data) != min(chunk_size, metadata['size'] - index * chunk_size):
+        raise HTTPException(status_code=400, detail='分片大小不符')
+    (folder / f'{index}.part').write_bytes(data)
+    return {'ok': True}
+
+
+@router.post('/uploads/{upload_id}/finish', status_code=201)
+def finish_upload(upload_id: str):
+    import json
+    import shutil
+    folder = _upload_folder(upload_id)
+    metadata = json.loads((folder / 'metadata.json').read_text())
+    count = (metadata['size'] + 2 * 1024 * 1024 - 1) // (2 * 1024 * 1024)
+    if any(not (folder / f'{index}.part').exists() for index in range(count)):
+        raise HTTPException(status_code=409, detail='文件尚未上传完整')
+    content = b''.join((folder / f'{index}.part').read_bytes() for index in range(count))
+    if len(content) != metadata['size']:
+        raise HTTPException(status_code=409, detail='文件大小不符，请重新上传')
+    resource = _call(lambda: service().add_file(metadata['dataset_id'], metadata['filename'], content, metadata['mime_type']))
+    shutil.rmtree(folder)
+    return resource

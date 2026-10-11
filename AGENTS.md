@@ -103,3 +103,7 @@ DELETE /api/product/snapshots/{id}/lab/descriptions[/{revision_id}]
 DELETE /api/product/snapshots/{id}/lab/plan
 DELETE /api/product/snapshots/{id}/lab/chapters[/{chapter_id}]
 ```
+
+## 完整 Vercel 工作台
+
+线上适配先读 `docs/HOSTING.md` 和 ADR 012。使用完整 App、独立签名游客空间、Private Blob 和 Python Workflow；不使用个人 VPS、不要求登录、不自动升级付费，不共享本机 Key/会话。生成入口和提示词保持原核心，运行适配在 hosting/。部署只显式导出完成预设，不上传整个 data。当前验收事实以 CURRENT_STATUS.md 为准，禁止把任务启动当成生成完成。

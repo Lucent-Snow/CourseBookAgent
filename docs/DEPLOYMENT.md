@@ -1,4 +1,6 @@
-# 公开演示部署
+# 公开部署
+
+当前完整工作台采用 ADR 012 / [HOSTING.md](HOSTING.md)。以下静态流程是旧版本记录，不能用于当前完整版本发布。完整版本的真实验收和正式地址以 CURRENT_STATUS.md 为准。
 
 2026-10-11。公开地址：https://coursebook-demo.vercel.app 。
 
