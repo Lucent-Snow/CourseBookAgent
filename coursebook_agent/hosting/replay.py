@@ -58,3 +58,16 @@ class ModelReplay:
                 self.active -= 1
                 if self.active == 0:
                     self.finished.set()
+
+
+    async def cancel_pending(self, initial_tasks):
+        # A shared function instance may be serving another guest concurrently.
+        # Cancel only descendants carrying this step's execution context.
+        remaining = {
+            task for task in asyncio.all_tasks() - initial_tasks
+            if task.get_context().get(execution_context) is self
+        }
+        for task in remaining:
+            task.cancel()
+        if remaining:
+            await asyncio.gather(*remaining, return_exceptions=True)

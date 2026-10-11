@@ -40,12 +40,7 @@ async def advance(owner: str, job_id: str, attempt: int) -> bool:
                     _persist_job(state)
                 finally:
                     execution_context.reset(token)
-                    # Pipeline's gather/as_completed may leave sibling chapters pending.
-                    remaining = set(asyncio.all_tasks()) - initial_tasks
-                    for task in remaining:
-                        task.cancel()
-                    if remaining:
-                        await asyncio.gather(*remaining, return_exceptions=True)
+                    await replay.cancel_pending(initial_tasks)
                 await asyncio.to_thread(workspace.flush)
                 return state.status not in ('queued', 'running')
         finally:

@@ -10,7 +10,7 @@ import httpx
 
 from coursebook_agent.config import config, save_llm_settings
 from coursebook_agent.hosting.blob_store import BlobWorkspace, WriteConflict
-from coursebook_agent.hosting.replay import ModelReplay, StepPending
+from coursebook_agent.hosting.replay import ModelReplay, StepPending, execution_context
 from coursebook_agent.hosting.workspaces import issue_cookie, verify_cookie, workspace_scope
 
 
@@ -83,6 +83,22 @@ class HostingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(results[:2], ['saved', 'saved'])
             self.assertIsInstance(results[2], StepPending)
             self.assertEqual(len(list(Path(directory).glob('*.json'))), 2)
+
+    async def test_checkpoint_cleanup_keeps_other_guest_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            replay = ModelReplay(Path(directory))
+            initial = set(asyncio.all_tasks())
+            unrelated = asyncio.create_task(asyncio.sleep(60))
+            token = execution_context.set(replay)
+            own = asyncio.create_task(asyncio.sleep(60))
+            execution_context.reset(token)
+            try:
+                await replay.cancel_pending(initial)
+                self.assertTrue(own.cancelled())
+                self.assertFalse(unrelated.done())
+            finally:
+                unrelated.cancel()
+                await asyncio.gather(unrelated, return_exceptions=True)
 
     async def test_failed_workflow_becomes_resumable(self):
         from coursebook_agent.models import JobState
