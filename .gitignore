@@ -12,3 +12,7 @@ output/
 frontend/public/demo-assets/
 .vercel/
 frontend/.vercel/
+
+# Vercel build outputs and selectively exported teaching materials
+public/
+bundled-preset/

@@ -23,6 +23,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface SaveLlmResult {
   ok: boolean
+  thinking_mode: "auto" | "enabled" | "disabled"
   configured: boolean
   api_key_set: boolean
   base_url: string
@@ -57,11 +58,12 @@ export const infrastructureApi = {
     api_key: string,
     input_price_per_million?: number,
     output_price_per_million?: number,
+    thinking_mode: "auto" | "enabled" | "disabled" = "auto",
   ) =>
     request<SaveLlmResult>('/api/settings/llm', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, model, api_key, input_price_per_million, output_price_per_million }),
+      body: JSON.stringify({ base_url, model, api_key, thinking_mode, input_price_per_million, output_price_per_million }),
     }),
   testLlm: () =>
     request<TestLlmResult>('/api/settings/llm/test', {

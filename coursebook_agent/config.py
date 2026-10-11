@@ -2,6 +2,7 @@
 
 import os
 import logging
+from typing import Literal
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class LLMConfig(BaseModel):
     api_key: str = os.getenv("LLM_API_KEY", "")
     base_url: str = os.getenv("LLM_BASE_URL", "")
     model: str = os.getenv("LLM_MODEL", "")
+    thinking_mode: Literal["auto", "enabled", "disabled"] = os.getenv("LLM_THINKING_MODE", "auto")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "600"))
     input_price_per_million: float | None = _optional_float_env("LLM_INPUT_PRICE_PER_MILLION")
     output_price_per_million: float | None = _optional_float_env("LLM_OUTPUT_PRICE_PER_MILLION")
@@ -73,8 +75,8 @@ class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     zhiyun: ZhiyunConfig = ZhiyunConfig()
 
-    data_dir: Path = Path(os.getenv("DATA_DIR", "./data"))
-    output_dir: Path = Path(os.getenv("OUTPUT_DIR", "./data/output"))
+    data_dir: Path = Path(os.getenv("DATA_DIR", "/tmp/coursebook-bootstrap" if os.getenv("COURSEBOOK_CLOUD") == "1" else "./data"))
+    output_dir: Path = Path(os.getenv("OUTPUT_DIR", "/tmp/coursebook-bootstrap/output" if os.getenv("COURSEBOOK_CLOUD") == "1" else "./data/output"))
 
     def validate(self) -> None:
         """验证必要配置。"""
@@ -93,7 +95,24 @@ class AppConfig(BaseModel):
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
-config = AppConfig()
+from contextvars import ContextVar
+
+_base_config = AppConfig()
+_workspace_config: ContextVar[AppConfig | None] = ContextVar("workspace_config", default=None)
+
+
+class ConfigProxy:
+    def __getattr__(self, name):
+        return getattr(_workspace_config.get() or _base_config, name)
+
+    def __delattr__(self, name):
+        delattr(_workspace_config.get() or _base_config, name)
+
+    def __setattr__(self, name, value):
+        setattr(_workspace_config.get() or _base_config, name, value)
+
+
+config = ConfigProxy()
 
 try:
     config.validate()
@@ -131,6 +150,7 @@ def save_llm_settings(
     api_key: str,
     input_price_per_million: float | None = None,
     output_price_per_million: float | None = None,
+    thinking_mode: str = "auto",
 ) -> None:
     """Persist LLM settings to .env and refresh the in-memory config.
 
@@ -138,6 +158,7 @@ def save_llm_settings(
     """
     base_url = normalize_llm_base_url(base_url)
     updates = {
+        "LLM_THINKING_MODE": thinking_mode,
         "LLM_BASE_URL": base_url,
         "LLM_MODEL": model,
         "LLM_API_KEY": api_key,
@@ -146,6 +167,16 @@ def save_llm_settings(
         updates["LLM_INPUT_PRICE_PER_MILLION"] = str(max(0.0, input_price_per_million))
     if output_price_per_million is not None:
         updates["LLM_OUTPUT_PRICE_PER_MILLION"] = str(max(0.0, output_price_per_million))
+    scoped = _workspace_config.get()
+    if scoped is not None:
+        from coursebook_agent.storage import atomic_write_text
+        scoped.llm = LLMConfig(
+            base_url=base_url, model=model, api_key=api_key, thinking_mode=thinking_mode,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+        )
+        atomic_write_text(scoped.data_dir / "llm-settings.json", scoped.llm.model_dump_json())
+        return
     lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
     seen: set[str] = set()
     out: list[str] = []
@@ -160,6 +191,7 @@ def save_llm_settings(
         if key not in seen:
             out.append(f"{key}={_env_value(updates[key])}")
     ENV_PATH.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+    config.llm.thinking_mode = thinking_mode
     config.llm.base_url = base_url
     config.llm.model = model
     config.llm.api_key = api_key
@@ -167,3 +199,13 @@ def save_llm_settings(
         config.llm.input_price_per_million = max(0.0, input_price_per_million)
     if output_price_per_million is not None:
         config.llm.output_price_per_million = max(0.0, output_price_per_million)
+
+
+MIMO_THINKING_MODELS = {
+    "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed",
+    "mimo-v2.5-pro", "mimo-v2.5",
+}
+
+
+def supports_thinking_mode(model: str) -> bool:
+    return model.lower().split("/")[-1] in MIMO_THINKING_MODELS

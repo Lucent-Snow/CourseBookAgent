@@ -131,6 +131,7 @@ export interface LLMSettings {
   configured: boolean
   input_price_per_million: number | null
   output_price_per_million: number | null
+  thinking_mode?: "auto" | "enabled" | "disabled"
 }
 
 export interface DataStats {

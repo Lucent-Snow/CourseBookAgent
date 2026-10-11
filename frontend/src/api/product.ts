@@ -36,6 +36,17 @@ export const productApi = {
   dataset: (datasetId: string) => request<DatasetDetail>(`/api/product/datasets/${datasetId}`),
   deleteDataset: (datasetId: string) => request<void>(`/api/product/datasets/${datasetId}`, { method: 'DELETE' }),
   upload: async (datasetId: string, file: File) => {
+    if (file.size > 3 * 1024 * 1024) {
+      const upload = await request<{ upload_id: string; chunk_size: number }>('/api/product/uploads', json({
+        dataset_id: datasetId, filename: file.name, mime_type: file.type || 'application/octet-stream', size: file.size,
+      }))
+      for (let offset = 0, index = 0; offset < file.size; offset += upload.chunk_size, index++) {
+        await request(`/api/product/uploads/${upload.upload_id}/chunks/${index}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/octet-stream' }, body: file.slice(offset, offset + upload.chunk_size),
+        })
+      }
+      return request<Resource>(`/api/product/uploads/${upload.upload_id}/finish`, json({}))
+    }
     const data = new FormData()
     data.append('file', file)
     return request<Resource>(`/api/product/datasets/${datasetId}/resources`, { method: 'POST', body: data })

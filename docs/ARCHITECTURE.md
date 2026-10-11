@@ -107,3 +107,8 @@ LLMClient 流式接收、请求重试、JSON 修复、usage 统计；不传 max_
 - 旧 `/api/courses`、`/api/jobs`、`/api/books` 返回404，有迁移回归测试。
 
 设置和删除接口当前按本机应用设计，发布前需要访问边界；公开展示不必开放无限生成。播放器跳转、系统 PDF 与公网部署尚待实现/验收。
+
+
+## 完整在线部署补充（2026-10-11）
+
+完整在线部署增加 hosting/：签名游客身份、请求配置隔离、Private Blob 工作空间和 Python Workflow。产品层仍提供快照，生成核心仍执行原流水线；hosting.replay 在 LLM 客户端外围缓存成功响应，按免费平台时限拆成持久步骤。详见 ADR 012 和 HOSTING.md。

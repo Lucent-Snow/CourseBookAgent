@@ -1,0 +1,14 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "fastapi",
+  "buildCommand": "python scripts/build_hosted.py",
+  "functions": {"app.py": {"maxDuration": 300}},
+  "rewrites": [
+    {"source": "/", "destination": "/index.html"},
+    {"source": "/datasets/:path*", "destination": "/index.html"},
+    {"source": "/runs/:path*", "destination": "/index.html"},
+    {"source": "/artifacts/:path*", "destination": "/index.html"},
+    {"source": "/settings", "destination": "/index.html"},
+    {"source": "/demo/:path*", "destination": "/index.html"}
+  ]
+}

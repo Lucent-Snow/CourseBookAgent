@@ -89,3 +89,8 @@ uv run python scripts/lab.py show chapter --snapshot <snapshot_id> --chapter c1
 LLMClient 使用 OpenAI 兼容流式响应，`stream_options.include_usage=True`；不传 max_tokens。默认超时 600 秒，description/审校 300 秒，规划/写作/合成常用 900 秒；网页整任务上限 5400 秒。请求重试/JSON 修复已有，但不代替成功产物校验。
 
 当前示范实验模型为本机配置的 `mimo-v2.6-flash`，不是仓库写死的服务。队友需自行配置端点/模型/密钥，不复制私人凭据。
+
+
+## 完整在线部署补充（2026-10-11）
+
+云端完整工作台沿用本文件的阶段，不使用实验台。hosting.workflows 将原入口按成功模型响应存档并重放；游客私有快照和缓存持久化到 Private Blob，失败/中断沿用原恢复接口。单次模型响应时限 235 秒，平台步骤上限 300 秒；正常重放复用响应，但网络中断无法保证模型方只计费一次。详见 HOSTING.md。

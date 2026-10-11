@@ -57,6 +57,10 @@ class ProductService:
         self.db_path = self.root / "product.sqlite3"
         self._initialize()
 
+    def _stored_path(self, value: str) -> Path:
+        path = Path(value)
+        return path if path.is_absolute() or path.is_relative_to(self.root) else self.root / path
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path, factory=_ClosingConnection)
         connection.row_factory = sqlite3.Row
@@ -64,6 +68,15 @@ class ProductService:
         return connection
 
     def _initialize(self) -> None:
+        # Read requests must not rewrite the SQLite schema: each cloud mutation
+        # is persisted, so needless writes consume Blob quota and cause conflicts.
+        if self.db_path.exists():
+            with self._connect() as db:
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                if {"datasets", "resources", "revisions", "snapshots", "schema_meta"} <= tables:
+                    columns = {row[1] for row in db.execute("PRAGMA table_info(resources)")}
+                    if "provider" in columns:
+                        return
         with self._connect() as db:
             db.execute("PRAGMA foreign_keys = ON")
             db.executescript("""
@@ -200,7 +213,7 @@ class ProductService:
             db.execute(
                 "INSERT INTO revisions VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (revision_id, resource_id, filename, mime_type or mimetypes.guess_type(filename)[0] or "application/octet-stream",
-                 len(content), digest, str(blob_path), str(text_path) if status == "ready" else None,
+                 len(content), digest, str(blob_path.relative_to(self.root)), str(text_path.relative_to(self.root)) if status == "ready" else None,
                  status, error, len(text), page_count, json.dumps(metadata, ensure_ascii=False), now),
             )
             db.execute("UPDATE datasets SET updated_at = ? WHERE dataset_id = ?", (now, dataset_id))
@@ -287,7 +300,7 @@ class ProductService:
             )
             db.execute(
                 "INSERT INTO revisions VALUES (?, ?, 1, ?, 'text/plain', ?, ?, ?, ?, 'ready', NULL, ?, ?, ?, ?)",
-                (revision_id, resource_id, filename, len(content), digest, str(blob_path), str(text_path),
+                (revision_id, resource_id, filename, len(content), digest, str(blob_path.relative_to(self.root)), str(text_path.relative_to(self.root)),
                  len(text), page_count, json.dumps(metadata, ensure_ascii=False), now),
             )
         return self.get_resource(resource_id)
@@ -377,8 +390,8 @@ class ProductService:
             )
             db.execute(
                 "INSERT INTO revisions VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (revision_id, resource_id, upload.filename, mime_type, len(content), digest, str(blob_path),
-                 str(text_path) if status == "ready" else None, status, error, len(text), page_count,
+                (revision_id, resource_id, upload.filename, mime_type, len(content), digest, str(blob_path.relative_to(self.root)),
+                 str(text_path.relative_to(self.root)) if status == "ready" else None, status, error, len(text), page_count,
                  json.dumps(metadata, ensure_ascii=False), now),
             )
         return self.get_resource(resource_id)
@@ -412,7 +425,7 @@ class ProductService:
             ).fetchone()
         if not row or not row["text_path"]:
             return None
-        return Path(row["text_path"])
+        return self._stored_path(row["text_path"])
 
     def blob_path_for(self, revision: ResourceRevision) -> Path | None:
         with self._connect() as db:
@@ -422,7 +435,7 @@ class ProductService:
             ).fetchone()
         if not row or not row["blob_path"]:
             return None
-        return Path(row["blob_path"])
+        return self._stored_path(row["blob_path"])
 
     # ── run lifecycle ─────────────────────────────────────────────
     # Runs are stored on disk in data/jobs/{run_id}.json; the API deletes
@@ -505,8 +518,8 @@ class ProductService:
         if not row:
             raise KeyError("资料版本不存在")
         text = ""
-        if row["text_path"] and Path(row["text_path"]).exists():
-            text = Path(row["text_path"]).read_text(encoding="utf-8")[:limit]
+        if row["text_path"] and self._stored_path(row["text_path"]).exists():
+            text = self._stored_path(row["text_path"]).read_text(encoding="utf-8")[:limit]
         return ResourcePreview(revision=self._revision_from_row(row), text=text)
 
     def create_snapshot(self, dataset_id: str, request: SnapshotCreate) -> InputSnapshot:
