@@ -9,7 +9,7 @@ import type { Dataset } from '@/product-types'
 
 export function DatasetsPage() {
   const navigate = useNavigate()
-  const [session, setSession] = useState<{ guest: boolean; preset: { job_id: string; dataset_id: string } | null } | null>(null)
+  const [session, setSession] = useState<{ guest: boolean; cloud: boolean; preset: { job_id: string; dataset_id: string } | null } | null>(null)
   useEffect(() => { void fetch('/api/session').then((r) => r.json()).then(setSession).catch(() => undefined) }, [])
   const [items, setItems] = useState<Dataset[]>([])
   const [query, setQuery] = useState('')
@@ -44,6 +44,7 @@ export function DatasetsPage() {
   return <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-10">
     <header className="flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-end"><div><p className="text-xs font-semibold text-[#147d86]">MATERIAL LIBRARY</p><h1 className="mt-2 text-[28px] font-semibold">资料库</h1><p className="mt-2 text-sm text-[#718183]">集中保存课程字幕、PPT 与文档，再按需选择本次生成所用资料。</p></div><Button onClick={() => setShowCreate(true)} disabled={creating} className="bg-[#147d86] text-white hover:bg-[#116a72]"><Plus size={16} />新建资料集</Button></header>
     {session?.guest && <p className="mt-5 text-xs text-[#718183]">当前为独立游客空间，资料仅在此浏览器中可访问。清除浏览器 Cookie 后无法找回。</p>}
+    {session?.cloud && <p className="mt-2 text-xs text-[#718183]">上传和阅读不会调用模型。生成需配置自己的模型；较慢的模型可能超时，已完成的步骤会保留。</p>}
     {session?.preset && <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#b8dadb] bg-[#f2f9f9] p-5"><div><p className="text-sm font-semibold">先看一本已经生成的教辅</p><p className="mt-1 text-xs leading-5 text-[#657678]">概率论与数理统计 · 9 章完成预设。可直接阅读；也可进入资料集，尝试真实生成。</p></div><Button render={<Link to={`/artifacts/${session.preset.job_id}`} />} className="bg-[#147d86] text-white">阅读已有教辅<ArrowRight size={15} /></Button></div>}
     <div className="mt-8 flex items-center justify-between border-b border-[#dfe6e6] pb-4"><span className="border-b-2 border-[#147d86] pb-4 text-sm font-medium text-[#147d86]">全部资料集 {items.length}</span><label className="flex h-9 w-64 items-center gap-2 rounded-md border border-[#dfe6e6] bg-white px-3"><Search size={15} className="text-[#91a0a1]" /><Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索资料集" className="h-auto border-0 p-0 shadow-none focus-visible:ring-0" /></label></div>
     {error && <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}

@@ -8,7 +8,7 @@ from unittest.mock import patch, AsyncMock
 
 import httpx
 
-from coursebook_agent.config import config, save_llm_settings
+from coursebook_agent.config import config, save_llm_settings, LLMConfig
 from coursebook_agent.hosting.blob_store import BlobWorkspace, WriteConflict
 from coursebook_agent.hosting.replay import ModelReplay, StepPending, execution_context
 from coursebook_agent.hosting.workspaces import issue_cookie, verify_cookie, workspace_scope
@@ -113,6 +113,33 @@ class HostingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await reconcile(state)).status, 'failed')
                 self.assertEqual(state.error_code, 'cloud_workflow_failed')
             self.assertTrue((Path(directory)/'jobs'/'failed.json').exists())
+
+    async def test_explicit_mimo_fast_mode_and_replay_identity(self):
+        from coursebook_agent.agent.llm import LLMClient
+        observed = []
+        def handler(request):
+            observed.append(json.loads(request.content))
+            return httpx.Response(200, json={'choices':[{'message':{'content':'result'}}]})
+        with tempfile.TemporaryDirectory() as directory, patch.object(config, 'llm', LLMConfig(base_url='https://test/v1',model='mimo-v2.6-flash',api_key='test',thinking_mode='disabled')):
+            client = LLMClient(transport=httpx.MockTransport(handler))
+            first = ModelReplay(Path(directory))
+            token = execution_context.set(first)
+            try:
+                self.assertEqual(await client.complete('system','request'), 'result')
+            finally:
+                execution_context.reset(token)
+            self.assertEqual(observed[0]['thinking'], {'type':'disabled'})
+            self.assertTrue(observed[0]['stream'])
+            self.assertNotIn('max_tokens', observed[0])
+            config.llm.thinking_mode = 'auto'
+            second = ModelReplay(Path(directory))
+            token = execution_context.set(second)
+            try:
+                await client.complete('system','request')
+            finally:
+                execution_context.reset(token)
+            self.assertEqual(len(observed), 2)
+            self.assertNotIn('thinking', observed[1])
 
     async def test_manifest_merge_and_same_file_conflict(self):
         store = MemoryStore()

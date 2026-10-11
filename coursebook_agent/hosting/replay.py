@@ -31,7 +31,7 @@ class ModelReplay:
         self.lock = asyncio.Lock()
 
     async def complete(self, client, system, user, temperature, invoke):
-        payload = json.dumps([config.llm.base_url, config.llm.model, system, user, temperature], ensure_ascii=False)
+        payload = json.dumps([config.llm.base_url, config.llm.model, config.llm.thinking_mode, system, user, temperature], ensure_ascii=False)
         key = hashlib.sha256(payload.encode()).hexdigest()
         path = self.root / (key + '.json')
         async with self.lock:

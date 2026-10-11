@@ -173,6 +173,9 @@ class LLMClient:
             # without it streaming responses carry usage=null everywhere.
             "stream_options": {"include_usage": True},
         }
+        from coursebook_agent.config import supports_thinking_mode
+        if config.llm.thinking_mode != "auto" and supports_thinking_mode(config.llm.model):
+            payload["thinking"] = {"type": config.llm.thinking_mode}
         headers = {"Authorization": f"Bearer {config.llm.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):

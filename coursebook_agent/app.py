@@ -27,6 +27,7 @@ from coursebook_agent.config import config, normalize_llm_base_url, save_llm_set
 from coursebook_agent.models import JobState, LectureDraft
 from coursebook_agent.hosting.middleware import GuestWorkspaceMiddleware
 from coursebook_agent.hosting.workspaces import ScopedMapping
+from typing import Literal
 import os
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
@@ -442,6 +443,7 @@ async def settings():
             "configured": bool(config.llm.api_key and config.llm.base_url and config.llm.model),
             "input_price_per_million": config.llm.input_price_per_million,
             "output_price_per_million": config.llm.output_price_per_million,
+            "thinking_mode": config.llm.thinking_mode,
         },
         "zhiyun": zhiyun,
         "data": {
@@ -454,6 +456,7 @@ async def settings():
 class LLMSettingsRequest(BaseModel):
     base_url: str
     model: str
+    thinking_mode: Literal["auto", "enabled", "disabled"] = "auto"
     api_key: str = ""
     input_price_per_million: float | None = Field(default=None, ge=0)
     output_price_per_million: float | None = Field(default=None, ge=0)
@@ -465,11 +468,15 @@ async def update_llm_settings(request: LLMSettingsRequest):
     model = request.model.strip()
     if not base_url or not model:
         raise HTTPException(status_code=400, detail="端点与模型名不能为空")
+    from coursebook_agent.config import supports_thinking_mode
+    if request.thinking_mode != "auto" and not supports_thinking_mode(model):
+        raise HTTPException(status_code=400, detail="此思考选项仅支持 MiMo 2.5 / 2.6 模型；其他模型请选择默认模式")
     api_key = request.api_key.strip() or config.llm.api_key
     save_llm_settings(
         base_url, model, api_key,
         request.input_price_per_million,
         request.output_price_per_million,
+        request.thinking_mode,
     )
     return {
         "ok": True,
@@ -478,6 +485,7 @@ async def update_llm_settings(request: LLMSettingsRequest):
         "base_url": config.llm.base_url,
         "input_price_per_million": config.llm.input_price_per_million,
         "output_price_per_million": config.llm.output_price_per_million,
+        "thinking_mode": config.llm.thinking_mode,
     }
 
 

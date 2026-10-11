@@ -7,7 +7,7 @@
 - Vercel Hobby 项目，私有 Blob Store 连接该项目。
 - `COURSEBOOK_CLOUD=1`、`BLOB_READ_WRITE_TOKEN`、至少 32 字符随机 `COURSEBOOK_SESSION_SECRET`。
 - Python 3.12 或更新版本，使用锁文件依赖。Workflow 注册于 `coursebook_agent.hosting.workflows:wf`。
-- 凭据只写 Vercel 环境变量。公开访客不会继承本机 `.env` 的模型 Key 或校内会话。每个访客可以在正常设置页配置自己的模型。
+- 凭据只写 Vercel 环境变量。公开访客不会继承本机 `.env` 的模型 Key 或校内会话。每个访客可以在正常设置页配置自己的模型。MiMo 2.5 / 2.6 可明确选择关闭深度思考的快速响应模式，默认仍使用模型原有模式；该设置不限制正文长度，变更会改变模型响应重放键，生成期间应保持配置不变。官方参数见 [MiMo 深度思考](https://mimo.mi.com/docs/zh-CN/quick-start/usage-guide/text-generation/deep-thinking)。
 - 正式域名需允许公开访问；预览域名可以保留 Vercel 认证保护。这与产品游客身份是两回事。
 
 ## 数据与任务

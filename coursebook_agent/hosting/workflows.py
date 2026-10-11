@@ -31,10 +31,10 @@ async def advance(owner: str, job_id: str, attempt: int) -> bool:
                 try:
                     await asyncio.wait_for(_generate_locked(state, GenerateRequest(**state.request)), timeout=250)
                 except StepPending:
-                    state.message = '已存档本步结果，继续生成'
+                    state.message = f'{state.message}（本步结果已存档，继续生成）'
                     _persist_job(state)
                 except (StepBudgetExceeded, asyncio.TimeoutError):
-                    state.status, state.error_code = 'failed', 'cloud_step_timeout'
+                    state.status, state.step, state.error_code = 'failed', '超时', 'cloud_step_timeout'
                     state.error = '本次模型调用超过免费平台单步时限，请恢复任务或换用更快的模型'
                     state.message = '已保留完成的步骤，可继续恢复'
                     _persist_job(state)

@@ -2,6 +2,7 @@
 
 import os
 import logging
+from typing import Literal
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -35,6 +36,7 @@ class LLMConfig(BaseModel):
     api_key: str = os.getenv("LLM_API_KEY", "")
     base_url: str = os.getenv("LLM_BASE_URL", "")
     model: str = os.getenv("LLM_MODEL", "")
+    thinking_mode: Literal["auto", "enabled", "disabled"] = os.getenv("LLM_THINKING_MODE", "auto")
     timeout: int = int(os.getenv("LLM_TIMEOUT", "600"))
     input_price_per_million: float | None = _optional_float_env("LLM_INPUT_PRICE_PER_MILLION")
     output_price_per_million: float | None = _optional_float_env("LLM_OUTPUT_PRICE_PER_MILLION")
@@ -148,6 +150,7 @@ def save_llm_settings(
     api_key: str,
     input_price_per_million: float | None = None,
     output_price_per_million: float | None = None,
+    thinking_mode: str = "auto",
 ) -> None:
     """Persist LLM settings to .env and refresh the in-memory config.
 
@@ -155,6 +158,7 @@ def save_llm_settings(
     """
     base_url = normalize_llm_base_url(base_url)
     updates = {
+        "LLM_THINKING_MODE": thinking_mode,
         "LLM_BASE_URL": base_url,
         "LLM_MODEL": model,
         "LLM_API_KEY": api_key,
@@ -167,7 +171,7 @@ def save_llm_settings(
     if scoped is not None:
         from coursebook_agent.storage import atomic_write_text
         scoped.llm = LLMConfig(
-            base_url=base_url, model=model, api_key=api_key,
+            base_url=base_url, model=model, api_key=api_key, thinking_mode=thinking_mode,
             input_price_per_million=input_price_per_million,
             output_price_per_million=output_price_per_million,
         )
@@ -187,6 +191,7 @@ def save_llm_settings(
         if key not in seen:
             out.append(f"{key}={_env_value(updates[key])}")
     ENV_PATH.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+    config.llm.thinking_mode = thinking_mode
     config.llm.base_url = base_url
     config.llm.model = model
     config.llm.api_key = api_key
@@ -194,3 +199,13 @@ def save_llm_settings(
         config.llm.input_price_per_million = max(0.0, input_price_per_million)
     if output_price_per_million is not None:
         config.llm.output_price_per_million = max(0.0, output_price_per_million)
+
+
+MIMO_THINKING_MODELS = {
+    "mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed",
+    "mimo-v2.5-pro", "mimo-v2.5",
+}
+
+
+def supports_thinking_mode(model: str) -> bool:
+    return model.lower().split("/")[-1] in MIMO_THINKING_MODELS
