@@ -164,21 +164,29 @@ export function RunDetailPage() {
  const chapterDone = stage.chapters_succeeded + stage.chapters_failed
  const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
  const degradedChapters = run.quality.filter((q) => q.warnings.some((warning) => warning.includes('确定性回退')))
+ const completedWithIssues = run.status === 'completed' && (run.failed_agents > 0 || degradedChapters.length > 0)
  const metrics = run.metrics || {}
  const hasTokenData = (metrics.total_tokens ?? 0) > 0
+ const needsAttention = ['failed', 'partial', 'interrupted'].includes(run.status)
+ const nextStep = run.status === 'completed'
+  ? completedWithIssues ? `书稿已生成，但有 ${run.failed_agents} 个章节任务失败、${degradedChapters.length} 章使用回退；请先核查再使用。` : (run.artifact_available ? '本次生成已完成，可以阅读并核对教辅草稿。' : '生成已完成，正在等待产物可用。')
+  : needsAttention ? '查看下方错误与质量信息；恢复时会尽量复用已完成的章节。'
+  : run.status === 'cancelled' ? '本次运行已停止；如需继续，请回到资料集重新选择资料。'
+  : `当前在「${currentPhaseLabel}」阶段；状态会自动刷新。`
 
  return (
  <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-8">
- <header className="flex items-start justify-between gap-4">
+ <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
  <div>
  <Link to="/runs" className="inline-flex items-center gap-2 text-sm text-[#718183]"><ArrowLeft size={15} />返回运行中心</Link>
  <h1 className="mt-5 text-[25px] font-semibold">{run.dataset_name || '资料集生成'}</h1>
+ <p className="mt-2 text-sm text-[#52686a]">{nextStep}</p>
  <p className="mt-2 font-mono text-xs text-[#819092]">运行 {run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id.slice(-12)}`}</p>
  </div>
- <div className="flex gap-2">
- <span className={`inline-flex h-9 items-center rounded-full px-3 text-xs font-medium ${statusTone(run.status)}`}>
+ <div className="flex flex-wrap justify-end gap-2">
+ <span className={`inline-flex h-9 items-center rounded-full px-3 text-xs font-medium ${completedWithIssues ? 'bg-amber-50 text-amber-800' : statusTone(run.status)}`}>
  {run.status === 'running' && <span className="mr-2 size-1.5 animate-pulse rounded-full bg-current" />}
- {statusLabel[run.status] || run.status}
+ {completedWithIssues ? '已完成 · 待复核' : statusLabel[run.status] || run.status}
  </span>
  {['failed','partial','interrupted'].includes(run.status) && <Button variant="outline" onClick={() => void action('retry')}><RefreshCw size={14} />恢复或重试</Button>}
  {['queued','running'].includes(run.status) && <Button variant="outline" onClick={() => void action('cancel')}><Pause size={14} />停止运行</Button>}
@@ -192,29 +200,34 @@ export function RunDetailPage() {
  </div>}
 
  <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_340px]">
- <main className="space-y-5">
+ <main className="min-w-0 space-y-5">
  {/* ── 当前阶段 step indicator ─────────────────────────────── */}
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <div className="flex items-center justify-between">
+ <section className="rounded-lg border border-[#dfe6e6] bg-white p-5" aria-label="生成阶段与进度">
+ <div className="flex items-center justify-between gap-4">
  <div>
- <h2 className="text-base font-semibold">{run.message || '运行准备中'}</h2>
- <p className="mt-1 text-xs text-[#718183]">当前阶段：{currentPhaseLabel}</p>
+ <p className={`text-xs font-semibold ${completedWithIssues ? 'text-amber-800' : 'text-[#147d86]'}`}>{run.status === 'completed' ? completedWithIssues ? '流程结束 · 内容待复核' : '已完成全部阶段' : needsAttention ? '运行需要处理' : `当前阶段 · ${currentPhaseLabel}`}</p>
+ <h2 className="mt-1 text-base font-semibold">{run.message || '运行准备中'}</h2>
+ <p className="mt-1 text-xs leading-5 text-[#718183]">{nextStep}</p>
  </div>
- <strong className="text-2xl text-[#147d86]">{run.progress}%</strong>
+ <strong className="shrink-0 text-2xl text-[#147d86]">{run.progress}%</strong>
  </div>
  <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e7eeee]">
  <div className="h-full rounded-full bg-[#147d86] transition-all" style={{ width: `${run.progress}%` }} />
  </div>
- <ol className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-7">
+ <div className="mt-5 grid gap-2 text-xs font-medium sm:grid-cols-3">
+ {[
+  { label: '准备资料', range: '解析 · 描述', start: 0, end: 1 },
+  { label: '组织内容', range: '规划 · 组装', start: 2, end: 3 },
+  { label: '撰写成书', range: '分章 · 合成 · 输出', start: 4, end: 6 },
+ ].map((group) => <div key={group.label} className={`rounded-lg border px-3 py-3 ${completedWithIssues && group.label === '撰写成书' ? 'border-amber-200 bg-amber-50 text-amber-800' : completedStages > group.end ? 'border-[#b6d8c6] bg-[#e9f5ee] text-[#27774a]' : run.status !== 'queued' && currentStageIdx >= group.start && currentStageIdx <= group.end ? needsAttention ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#b8dadb] bg-[#e6f3f3] text-[#147d86]' : 'border-[#e4e9e9] bg-[#f7f9f9] text-[#718183]'}`}><span className="block">{group.label}</span><span className="mt-1 block text-[11px] font-normal opacity-80">{group.range}</span></div>)}
+ </div>
+ <ol className="mt-3 grid gap-2 sm:grid-cols-2">
  {STAGE_ORDER.map((s, i) => {
  const done = i < completedStages
- const active = i === currentStageIdx
+ const active = i === currentStageIdx && run.status !== 'queued' && run.status !== 'completed'
  return (
- <li key={String(s.key)} className={`rounded-md px-2 py-2 text-[10px] ${done ? 'bg-[#e9f5ee] text-[#27774a]' : active ? 'border border-[#b8dadb] bg-[#e6f3f3] text-[#147d86]' : 'bg-[#f7f9f9] text-[#a6b3b4]'}`}>
- <div className="flex items-center gap-1.5"><span className="font-mono">{done ? '✓' : active ? '●' : `${i + 1}`}</span>
- <p className="truncate font-medium">{s.label}</p>
- </div>
- <p className="mt-1 truncate text-[9px] opacity-80">{s.hint}</p>
+ <li key={String(s.key)} className={`rounded-md border px-3 py-2.5 text-xs ${done && completedWithIssues && i === 4 ? 'border-amber-200 bg-amber-50 text-amber-800' : done ? 'border-[#cde6d8] bg-[#f2faf5] text-[#27774a]' : active ? needsAttention ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#b8dadb] bg-[#f0f8f8] text-[#147d86]' : 'border-[#edf0f0] bg-[#fafbfb] text-[#718183]'}`}>
+ <div className="flex items-start gap-2"><span className="font-mono font-semibold">{done && completedWithIssues && i === 4 ? '!' : done ? '✓' : active ? '●' : `${i + 1}`}</span><div><p className="font-medium">{s.label.replace(/^\d+\. /, '')}</p><p className="mt-1 text-[11px] leading-4 opacity-80">{s.hint}</p></div></div>
  </li>
  )
  })}
@@ -224,7 +237,7 @@ export function RunDetailPage() {
  <span>已描述 {stage.described}/{stage.described_total} 份 · {describedPercent}%</span>
  <span>{stage.planned ? `全书规划 ${stage.plan_summary.chapter_count} 章 · 本次 ${stage.plan_summary.selected_chapter_count ?? stage.plan_summary.chapter_count} 章` : '尚未规划'}</span>
  <span>已组装 {stage.assembled}/{stage.assembled_total} 章上下文</span>
- <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} 完成 · {chapterPercent}%</span>
+ <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} 成功 · 已处理 {chapterPercent}%</span>
  <span>{stage.chapters_failed} 失败</span>
  </div>
  </section>
@@ -274,7 +287,7 @@ export function RunDetailPage() {
  <div className="mt-4 divide-y divide-[#edf0f0]">
  {run.resources.length === 0 && <div className="py-10 text-center text-sm text-[#718183]">尚未解析任何资料</div>}
  {run.resources.map((r) => (
- <div key={r.revision_id} className="grid grid-cols-[1fr_120px_220px] gap-4 py-3">
+ <div key={r.revision_id} className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_100px_160px] md:gap-4">
  <div>
  <p className="text-sm font-medium truncate">{r.title || r.revision_id}</p>
  <p className="mt-1 text-[10px] text-[#819092]">{r.kind}/{r.provider} · rev={r.revision_id.slice(-8)}</p>
