@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import locale
+import logging
 
 from coursebook_agent.config import config
 from coursebook_agent.models import JobState
@@ -18,6 +20,28 @@ from coursebook_agent.product.models import (
 from coursebook_agent.quality_categories import group_warnings
 
 
+logger = logging.getLogger(__name__)
+
+
+def _read_json(path) -> dict | None:
+    """Read a cache file, tolerating files written with the OS default codec.
+
+    Chapter caches written by older tools (or by tests on a non-UTF-8 locale)
+    may not be UTF-8; a decode failure must not be silently mistaken for
+    "no cache" without leaving a trace.
+    """
+    for encoding in ("utf-8", locale.getpreferredencoding(False)):
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except UnicodeDecodeError:
+            continue
+        except (OSError, ValueError) as exc:
+            logger.warning("cache unreadable: %s (%s)", path, exc)
+            return None
+    logger.warning("cache unreadable (undecodable): %s", path)
+    return None
+
+
 def _description_cache_dir() -> "Path":
     from pathlib import Path
     return Path(config.data_dir) / "intermediate" / "descriptions"
@@ -27,10 +51,7 @@ def _load_description(revision_id: str) -> dict | None:
     path = _description_cache_dir() / f"description-{revision_id}.json"
     if not path.exists():
         return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    return _read_json(path)
 
 
 def _load_plan(snapshot_id: str | None, course_id: str | None) -> dict | None:
@@ -42,10 +63,9 @@ def _load_plan(snapshot_id: str | None, course_id: str | None) -> dict | None:
             continue
         plan_path = config.data_dir / "plans" / candidate
         if plan_path.exists():
-            try:
-                return json.loads(plan_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
+            loaded = _read_json(plan_path)
+            if loaded is not None:
+                return loaded
     return None
 
 
@@ -58,10 +78,9 @@ def _load_chapter(snapshot_id: str | None, course_id: str | None, chapter_id: st
             continue
         path = config.data_dir / "intermediate" / candidate
         if path.exists():
-            try:
-                return json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                pass
+            loaded = _read_json(path)
+            if loaded is not None:
+                return loaded
     return None
 
 

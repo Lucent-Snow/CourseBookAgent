@@ -9,6 +9,7 @@ from coursebook_agent.agent.llm import extract_json_object
 from coursebook_agent.models import ChapterSection, JobState, LectureDraft
 from coursebook_agent.pipeline import _chapter_progress_summary
 from coursebook_agent.product.service import ProductService
+from coursebook_agent.product import projections
 from coursebook_agent.product.projections import project_run
 
 appmod = importlib.import_module('coursebook_agent.app')
@@ -33,7 +34,7 @@ class BrowserRegressionTests(unittest.TestCase):
             folder = Path(root) / 'jobs'
             folder.mkdir()
             state = {'job_id': 'job1', 'dataset_id': 'ds1', 'status': 'completed', 'book': {'title': '书'}, 'request': {'snapshot_id': 'snap1'}, 'events': [{'at': '2026-10-09T10:00:00Z'}]}
-            (folder / 'job1.json').write_text(json.dumps({'state': state, 'events': state['events']}))
+            (folder / 'job1.json').write_text(json.dumps({'state': state, 'events': state['events']}), encoding='utf-8')
             service = ProductService(Path(root) / 'product')
             runs = service.list_runs_by_dataset('ds1')
             self.assertEqual(len(runs), 1)
@@ -60,13 +61,21 @@ class BrowserRegressionTests(unittest.TestCase):
         self.assertEqual(state.metrics['failed_requests'], 1)
         self.assertEqual(state.events[-1]['error_code'], 'service')
 
+    def test_unreadable_chapter_cache_is_logged_not_silently_ignored(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(appmod.config, 'data_dir', Path(root)):
+            (Path(root) / 'intermediate').mkdir()
+            (Path(root) / 'intermediate' / 'chapter-snap-test-c1.json').write_bytes(b'\xff\xfe\x00broken')
+            with self.assertLogs('coursebook_agent.product.projections', level='WARNING') as logs:
+                self.assertIsNone(projections._load_chapter('snap-test', None, 'c1'))
+            self.assertTrue(any('unreadable' in line for line in logs.output), logs.output)
+
     def test_cached_fallback_is_failed_in_the_workbench(self):
         with tempfile.TemporaryDirectory() as root, patch.object(appmod.config, 'data_dir', Path(root)):
             (Path(root) / 'plans').mkdir()
             (Path(root) / 'intermediate').mkdir()
-            (Path(root) / 'plans' / 'bookplan-snap-test.json').write_text(json.dumps({'chapters': [{'chapter_id': 'c1', 'book_title': '第一章'}]}))
+            (Path(root) / 'plans' / 'bookplan-snap-test.json').write_text(json.dumps({'chapters': [{'chapter_id': 'c1', 'book_title': '第一章'}]}), encoding='utf-8')
             draft = LectureDraft(chapter_id='c1', title='第一章', overview='回退', sections=[ChapterSection(heading='片段', content='嗯')], warnings=['已使用确定性回退'])
-            (Path(root) / 'intermediate' / 'chapter-snap-test-c1.json').write_text(draft.model_dump_json())
+            (Path(root) / 'intermediate' / 'chapter-snap-test-c1.json').write_text(draft.model_dump_json(), encoding='utf-8')
             state = JobState(job_id='cached', status='interrupted', step='中断', request={'snapshot_id': 'snap-test'}, chapters=[{'chapter_id': 'c1', 'status': 'done'}])
             run = project_run(state)
             self.assertEqual(run.agents[0].status, 'failed')
