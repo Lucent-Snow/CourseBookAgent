@@ -1,219 +1,320 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowRight, Check, Eye, File, FileText, Layers, Presentation, RefreshCw, Trash2, Upload } from 'lucide-react'
+import {
+  ArrowLeft,
+  BookOpen,
+  Check,
+  Eye,
+  File,
+  FileText,
+  FolderOpen,
+  Play,
+  Presentation,
+  RefreshCw,
+  Upload,
+} from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { MaterialImportDialog } from '@/components/product/MaterialImportDialog'
 import { productApi } from '@/api/product'
 import type { DatasetDetail, DatasetRunSummary, Resource } from '@/product-types'
 
-const iconFor = (kind: Resource['kind']) => ['pptx', 'courseware'].includes(kind) ? Presentation : kind === 'transcript' ? FileText : File
-const sourceLabel = (resource: Resource) => {
- if (resource.source_type === 'xuezai') return `${resource.kind === 'xuezai_upload' ? '学在浙大课件' : '学在浙大'} · ${resource.current_revision?.metadata.module || resource.current_revision?.filename || ''}`
- if (resource.source_type === 'zhiyun') return `${resource.kind === 'courseware' ? '智云课件页' : '智云字幕'} · 第 ${String(resource.current_revision?.metadata.lecture_index ?? '-')} 讲`
- return resource.current_revision?.filename || ''
+const iconFor = (kind: Resource['kind']) =>
+  ['pptx', 'courseware'].includes(kind) ? Presentation : kind === 'transcript' ? FileText : File
+
+const kindLabel = (kind: Resource['kind']) => {
+  if (kind === 'transcript') return '课堂字幕'
+  if (kind === 'pptx') return 'PPT 课件'
+  if (kind === 'pdf') return 'PDF 讲义'
+  if (kind === 'docx') return 'Word 文档'
+  if (kind === 'courseware') return '智云板书'
+  return '文本资料'
 }
-const formatSize = (value = 0) => value < 1024 ? `${value} B` : value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`
-const formatTime = (value: string | null) => value ? new Date(value).toLocaleString() : '—'
-const runStatusLabels: Record<string, string> = {
-  completed: '已完成', partial: '部分完成', failed: '失败', running: '运行中',
-  queued: '排队', interrupted: '已中断', cancelled: '已取消', retrying: '重试中',
-}
-const statusLabel = (status: string | null | undefined) => status ? runStatusLabels[status] || '未知状态' : '—'
+
+const formatChars = (chars = 0) =>
+  chars >= 10000 ? `${(chars / 10000).toFixed(1)} 万字` : chars >= 1000 ? `${(chars / 1000).toFixed(1)} 千字` : `${chars} 字`
 
 export function DatasetDetailPage() {
- const { datasetId = '' } = useParams()
- const navigate = useNavigate()
- const input = useRef<HTMLInputElement>(null)
- const [detail, setDetail] = useState<DatasetDetail | null>(null)
- const [runs, setRuns] = useState<DatasetRunSummary[]>([])
- const [error, setError] = useState('')
- const [busy, setBusy] = useState(false)
- const [preview, setPreview] = useState<{ title: string; text: string } | null>(null)
- const [showImport, setShowImport] = useState(false)
+  const { datasetId = '' } = useParams()
+  const navigate = useNavigate()
+  const input = useRef<HTMLInputElement>(null)
+  const [detail, setDetail] = useState<DatasetDetail | null>(null)
+  const [runs, setRuns] = useState<DatasetRunSummary[]>([])
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [preview, setPreview] = useState<{ title: string; text: string } | null>(null)
+  const [showImport, setShowImport] = useState(false)
 
- const load = useCallback(async () => {
- try {
- const [detailData, runsData] = await Promise.all([
- productApi.dataset(datasetId),
- productApi.datasetRuns(datasetId).catch(() => ({ data: [], dataset: { dataset_id: datasetId, name: '' } })),
- ])
- setDetail(detailData)
- setRuns(runsData.data ?? [])
- } catch (err) { setError((err as Error).message) }
- }, [datasetId])
+  const load = useCallback(async () => {
+    try {
+      const [detailData, runsData] = await Promise.all([
+        productApi.dataset(datasetId),
+        productApi.datasetRuns(datasetId).catch(() => ({ data: [], dataset: { dataset_id: datasetId, name: '' } })),
+      ])
+      setDetail(detailData)
+      setRuns(runsData.data ?? [])
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [datasetId])
 
- useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    void load()
+  }, [load])
 
- async function upload(files: FileList | null) {
- if (!files?.length) return
- setBusy(true)
- setError('')
- try { for (const file of Array.from(files)) await productApi.upload(datasetId, file); await load() }
- catch (err) { setError((err as Error).message) }
- finally { setBusy(false); if (input.current) input.current.value = '' }
- }
+  async function upload(files: FileList | null) {
+    if (!files?.length) return
+    setBusy(true)
+    setError('')
+    try {
+      for (const file of Array.from(files)) await productApi.upload(datasetId, file)
+      await load()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+      if (input.current) input.current.value = ''
+    }
+  }
 
- async function showPreview(resource: Resource) {
- const revision = resource.current_revision; if (!revision) return
- try {
- const data = await productApi.preview(revision.revision_id)
- setPreview({ title: resource.title, text: data.text })
- } catch (err) { setError((err as Error).message) }
- }
+  async function showPreview(resource: Resource) {
+    const revision = resource.current_revision
+    if (!revision) return
+    try {
+      const data = await productApi.preview(revision.revision_id)
+      setPreview({ title: resource.title, text: data.text })
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
 
- async function deleteRun(jobId: string) {
- if (!window.confirm(`确认删除运行 ${jobId} 及其产物？此操作不可恢复。`)) return
- try {
- await productApi.deleteRun(jobId)
- await load()
- } catch (err) { setError((err as Error).message) }
- }
+  if (!detail) {
+    return <div className="p-12 text-center text-sm text-[#718183]">{error || '正在读取资料集…'}</div>
+  }
 
- if (!detail) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取资料集…'}</div>
- const ready = detail.resources.filter((item) => item.current_revision?.parse_status === 'ready').length
+  const readyResources = detail.resources.filter((item) => item.current_revision?.parse_status === 'ready')
+  const completedRuns = runs.filter((r) => r.artifact_available)
 
- return (
- <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-9">
- <Link to="/datasets" className="inline-flex items-center gap-2 text-sm text-[#718183] hover:text-[#147d86]">
- <ArrowLeft size={15} />返回资料库
- </Link>
- <header className="mt-6 flex flex-col items-start justify-between gap-4 border-b border-[#dfe6e6] pb-6 lg:flex-row">
- <div>
- <h1 className="text-[28px] font-semibold">{detail.dataset.name}</h1>
- <p className="mt-2 text-sm text-[#718183]">{detail.dataset.description || '在这里长期保存所有课程资料；生成时再选择本次使用范围。'}</p>
- </div>
- <div className="flex gap-2">
- <input ref={input} type="file" multiple accept=".pptx,.pdf,.docx,.md,.markdown,.txt" className="hidden" onChange={(e) => void upload(e.target.files)} />
- <Button variant="outline" disabled={busy} onClick={() => input.current?.click()}><Upload size={15} />上传文件</Button>
- <Button disabled={busy} onClick={() => setShowImport(true)} className="bg-[#147d86] text-white hover:bg-[#116a72]"><RefreshCw size={15} />从平台导入</Button>
- </div>
- </header>
+  return (
+    <div className="mx-auto max-w-[1240px] px-4 py-6 md:px-8 md:py-8">
+      {/* Return Link */}
+      <Link
+        to="/datasets"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-[#718183] transition-colors hover:text-[#147d86]"
+      >
+        <ArrowLeft size={14} /> 返回资料库
+      </Link>
 
- <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
- {[[detail.resources.length, '全部资料'], [ready, '解析可用'], [detail.snapshots.length, '输入快照'], [runs.length, '生成记录']].map(([value, label]) => (
- <div key={String(label)} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
- <strong className="text-2xl">{value}</strong>
- <p className="mt-1 text-xs text-[#718183]">{label}</p>
- </div>
- ))}
- </div>
+      {/* Main Asymmetrical Canvas */}
+      <div className="mt-5 grid gap-8 lg:grid-cols-[360px_1fr]">
+        {/* Left Column: Course Control Studio */}
+        <aside className="space-y-5">
+          <div className="rounded-2xl border border-[#e2e8e8] bg-white p-6 shadow-xs">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#147d86]">
+              <FolderOpen size={14} /> 课程资料台
+            </span>
+            <h1 className="mt-2 text-2xl font-bold tracking-tight text-[#172b2d]">
+              {detail.dataset.name}
+            </h1>
+            <p className="mt-2 text-xs leading-relaxed text-[#687a7c]">
+              {detail.dataset.description || '在这里长期汇聚课程资料；随时选择资料并发起教辅书编撰。'}
+            </p>
 
- {error && <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+            {/* Big Action: Start Generating */}
+            <div className="mt-6 border-t border-[#f0f3f3] pt-5">
+              <Button
+                disabled={readyResources.length === 0}
+                onClick={() => navigate(`/datasets/${datasetId}/configure`)}
+                className="w-full bg-[#147d86] py-5 text-sm font-semibold text-white hover:bg-[#116a72]"
+              >
+                <Play size={15} className="mr-1.5 fill-current" />
+                配置并开始编撰
+              </Button>
+              <p className="mt-2 text-center text-[11px] text-[#819294]">
+                {readyResources.length > 0
+                  ? `当前已就绪 ${readyResources.length} 份材料`
+                  : '请先添加课件或字幕材料'}
+              </p>
+            </div>
 
- <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_340px]">
- {/* ── 资料内容 ─────────────────────────────────────────────── */}
- <div className="space-y-5">
- <section className="overflow-hidden rounded-lg border border-[#dfe6e6] bg-white">
- <div className="flex items-center justify-between border-b border-[#edf0f0] px-5 py-4">
- <div>
- <h2 className="text-sm font-semibold">资料内容</h2>
- <p className="mt-1 text-xs text-[#819092]">支持 PPTX、PDF、DOCX、Markdown、TXT、智云课堂字幕与学在浙大课件</p>
- </div>
- <span className="text-xs text-[#819092]">{detail.resources.length} 项</span>
- </div>
- {detail.resources.length ? (
- <div className="divide-y divide-[#edf0f0]">
- {detail.resources.map((resource) => {
- const Icon = iconFor(resource.kind)
- const revision = resource.current_revision
- return (
- <div key={resource.resource_id} className="flex items-center gap-3 px-5 py-4">
- <span className="grid size-9 place-items-center rounded-md bg-[#eef4f4] text-[#147d86]"><Icon size={17} /></span>
- <div className="min-w-0 flex-1">
- <p className="truncate text-sm font-medium">{resource.title}</p>
- <p className="mt-1 text-[11px] text-[#819092]">{sourceLabel(resource)} · {formatSize(revision?.size_bytes)}</p>
- </div>
- <span className={revision?.parse_status === 'ready' ? 'text-[#27774a]' : 'text-red-600'}>
- {revision?.parse_status === 'ready' ? <Check size={15} /> : (revision?.parse_error || '解析失败')}
- </span>
- {revision?.parse_status === 'ready' && (
- <Button variant="ghost" size="icon-sm" title="预览资料" onClick={() => void showPreview(resource)}><Eye size={15} /></Button>
- )}
- </div>
- )
- })}
- </div>
- ) : (
- <div className="py-16 text-center text-sm text-[#718183]">上传文件或导入智云课程开始建立资料集</div>
- )}
- </section>
+            {/* Quick Upload Buttons */}
+            <div className="mt-5 grid grid-cols-2 gap-2 border-t border-[#f0f3f3] pt-4">
+              <input
+                ref={input}
+                type="file"
+                multiple
+                accept=".pptx,.pdf,.docx,.md,.markdown,.txt"
+                className="hidden"
+                onChange={(e) => void upload(e.target.files)}
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => input.current?.click()}
+                className="text-xs"
+              >
+                <Upload size={13} className="mr-1" /> 上传文件
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => setShowImport(true)}
+                className="text-xs"
+              >
+                <RefreshCw size={13} className="mr-1" /> 平台导入
+              </Button>
+            </div>
+          </div>
 
- {/* ── 该资料集的所有生成记录 ───────────────────────────────────── */}
- <section className="overflow-hidden rounded-lg border border-[#dfe6e6] bg-white">
- <div className="flex items-center justify-between border-b border-[#edf0f0] px-5 py-4">
- <div>
- <h2 className="text-sm font-semibold flex items-center gap-2"><Layers size={15} />本资料集的所有生成记录</h2>
- <p className="mt-1 text-xs text-[#819092]">按生成时间倒序；点击进入运行详情，或删除一条记录。</p>
- </div>
- <span className="text-xs text-[#819092]">{runs.length} 条</span>
- </div>
- {runs.length ? (
- <div className="divide-y divide-[#edf0f0]">
- {runs.map((run, idx) => (
- <div key={run.job_id} className="flex items-center gap-3 px-5 py-4">
- <span className={`inline-flex h-7 items-center rounded-full px-3 text-[10px] font-medium ${run.status === 'completed' ? 'bg-[#e9f5ee] text-[#27774a]' : run.status === 'partial' ? 'bg-amber-50 text-amber-700' : run.status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-[#e6f3f3] text-[#147d86]'}`}>
- 第 {runs.length - idx} 次
- </span>
- <div className="min-w-0 flex-1">
- <p className="text-sm font-medium truncate">
- 第 {runs.length - idx} 次生成 · {statusLabel(run.status)} · {run.progress}%
- </p>
- <p className="mt-1 truncate text-[11px] text-[#819092]">运行 {run.job_id} · 创建于 {formatTime(run.created_at)}{run.snapshot_id && ` · 快照 ${run.snapshot_id.slice(-12)}`}{run.course_id && ` · 课程 ${run.course_id}`}</p>
- </div>
- {run.artifact_available && (
- <Link to={`/artifacts/${run.job_id}`} className="text-xs text-[#147d86] hover:underline">查看产物</Link>
- )}
- <Link to={`/runs/${run.job_id}`} className="inline-flex h-7 items-center gap-1 rounded-md border border-[#dfe6e6] bg-white px-2.5 text-xs font-medium text-[#147d86] hover:bg-[#f7f9f9]"><RefreshCw size={13} />运行详情</Link>
- <Button variant="ghost" size="icon-sm" title="删除运行" onClick={() => void deleteRun(run.job_id)}><Trash2 size={15} className="text-red-600" /></Button>
- </div>
- ))}
- </div>
- ) : (
- <div className="py-14 text-center text-sm text-[#718183]">
- 该资料集还没有生成记录。
- <div className="mt-3"><Button variant="outline" size="sm" onClick={() => navigate(`/datasets/${datasetId}/configure`)}><ArrowRight size={13} />开始第一次生成</Button></div>
- </div>
- )}
- </section>
- </div>
+          {/* If there's an existing finished book */}
+          {completedRuns.length > 0 && (
+            <div className="rounded-2xl bg-[#173c40] p-6 text-white shadow-xs">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-[#a3d6d4]">
+                <BookOpen size={14} /> 最新完稿
+              </div>
+              <h3 className="mt-2 text-base font-bold">已成书稿可立即阅读</h3>
+              <p className="mt-1 text-xs leading-relaxed text-[#cde3e2]">
+                最近一次编撰已完成，包含完整的知识体系与分章正文。
+              </p>
+              <div className="mt-4 flex gap-2">
+                <Button
+                  render={<Link to={`/artifacts/${completedRuns[0].job_id}`} />}
+                  size="sm"
+                  className="bg-white text-xs font-medium text-[#173c40] hover:bg-[#e6f3f3]"
+                >
+                  打开书稿
+                </Button>
+                <Button
+                  render={<Link to={`/runs/${completedRuns[0].job_id}`} />}
+                  size="sm"
+                  variant="outline"
+                  className="border-white/30 text-xs text-white hover:bg-white/10"
+                >
+                  编撰过程
+                </Button>
+              </div>
+            </div>
+          )}
+        </aside>
 
- {/* ── sidebar ──────────────────────────────────────────────── */}
- <aside className="space-y-5">
- <div className="rounded-lg border border-[#b8dadb] bg-[#f2f9f9] p-5">
- <h2 className="text-sm font-semibold">创建一次生成</h2>
- <p className="mt-2 text-xs leading-5 text-[#657678]">下一步选择这次使用的具体资料，创建不可变输入快照，再配置课程教辅工作流。</p>
- <Button disabled={!ready} onClick={() => navigate(`/datasets/${datasetId}/configure`)} className="mt-5 w-full bg-[#147d86] text-white hover:bg-[#116a72]">选择资料并配置</Button>
- </div>
- <div className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <h2 className="text-sm font-semibold">历史输入快照</h2>
- {detail.snapshots.length ? (
- <div className="mt-3 space-y-3">
- {detail.snapshots.slice(0, 5).map((snapshot) => (
- <div key={snapshot.snapshot_id} className="rounded-md bg-[#f7f9f9] p-3">
- <p className="text-xs font-medium">{snapshot.label || '未命名快照'}</p>
- <p className="mt-1 text-[10px] text-[#819092]">{snapshot.resource_count} 项资料 · {snapshot.sha256.slice(0,8)}</p>
- </div>
- ))}
- </div>
- ) : (
- <p className="mt-3 text-xs text-[#819092]">尚未创建快照</p>
- )}
- </div>
- </aside>
- </div>
+        {/* Right Column: Material Gallery */}
+        <main className="min-w-0 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-base font-bold text-[#172b2d]">课程收录资料</h2>
+            <span className="text-xs text-[#718183]">
+              {readyResources.length} 份可用 · 共 {detail.resources.length} 项
+            </span>
+          </div>
 
- {showImport && <MaterialImportDialog datasetId={datasetId} onClose={() => setShowImport(false)} onImported={() => { void load() }} />}
- {preview && (
- <div className="fixed inset-0 z-40 flex justify-end bg-black/25" onClick={() => setPreview(null)}>
- <div className="h-full w-[520px] overflow-auto bg-white p-7 shadow-xl" onClick={(e) => e.stopPropagation()}>
- <div className="flex items-center justify-between">
- <h2 className="text-base font-semibold">{preview.title}</h2>
- <Button variant="ghost" onClick={() => setPreview(null)}>关闭</Button>
- </div>
- <pre className="mt-6 whitespace-pre-wrap font-sans text-sm leading-7 text-[#425456]">{preview.text || '没有可预览文本'}</pre>
- </div>
- </div>
- )}
- </div>
- )
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+              {error}
+            </div>
+          )}
+
+          <div className="overflow-hidden rounded-2xl border border-[#e2e8e8] bg-white shadow-xs">
+            {detail.resources.length === 0 ? (
+              <div className="p-16 text-center text-xs text-[#718183]">
+                <FileText size={24} className="mx-auto mb-2 text-[#9bb0b2]" />
+                暂未添加任何课件或字幕。点击左侧上传文件开始。
+              </div>
+            ) : (
+              <div className="divide-y divide-[#f0f3f3]">
+                {detail.resources.map((resource) => {
+                  const Icon = iconFor(resource.kind)
+                  const rev = resource.current_revision
+                  const isReady = rev?.parse_status === 'ready'
+                  return (
+                    <div
+                      key={resource.resource_id}
+                      className="flex items-center justify-between gap-4 p-5 transition-colors hover:bg-[#fafcfc]"
+                    >
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#eef5f5] text-[#147d86]">
+                          <Icon size={18} />
+                        </span>
+                        <div className="min-w-0">
+                          <h4 className="truncate text-sm font-semibold text-[#172b2d]">
+                            {resource.title}
+                          </h4>
+                          <p className="mt-1 flex items-center gap-2 text-xs text-[#7c8d90]">
+                            <span>{kindLabel(resource.kind)}</span>
+                            {rev?.text_chars ? (
+                              <>
+                                <span>·</span>
+                                <span>{formatChars(rev.text_chars)}</span>
+                              </>
+                            ) : null}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex shrink-0 items-center gap-3">
+                        {isReady ? (
+                          <span className="flex items-center gap-1 text-xs font-medium text-[#27774a]">
+                            <Check size={14} /> 已解析
+                          </span>
+                        ) : (
+                          <span className="text-xs text-red-600">
+                            {rev?.parse_error || '解析中'}
+                          </span>
+                        )}
+
+                        {isReady && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => void showPreview(resource)}
+                            className="text-xs text-[#147d86] hover:bg-[#eef5f5]"
+                          >
+                            <Eye size={14} className="mr-1" /> 预览
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
+
+      {showImport && (
+        <MaterialImportDialog
+          datasetId={datasetId}
+          onClose={() => setShowImport(false)}
+          onImported={() => {
+            void load()
+          }}
+        />
+      )}
+
+      {/* Preview Drawer */}
+      {preview && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end bg-black/30 backdrop-blur-2xs"
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className="flex h-full w-full max-w-xl flex-col bg-white p-8 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-[#edf0f0] pb-4">
+              <h3 className="truncate text-base font-bold text-[#172b2d]">{preview.title}</h3>
+              <Button variant="ghost" size="sm" onClick={() => setPreview(null)}>
+                关闭
+              </Button>
+            </div>
+            <div className="mt-4 flex-1 overflow-auto pr-2">
+              <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-[#35484a]">
+                {preview.text || '没有可读取的文本内容'}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }

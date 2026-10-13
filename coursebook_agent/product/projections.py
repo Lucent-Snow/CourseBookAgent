@@ -177,6 +177,11 @@ def project_run(state: JobState) -> RunProjection:
         for c in plan_chapters
         if c.get("chapter_id")
     }
+    plan_chapter_by_id = {
+        c.get("chapter_id"): c
+        for c in plan_chapters
+        if c.get("chapter_id")
+    }
 
     agents: list[AgentProjection] = []
     seen_keys: set[str] = set()
@@ -203,6 +208,28 @@ def project_run(state: JobState) -> RunProjection:
             status = "succeeded"
         else:
             status = "pending"
+
+        plan_ch = plan_chapter_by_id.get(cid, {})
+        narrative_purpose = (
+            (cached or {}).get("narrative_purpose")
+            or (cached or {}).get("overview")
+            or plan_ch.get("narrative_purpose")
+            or ""
+        )
+        module_name = plan_ch.get("module_name", "")
+        section_headings = [
+            str(s.get("heading") or s.get("title") or "")
+            for s in (cached or {}).get("sections", [])
+            if s.get("heading") or s.get("title")
+        ]
+        key_points = [
+            str(p)
+            for p in (cached or {}).get("key_takeaways")
+            or (cached or {}).get("takeaways")
+            or plan_ch.get("must_cover")
+            or []
+        ]
+
         agents.append(AgentProjection(
             agent_id=f"{state.job_id}-{cid}",
             label=title,
@@ -213,6 +240,11 @@ def project_run(state: JobState) -> RunProjection:
             retryable=status == "failed",
             error=chapter.get("error"),
             output_available=status == "succeeded",
+            chapter_id=cid,
+            module_name=module_name,
+            narrative_purpose=narrative_purpose,
+            section_headings=section_headings,
+            key_points=key_points,
         ))
 
     if requested:
@@ -329,11 +361,35 @@ def project_run(state: JobState) -> RunProjection:
         described_total=len(resources),
         planned=bool(plan_chapters),
         plan_summary={
+            "book_title": plan.get("book_title", "") if plan else "",
+            "book_positioning": plan.get("book_positioning", "") if plan else "",
             "chapter_count": len(plan_chapters),
             "selected_chapter_count": len(agents) if selected_run else len(plan_chapters),
             "global_resource_count": len(global_resource_ids),
             "chapter_resource_count": sum(len(v) for v in chapter_resources.values()),
             "module_names": [m.get("name") for m in (plan.get("modules") or [])] if plan else [],
+            "modules": [
+                {
+                    "name": m.get("name"),
+                    "purpose": m.get("purpose", ""),
+                    "chapter_indices": m.get("lecture_indices") or m.get("chapter_indices") or [],
+                }
+                for m in (plan.get("modules") or [])
+            ] if plan else [],
+            "learning_path": plan.get("learning_path", []) if plan else [],
+            "global_emphasis": plan.get("global_emphasis", []) if plan else [],
+            "planned_chapters": [
+                {
+                    "chapter_id": c.get("chapter_id", f"c{i}"),
+                    "title": c.get("book_title") or c.get("title") or f"第 {i} 章",
+                    "module_name": c.get("module_name", ""),
+                    "narrative_purpose": c.get("narrative_purpose", ""),
+                    "learning_goals": c.get("learning_goals") or [],
+                    "must_cover": c.get("must_cover") or [],
+                    "section_plan": c.get("section_plan") or [],
+                }
+                for i, c in enumerate(plan_chapters, start=1)
+            ] if plan else [],
         } if plan else {},
         assembled=assembled_count,
         assembled_total=assembled_total,

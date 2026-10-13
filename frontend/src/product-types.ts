@@ -132,6 +132,11 @@ export interface AgentProjection {
   retryable: boolean
   error: string | null
   output_available: boolean
+  chapter_id?: string
+  module_name?: string
+  narrative_purpose?: string
+  section_headings?: string[]
+  key_points?: string[]
 }
 
 export interface ResourceProjection {
@@ -149,6 +154,22 @@ export interface ResourceProjection {
   tag_chapter_ids: string[]
 }
 
+export interface PlannedChapterSummary {
+  chapter_id: string
+  title: string
+  module_name?: string
+  narrative_purpose?: string
+  learning_goals?: string[]
+  must_cover?: string[]
+  section_plan?: string[]
+}
+
+export interface PlanModuleSummary {
+  name: string
+  purpose?: string
+  chapter_indices?: number[]
+}
+
 export interface StageProjection {
   parsed: number
   parsed_total: number
@@ -156,11 +177,17 @@ export interface StageProjection {
   described_total: number
   planned: boolean
   plan_summary: {
+    book_title?: string
+    book_positioning?: string
     chapter_count: number
     selected_chapter_count?: number
     global_resource_count: number
     chapter_resource_count: number
     module_names: string[]
+    modules?: PlanModuleSummary[]
+    learning_path?: string[]
+    global_emphasis?: string[]
+    planned_chapters?: PlannedChapterSummary[]
   }
   assembled: number
   assembled_total: number

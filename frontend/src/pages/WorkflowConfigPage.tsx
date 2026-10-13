@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Check, ChevronRight, FileText, Info, Play } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, FileText, Play, Sparkles } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { productApi } from '@/api/product'
@@ -15,19 +15,59 @@ export function WorkflowConfigPage() {
   const [review, setReview] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => { void Promise.all([productApi.dataset(datasetId), productApi.presets()]).then(([data, presets]) => { setDetail(data); setPreset(presets[0] ?? null); setSelected(new Set(data.resources.filter((item) => item.current_revision?.parse_status === 'ready').map((item) => item.current_revision!.revision_id))) }).catch((err) => setError((err as Error).message)) }, [datasetId])
-  const readyResources = useMemo(() => detail?.resources.filter((item) => item.current_revision?.parse_status === 'ready') ?? [], [detail])
-  function toggle(id: string) { setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next }) }
+
+  useEffect(() => {
+    void Promise.all([productApi.dataset(datasetId), productApi.presets()])
+      .then(([data, presets]) => {
+        setDetail(data)
+        setPreset(presets[0] ?? null)
+        setSelected(
+          new Set(
+            data.resources
+              .filter((item) => item.current_revision?.parse_status === 'ready')
+              .map((item) => item.current_revision!.revision_id)
+          )
+        )
+      })
+      .catch((err) => setError((err as Error).message))
+  }, [datasetId])
+
+  const readyResources = useMemo(
+    () => detail?.resources.filter((item) => item.current_revision?.parse_status === 'ready') ?? [],
+    [detail]
+  )
+
+  function toggle(id: string) {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   async function start() {
     if (!detail || !selected.size) return
     setBusy(true)
     setError('')
     try {
-      const snapshot = await productApi.createSnapshot(datasetId, [...selected], `${detail.dataset.name} · ${new Date().toLocaleString()}`)
-      const selectedResources = readyResources.filter((item) => selected.has(item.current_revision!.revision_id))
-      const course = selectedResources.find((item) => item.source_type === 'zhiyun')?.current_revision?.metadata.course_id
-      // The snapshot selects source materials; chapter selection belongs to the book plan.
-      const job = await productApi.startRun(course ? String(course) : '', snapshot.snapshot_id, concurrency, review)
+      const snapshot = await productApi.createSnapshot(
+        datasetId,
+        [...selected],
+        `${detail.dataset.name} · ${new Date().toLocaleString()}`
+      )
+      const selectedResources = readyResources.filter((item) =>
+        selected.has(item.current_revision!.revision_id)
+      )
+      const course = selectedResources.find((item) => item.source_type === 'zhiyun')
+        ?.current_revision?.metadata.course_id
+
+      const job = await productApi.startRun(
+        course ? String(course) : '',
+        snapshot.snapshot_id,
+        concurrency,
+        review
+      )
       navigate(`/runs/${job.job_id}`)
     } catch (err) {
       setError((err as Error).message)
@@ -35,7 +75,175 @@ export function WorkflowConfigPage() {
       setBusy(false)
     }
   }
-  if (!detail || !preset) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取工作流…'}</div>
-  const allSelected = readyResources.length > 0 && readyResources.every((item) => selected.has(item.current_revision!.revision_id))
-  return <div className="min-h-dvh bg-[#f5f7f7]"><header className="flex h-16 items-center justify-between border-b border-[#dfe6e6] bg-white px-8"><Link to={`/datasets/${datasetId}`} className="flex items-center gap-2 text-sm text-[#718183]"><ArrowLeft size={15} />返回资料集</Link><div className="text-sm font-medium">配置本次生成</div><Button onClick={() => void start()} disabled={busy || !selected.size} className="bg-[#147d86] text-white hover:bg-[#116a72]">确认并创建运行<ChevronRight size={15} /></Button></header><div className="mx-auto grid max-w-[1200px] grid-cols-1 gap-6 px-4 py-6 lg:grid-cols-[1fr_360px] lg:px-8 lg:py-7"><main><h1 className="text-[25px] font-semibold">选择本次使用的资料</h1><p className="mt-2 text-sm text-[#718183]">资料仍保存在资料集中；创建运行时会冻结所选版本。</p>{error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}<section className="mt-6 overflow-hidden rounded-lg border border-[#dfe6e6] bg-white"><div className="flex h-14 items-center justify-between border-b border-[#edf0f0] px-5"><label className="flex items-center gap-3 text-sm font-medium"><input type="checkbox" checked={allSelected} onChange={() => setSelected(allSelected ? new Set() : new Set(readyResources.map((item) => item.current_revision!.revision_id)))} />全选可用资料</label><span className="text-xs text-[#718183]">已选择 {selected.size} / {readyResources.length}</span></div><div className="divide-y divide-[#edf0f0]">{readyResources.map((resource) => <label key={resource.resource_id} className="flex cursor-pointer items-center gap-3 px-5 py-4 hover:bg-[#fafcfc]"><input type="checkbox" checked={selected.has(resource.current_revision!.revision_id)} onChange={() => toggle(resource.current_revision!.revision_id)} /><span className="grid size-9 place-items-center rounded-md bg-[#eef4f4] text-[#147d86]"><FileText size={16} /></span><span className="min-w-0 flex-1"><strong className="block truncate text-sm font-medium">{resource.title}</strong><small className="mt-1 block text-[#819092]">{resource.source_type === 'zhiyun' ? `课堂字幕 · 第 ${String(resource.current_revision?.metadata.lecture_index)} 讲` : `${resource.kind.toUpperCase()} · ${resource.current_revision?.text_chars.toLocaleString()} 字符`}</small></span><Check size={15} className={selected.has(resource.current_revision!.revision_id) ? 'text-[#147d86]' : 'text-transparent'} /></label>)}</div></section></main><aside className="space-y-5"><section className="rounded-lg border border-[#b8dadb] bg-[#f2f9f9] p-5"><div className="flex items-start justify-between"><div><h2 className="text-sm font-semibold">{preset.name}</h2><p className="mt-1 text-xs leading-5 text-[#657678]">{preset.description}</p></div><span className="rounded bg-[#e1f0f0] px-2 py-1 text-[10px] font-medium text-[#147d86]">内置预设</span></div><div className="mt-5 space-y-3">{preset.steps.map((step, index) => <div key={step.key} className="flex gap-3"><span className="grid size-5 shrink-0 place-items-center rounded-full bg-[#dceeee] text-[10px] font-semibold text-[#147d86]">{index + 1}</span><div><p className="text-xs font-medium">{step.name}{step.parallel && ' · 并行'}</p><p className="mt-1 text-[10px] text-[#718183]">{step.description}</p></div></div>)}</div></section><section className="rounded-lg border border-[#dfe6e6] bg-white p-5"><h2 className="text-sm font-semibold">执行策略</h2><label className="mt-4 block text-xs text-[#718183]">最大并行章节 Agent</label><div className="mt-2 flex gap-2">{[1,2,3,4].map((value) => <button key={value} onClick={() => setConcurrency(value)} className={`size-8 rounded-md border text-xs ${concurrency === value ? 'border-[#147d86] bg-[#e6f3f3] text-[#147d86]' : 'border-[#dfe6e6]'}`}>{value}</button>)}</div><label className="mt-5 flex items-center justify-between text-xs"><span><strong className="block font-medium">启用语义审校</strong><small className="mt-1 block text-[#819092]">质量未通过时保留问题说明</small></span><input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} /></label></section><div className="flex gap-2 rounded-md bg-[#eef7f7] p-3 text-[11px] leading-5 text-[#2c5054]"><Info size={15} className="mt-0.5 shrink-0" />主 Agent 会阅读所选资料并把多节课合并成合适章节；无 Tag 的资料会保留在快照中但不参与生成。</div><Button onClick={() => void start()} disabled={busy || !selected.size} className="h-10 w-full bg-[#147d86] text-white hover:bg-[#116a72]"><Play size={15} />{busy ? '正在创建…' : '创建输入快照并开始'}</Button></aside></div></div>
+
+  if (!detail || !preset) {
+    return <div className="p-12 text-center text-sm text-[#718183]">{error || '正在配置编撰工作流…'}</div>
+  }
+
+  const allSelected =
+    readyResources.length > 0 &&
+    readyResources.every((item) => selected.has(item.current_revision!.revision_id))
+
+  return (
+    <div className="min-h-dvh bg-[#f7f9f9]">
+      <header className="flex h-16 items-center justify-between border-b border-[#e2e8e8] bg-white px-6 md:px-8">
+        <Link
+          to={`/datasets/${datasetId}`}
+          className="flex items-center gap-1.5 text-xs font-medium text-[#718183] transition-colors hover:text-[#147d86]"
+        >
+          <ArrowLeft size={14} /> 返回资料台
+        </Link>
+        <span className="text-xs font-semibold text-[#172b2d]">成书配置</span>
+        <Button
+          onClick={() => void start()}
+          disabled={busy || !selected.size}
+          className="bg-[#147d86] text-xs font-semibold text-white hover:bg-[#116a72]"
+        >
+          {busy ? '正在启动…' : '开始编撰'}
+          <ChevronRight size={14} className="ml-1" />
+        </Button>
+      </header>
+
+      <div className="mx-auto grid max-w-[1240px] grid-cols-1 gap-8 px-4 py-8 lg:grid-cols-[1fr_360px] lg:px-8">
+        <main>
+          <div className="border-b border-[#e2e8e8] pb-5">
+            <h1 className="text-2xl font-bold tracking-tight text-[#172b2d]">选择本次编撰所用资料</h1>
+            <p className="mt-1.5 text-xs text-[#718183]">
+              勾选纳入全书的课件与字幕；AI 主编将统筹规划知识主题与章节大纲。
+            </p>
+          </div>
+
+          {error && (
+            <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+              {error}
+            </div>
+          )}
+
+          <div className="mt-6 overflow-hidden rounded-2xl border border-[#e2e8e8] bg-white shadow-xs">
+            <div className="flex h-12 items-center justify-between border-b border-[#f0f3f3] px-5">
+              <label className="flex cursor-pointer items-center gap-2.5 text-xs font-semibold text-[#172b2d]">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={() =>
+                    setSelected(
+                      allSelected
+                        ? new Set()
+                        : new Set(readyResources.map((item) => item.current_revision!.revision_id))
+                    )
+                  }
+                  className="rounded text-[#147d86] focus:ring-[#147d86]"
+                />
+                全选可用资料
+              </label>
+              <span className="text-xs text-[#718183]">
+                已选 {selected.size} / {readyResources.length} 份
+              </span>
+            </div>
+
+            <div className="divide-y divide-[#f0f3f3]">
+              {readyResources.map((resource) => {
+                const isSelected = selected.has(resource.current_revision!.revision_id)
+                return (
+                  <label
+                    key={resource.resource_id}
+                    className={`flex cursor-pointer items-center gap-3.5 px-5 py-4 transition-colors ${
+                      isSelected ? 'bg-[#fafcfc]' : 'hover:bg-[#fafcfc]'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggle(resource.current_revision!.revision_id)}
+                      className="rounded text-[#147d86] focus:ring-[#147d86]"
+                    />
+                    <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#eef5f5] text-[#147d86]">
+                      <FileText size={16} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <strong className="block truncate text-sm font-semibold text-[#172b2d]">
+                        {resource.title}
+                      </strong>
+                      <span className="mt-0.5 block text-xs text-[#7c8f91]">
+                        {resource.source_type === 'zhiyun'
+                          ? `课堂字幕 · 第 ${String(resource.current_revision?.metadata.lecture_index)} 讲`
+                          : `${resource.kind.toUpperCase()} · ${resource.current_revision?.text_chars?.toLocaleString()} 字`}
+                      </span>
+                    </div>
+                    <Check
+                      size={16}
+                      className={isSelected ? 'text-[#147d86]' : 'text-transparent'}
+                    />
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+        </main>
+
+        {/* Right Settings Sidebar */}
+        <aside className="space-y-5">
+          <div className="rounded-2xl border border-[#d6e7e8] bg-[#f4f9f9] p-6 shadow-xs">
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#147d86]">
+              <Sparkles size={14} /> 课程教辅流水线
+            </span>
+            <h3 className="mt-2 text-base font-bold text-[#172b2d]">全书规划与分章撰写</h3>
+            <p className="mt-1 text-xs leading-relaxed text-[#596d6f]">
+              主 Agent 通读所有资料并规划全书大纲与主题章节，按知识点装配上下文后由分章 Agent 撰写成稿。
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-[#e2e8e8] bg-white p-6 shadow-xs">
+            <h3 className="text-sm font-bold text-[#172b2d]">生成参数</h3>
+
+            <div className="mt-4">
+              <label className="block text-xs font-medium text-[#657678]">
+                章节并行撰写数
+              </label>
+              <div className="mt-2 flex gap-2">
+                {[1, 2, 3, 4].map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setConcurrency(value)}
+                    className={`size-9 rounded-xl border text-xs font-semibold transition-colors ${
+                      concurrency === value
+                        ? 'border-[#147d86] bg-[#e6f3f3] text-[#147d86]'
+                        : 'border-[#dfe6e6] text-[#4d5f61] hover:bg-[#f6f9f9]'
+                    }`}
+                  >
+                    {value}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="mt-5 flex cursor-pointer items-center justify-between text-xs">
+              <div>
+                <span className="block font-semibold text-[#172b2d]">启用语义质量审校</span>
+                <span className="mt-0.5 block text-[#819294]">
+                  自动扫描知识覆盖与概念规范
+                </span>
+              </div>
+              <input
+                type="checkbox"
+                checked={review}
+                onChange={(e) => setReview(e.target.checked)}
+                className="rounded text-[#147d86] focus:ring-[#147d86]"
+              />
+            </label>
+          </div>
+
+          <Button
+            onClick={() => void start()}
+            disabled={busy || !selected.size}
+            className="w-full bg-[#147d86] py-5 text-sm font-semibold text-white shadow-sm hover:bg-[#116a72]"
+          >
+            <Play size={15} className="mr-1.5 fill-current" />
+            {busy ? '正在启动…' : '开始编撰教辅书'}
+          </Button>
+        </aside>
+      </div>
+    </div>
+  )
 }

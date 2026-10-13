@@ -1,436 +1,534 @@
 import { useEffect, useState } from 'react'
-import { AlertTriangle, ArrowLeft, Bot, Clock3, FileText, Gauge, Layers, Pause, RefreshCw, ShieldAlert, Tag } from 'lucide-react'
+import {
+  AlertTriangle,
+  ArrowLeft,
+  BookOpen,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Compass,
+  Download,
+  FileText,
+  Pause,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { productApi } from '@/api/product'
-import type { QualityReport, ResourceProjection, RunProjection, StageProjection } from '@/product-types'
+import type { AgentProjection, PlannedChapterSummary, RunProjection } from '@/product-types'
 
-const STAGE_ORDER: Array<{ key: keyof StageProjection | 'rendered'; label: string; hint: string }> = [
- { key: 'parsed', label: '1. 解析所有资料', hint: '把资料切成可引用的最小单元' },
- { key: 'described', label: '2. 生成资料说明', hint: '为主 Agent 提供每份资料的描述' },
- { key: 'planned', label: '3. 规划章节与 Tag', hint: '主 Agent 决定章节、为每份资料打 Tag' },
- { key: 'assembled', label: '4. 按 Tag 装上下文', hint: '把 chapter / global 资料装进对应章节' },
- { key: 'chapters_succeeded', label: '5. 章节 Agent 并发生成', hint: '每个章节 Agent 写一章' },
- { key: 'synthesized', label: '6. 全书合成', hint: '统一术语、前言、衔接' },
- { key: 'rendered', label: '7. 渲染并输出', hint: '输出最终 Markdown' },
-]
-
-function stageIndex(stage: StageProjection, phase: string, status: string): number {
- if (status === 'queued') return 0
- if (status === 'completed') return 6
- // Retry projections can still include results from the previous attempt.
- if (status === 'running' || status === 'retrying') {
-  if (phase === 'write') return 4
-  if (phase === 'synthesize' || phase === 'quality') return 5
- }
- if (stage.rendered) return 6
- if (stage.synthesized) return 6
- if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed === stage.chapters_total) return 5
- if (stage.chapters_total > 0 && stage.chapters_succeeded + stage.chapters_failed < stage.chapters_total) return 4
- if (stage.assembled_total > 0 && stage.assembled < stage.assembled_total) return 3
- if (stage.planned) return 3
- if (stage.described_total > 0 && stage.described < stage.described_total) return 1
- if (stage.described_total > 0 && stage.described === stage.described_total) return 2
- if (stage.parsed_total > 0 && stage.parsed < stage.parsed_total) return 0
- const phaseMap: Record<string, number> = { describe: 1, plan: 2, write: 4, synthesize: 5, quality: 5 }
- return phaseMap[phase] ?? 0
+function statusLabel(status: string): string {
+  const map: Record<string, string> = {
+    queued: '排队中',
+    running: '正在撰写',
+    completed: '编撰完成',
+    partial: '部分完成',
+    failed: '生成中断',
+    retrying: '重新尝试中',
+    interrupted: '已暂停',
+    cancelled: '已停止',
+  }
+  return map[status] || status
 }
 
-const statusLabel: Record<string, string> = {
- queued: '排队中', running: '运行中', completed: '已完成', partial: '部分完成',
- failed: '失败', retrying: '重试中', interrupted: '已中断', cancelled: '已取消',
-}
-
-const phaseLabel: Record<string, string> = {
- queued: '等待运行', describe: '资料说明', plan: '规划与组装', write: '章节生成',
- synthesize: '全书合成', quality: '质量检查', completed: '已完成', attention: '需要处理',
-}
-
-function statusTone(status: string): string {
- if (status === 'completed') return 'bg-[#e9f5ee] text-[#27774a]'
- if (status === 'failed' || status === 'partial' || status === 'interrupted') return 'bg-red-50 text-red-700'
- if (status === 'running') return 'bg-[#e6f3f3] text-[#147d86]'
- return 'bg-[#f1f3f3] text-[#718183]'
-}
-
-function elapsedSince(createdAt: string | null, now: number): string {
- if (!createdAt) return '—'
- const seconds = Math.max(0, Math.floor((now - new Date(createdAt).getTime()) / 1000))
- const hours = Math.floor(seconds / 3600)
- const minutes = Math.floor((seconds % 3600) / 60)
- const rest = seconds % 60
- return hours > 0 ? `${hours}小时 ${minutes}分` : `${minutes}分 ${String(rest).padStart(2, '0')}秒`
-}
-
-function eventTone(status: string): string {
- if (status === 'completed') return 'bg-[#27774a]'
- if (status === 'failed' || status === 'interrupted') return 'bg-red-500'
- if (status === 'running') return 'bg-[#147d86]'
- if (status === 'retrying') return 'bg-amber-500'
- return 'bg-[#a6b3b4]'
-}
-
-function eventLabel(event: { status: string; step: string; message: string }): string {
- const status = statusLabel[event.status] || event.status
- return `${status}${event.step ? ` · ${event.step}` : ''}`
-}
-
-function formatTokens(value: number | undefined): string {
- if (value === undefined || value === null) return '—'
- if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}K`
- return String(value)
-}
-
-function formatLatency(value: number | undefined): string {
- if (value === undefined || value === null) return '—'
- if (value >= 60000) return `${(value / 60000).toFixed(1)} 分钟`
- return `${(value / 1000).toFixed(1)} 秒`
-}
-
-const errorLabel: Record<string, string> = {
- configuration: '模型配置不完整', authentication: '模型认证失败', rate_limit: '触发限流',
- service: '模型服务暂时不可用', timeout: '模型请求超时', network: '网络连接失败',
- invalid_json: '模型返回内容无法解析', task_timeout: '任务运行超时',
-}
-
-const agentTone = { pending: 'text-[#829092] bg-[#f1f3f3]', running: 'text-[#147d86] bg-[#e6f3f3]', succeeded: 'text-[#27774a] bg-[#e9f5ee]', failed: 'text-red-700 bg-red-50', blocked: 'text-amber-700 bg-amber-50' }
-const agentLabel: Record<keyof typeof agentTone, string> = {
- pending: '等待中', running: '生成中', succeeded: '已完成', failed: '失败', blocked: '已阻塞',
-}
-
-const warningTone: Record<string, string> = {
- uncertainty: 'text-amber-700',
- coverage: 'text-red-700',
- review: 'text-blue-700',
- structure: 'text-purple-700',
- process: 'text-slate-600',
- other: 'text-slate-600',
-}
-
-const tagTone: Record<ResourceProjection['tag_kind'], string> = {
- chapter: 'text-[#147d86] bg-[#e6f3f3] border-[#b8dadb]',
- global: 'text-[#27774a] bg-[#e9f5ee] border-[#b6d8c6]',
- none: 'text-[#6f6f6f] bg-[#f1f3f3] border-[#d8dada]',
-}
-
-function describeStatusTone(s: ResourceProjection['description_status']) {
- switch (s) {
- case 'done': return 'text-[#27774a] bg-[#e9f5ee]'
- case 'running': return 'text-[#147d86] bg-[#e6f3f3]'
- case 'failed': return 'text-red-700 bg-red-50'
- default: return 'text-[#829092] bg-[#f1f3f3]'
- }
+function statusBadgeClass(status: string): string {
+  if (status === 'completed') return 'bg-[#e9f5ee] text-[#236e44]'
+  if (['failed', 'partial', 'interrupted'].includes(status)) return 'bg-amber-50 text-amber-800 border border-amber-200'
+  if (status === 'running') return 'bg-[#e6f3f3] text-[#147d86]'
+  return 'bg-[#f0f3f3] text-[#6d7f81]'
 }
 
 export function RunDetailPage() {
- const { runId = '' } = useParams()
- const [run, setRun] = useState<RunProjection | null>(null)
- const [error, setError] = useState('')
- const [now, setNow] = useState(() => Date.now())
+  const { runId = '' } = useParams()
+  const [run, setRun] = useState<RunProjection | null>(null)
+  const [error, setError] = useState('')
+  const [selectedChapterId, setSelectedChapterId] = useState<string | null>(null)
 
- useEffect(() => {
- const refresh = () => { void productApi.run(runId).then(setRun).catch((err) => setError((err as Error).message)) }
- refresh()
- const timer = window.setInterval(refresh, 1200)
- return () => window.clearInterval(timer)
- }, [runId])
+  useEffect(() => {
+    const refresh = () => {
+      void productApi
+        .run(runId)
+        .then((data) => {
+          setRun(data)
+          // If no chapter selected, pick the running or first chapter
+          setSelectedChapterId((prev) => {
+            if (prev) return prev
+            const running = data.agents.find((a) => a.status === 'running')
+            if (running) return running.chapter_id || running.agent_id
+            return null
+          })
+        })
+        .catch((err) => setError((err as Error).message))
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 1500)
+    return () => window.clearInterval(timer)
+  }, [runId])
 
- useEffect(() => {
- const timer = window.setInterval(() => setNow(Date.now()), 1000)
- return () => window.clearInterval(timer)
- }, [])
-
- async function action(kind: 'retry' | 'cancel') {
+  async function action(kind: 'retry' | 'cancel') {
     try {
       const res = await fetch(`/api/runs/${runId}/${kind}`, { method: 'POST' })
       if (!res.ok) {
         const detail = await res.json().then((b) => b?.detail).catch(() => '')
-        throw new Error(detail || `请求失败（${res.status}）`)
+        throw new Error(detail || `操作失败（${res.status}）`)
       }
     } catch (err) {
       setError((err as Error).message)
     }
   }
 
- if (!run) return <div className="p-10 text-sm text-[#718183]">{error || '正在读取运行状态…'}</div>
+  if (!run) {
+    return (
+      <div className="mx-auto max-w-4xl p-12 text-center text-sm text-[#718183]">
+        {error || '正在打开书卷…'}
+      </div>
+    )
+  }
 
- const stage = run.stage
- const currentStageIdx = stageIndex(stage, run.phase, run.status)
- const currentPhaseLabel = run.status === 'running' || run.status === 'retrying'
-  ? STAGE_ORDER[currentStageIdx].label.replace(/^\d+\. /, '')
-  : phaseLabel[run.phase] || '等待运行'
- const completedStages = run.status === 'completed' ? STAGE_ORDER.length : Math.max(currentStageIdx, 0)
- const describedPercent = stage.described_total ? Math.round((stage.described / stage.described_total) * 100) : 0
- const chapterDone = stage.chapters_succeeded + stage.chapters_failed
- const chapterPercent = stage.chapters_total ? Math.round((chapterDone / stage.chapters_total) * 100) : 0
- const degradedChapters = run.quality.filter((q) => q.warnings.some((warning) => warning.includes('确定性回退')))
- const completedWithIssues = run.status === 'completed' && (run.failed_agents > 0 || degradedChapters.length > 0)
- const metrics = run.metrics || {}
- const hasTokenData = (metrics.total_tokens ?? 0) > 0
- const needsAttention = ['failed', 'partial', 'interrupted'].includes(run.status)
- const nextStep = run.status === 'completed'
-  ? completedWithIssues ? `书稿已生成，但有 ${run.failed_agents} 个章节任务失败、${degradedChapters.length} 章使用回退；请先核查再使用。` : (run.artifact_available ? '本次生成已完成，可以阅读并核对教辅草稿。' : '生成已完成，正在等待产物可用。')
-  : needsAttention ? '查看下方错误与质量信息；恢复时会尽量复用已完成的章节。'
-  : run.status === 'cancelled' ? '本次运行已停止；如需继续，请回到资料集重新选择资料。'
-  : `当前在「${currentPhaseLabel}」阶段；状态会自动刷新。`
+  const plan = run.stage.plan_summary || {}
+  const displayTitle = plan.book_title || run.dataset_name || '课程精讲与复习教辅'
+  const positioning = plan.book_positioning
+  const modules = plan.modules || []
+  const plannedChapters: PlannedChapterSummary[] = plan.planned_chapters || []
+  const learningPath = plan.learning_path || []
+  const globalEmphasis = plan.global_emphasis || []
 
- return (
- <div className="mx-auto max-w-[1180px] px-4 py-6 md:px-10 md:py-8">
- <header className="flex flex-col items-start justify-between gap-4 sm:flex-row">
- <div>
- <Link to="/runs" className="inline-flex items-center gap-2 text-sm text-[#718183]"><ArrowLeft size={15} />返回运行中心</Link>
- <h1 className="mt-5 text-[25px] font-semibold">{run.dataset_name || '资料集生成'}</h1>
- <p className="mt-2 text-sm text-[#52686a]">{nextStep}</p>
- <p className="mt-2 font-mono text-xs text-[#819092]">运行 {run.run_id}{run.snapshot_id && ` · 输入快照 ${run.snapshot_id.slice(-12)}`}</p>
- </div>
- <div className="flex flex-wrap justify-end gap-2">
- <span className={`inline-flex h-9 items-center rounded-full px-3 text-xs font-medium ${completedWithIssues ? 'bg-amber-50 text-amber-800' : statusTone(run.status)}`}>
- {run.status === 'running' && <span className="mr-2 size-1.5 animate-pulse rounded-full bg-current" />}
- {completedWithIssues ? '已完成 · 待复核' : statusLabel[run.status] || run.status}
- </span>
- {['failed','partial','interrupted'].includes(run.status) && <Button variant="outline" onClick={() => void action('retry')}><RefreshCw size={14} />恢复或重试</Button>}
- {['queued','running'].includes(run.status) && <Button variant="outline" onClick={() => void action('cancel')}><Pause size={14} />停止运行</Button>}
- {run.artifact_available && <Button render={<Link to={`/artifacts/${run.run_id}`} />} className="bg-[#147d86] text-white">查看产物</Button>}
- </div>
- </header>
+  // Agents mapped by chapter id
+  const agents = run.agents || []
+  const agentByChapterId = new Map<string, AgentProjection>()
+  agents.forEach((a) => {
+    const cid = a.chapter_id || a.agent_id
+    agentByChapterId.set(cid, a)
+  })
 
- {error && <div className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
- {degradedChapters.length > 0 && <div role="alert" className="mt-5 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
-  检测到 {degradedChapters.length} 章使用了资料片段回退。当前完成数量包含这些草稿，请查看质量说明后再使用。
- </div>}
+  // Selected agent or planned chapter info
+  const selectedAgent = selectedChapterId ? agentByChapterId.get(selectedChapterId) : null
+  const selectedPlannedChapter = plannedChapters.find((c) => c.chapter_id === selectedChapterId)
 
- <div className="mt-7 grid gap-5 lg:grid-cols-[1fr_340px]">
- <main className="min-w-0 space-y-5">
- {/* ── 当前阶段 step indicator ─────────────────────────────── */}
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5" aria-label="生成阶段与进度">
- <div className="flex items-center justify-between gap-4">
- <div>
- <p className={`text-xs font-semibold ${completedWithIssues ? 'text-amber-800' : 'text-[#147d86]'}`}>{run.status === 'completed' ? completedWithIssues ? '流程结束 · 内容待复核' : '已完成全部阶段' : needsAttention ? '运行需要处理' : `当前阶段 · ${currentPhaseLabel}`}</p>
- <h2 className="mt-1 text-base font-semibold">{run.message || '运行准备中'}</h2>
- <p className="mt-1 text-xs leading-5 text-[#718183]">{nextStep}</p>
- </div>
- <strong className="shrink-0 text-2xl text-[#147d86]">{run.progress}%</strong>
- </div>
- <div className="mt-4 h-2 overflow-hidden rounded-full bg-[#e7eeee]">
- <div className="h-full rounded-full bg-[#147d86] transition-all" style={{ width: `${run.progress}%` }} />
- </div>
- <div className="mt-5 grid gap-2 text-xs font-medium sm:grid-cols-3">
- {[
-  { label: '准备资料', range: '解析 · 描述', start: 0, end: 1 },
-  { label: '组织内容', range: '规划 · 组装', start: 2, end: 3 },
-  { label: '撰写成书', range: '分章 · 合成 · 输出', start: 4, end: 6 },
- ].map((group) => <div key={group.label} className={`rounded-lg border px-3 py-3 ${completedWithIssues && group.label === '撰写成书' ? 'border-amber-200 bg-amber-50 text-amber-800' : completedStages > group.end ? 'border-[#b6d8c6] bg-[#e9f5ee] text-[#27774a]' : run.status !== 'queued' && currentStageIdx >= group.start && currentStageIdx <= group.end ? needsAttention ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#b8dadb] bg-[#e6f3f3] text-[#147d86]' : 'border-[#e4e9e9] bg-[#f7f9f9] text-[#718183]'}`}><span className="block">{group.label}</span><span className="mt-1 block text-[11px] font-normal opacity-80">{group.range}</span></div>)}
- </div>
- <ol className="mt-3 grid gap-2 sm:grid-cols-2">
- {STAGE_ORDER.map((s, i) => {
- const done = i < completedStages
- const active = i === currentStageIdx && run.status !== 'queued' && run.status !== 'completed'
- return (
- <li key={String(s.key)} className={`rounded-md border px-3 py-2.5 text-xs ${done && completedWithIssues && i === 4 ? 'border-amber-200 bg-amber-50 text-amber-800' : done ? 'border-[#cde6d8] bg-[#f2faf5] text-[#27774a]' : active ? needsAttention ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#b8dadb] bg-[#f0f8f8] text-[#147d86]' : 'border-[#edf0f0] bg-[#fafbfb] text-[#718183]'}`}>
- <div className="flex items-start gap-2"><span className="font-mono font-semibold">{done && completedWithIssues && i === 4 ? '!' : done ? '✓' : active ? '●' : `${i + 1}`}</span><div><p className="font-medium">{s.label.replace(/^\d+\. /, '')}</p><p className="mt-1 text-[11px] leading-4 opacity-80">{s.hint}</p></div></div>
- </li>
- )
- })}
- </ol>
- <div className="mt-4 grid grid-cols-2 gap-3 text-[11px] text-[#718183] md:grid-cols-3">
- <span>已解析 {stage.parsed}/{stage.parsed_total} 份</span>
- <span>已描述 {stage.described}/{stage.described_total} 份 · {describedPercent}%</span>
- <span>{stage.planned ? `全书规划 ${stage.plan_summary.chapter_count} 章 · 本次 ${stage.plan_summary.selected_chapter_count ?? stage.plan_summary.chapter_count} 章` : '尚未规划'}</span>
- <span>已组装 {stage.assembled}/{stage.assembled_total} 章上下文</span>
- <span>章节 {stage.chapters_succeeded}/{stage.chapters_total} 成功 · 已处理 {chapterPercent}%</span>
- <span>{stage.chapters_failed} 失败</span>
- </div>
- </section>
+  // Live narrative string
+  let liveNarrative = run.message || '正在撰写…'
+  if (run.status === 'completed') {
+    liveNarrative = `全书已完稿，共收录 ${run.stage.chapters_total || agents.length} 个知识章节`
+  } else if (['failed', 'partial', 'interrupted'].includes(run.status)) {
+    liveNarrative = '生成遇到异常或中断；已写成的章节已妥善保存，可随时继续'
+  }
 
- {['failed', 'partial', 'interrupted'].includes(run.status) && (
- <section className="rounded-lg border border-red-200 bg-red-50 p-5">
- <div className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertTriangle size={16} />运行需要处理</div>
- <p className="mt-2 text-xs text-red-700/80">{errorLabel[run.error_code || ''] || run.error_code || '生成过程中出现异常'}</p>
- {run.error && <p className="mt-2 rounded-md bg-white/70 p-3 text-xs leading-5 text-red-800 break-words">{run.error}</p>}
- <p className="mt-2 text-[11px] text-red-700/70">已恢复/重试 {run.retry_count} 次；可以复用已完成章节继续运行。</p>
- </section>
- )}
+  const totalChapters = run.stage.chapters_total || agents.length || plannedChapters.length
+  const completedChapters = run.stage.chapters_succeeded || agents.filter((a) => a.status === 'succeeded').length
 
- <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
- {[['整体进度', `${run.progress}%`, currentPhaseLabel], ['已运行', elapsedSince(run.created_at, now), '从创建运行开始'], ['章节 Agent', `${run.active_agents}/${run.total_agents}`, `${run.failed_agents} 个失败`], ['资料说明', `${stage.described}/${stage.described_total}`, '已完成 / 总数'], ['Token', hasTokenData ? formatTokens(metrics.total_tokens) : '—', metrics.request_count ? `${metrics.request_count} 次请求` : '等待调用返回'], ['模型耗时', metrics.request_count ? formatLatency(metrics.latency_ms) : '—', metrics.retry_count ? `重试 ${metrics.retry_count} 次` : metrics.request_count ? '无重试' : '等待调用返回']].map(([label, value, hint]) => (
- <div key={label} className="rounded-lg border border-[#dfe6e6] bg-white p-4">
- <p className="text-[11px] text-[#718183]">{label}</p>
- <p className="mt-2 text-xl font-semibold text-[#172426]">{value}</p>
- <p className="mt-1 text-[10px] text-[#819092]">{hint}</p>
- </div>
- ))}
- </section>
+  return (
+    <div className="mx-auto max-w-[1240px] px-4 py-6 md:px-8 md:py-8">
+      {/* Return Link */}
+      <Link
+        to="/runs"
+        className="inline-flex items-center gap-1.5 text-xs font-medium text-[#718183] transition-colors hover:text-[#147d86]"
+      >
+        <ArrowLeft size={14} /> 返回运行中心
+      </Link>
 
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <div className="flex items-center justify-between">
- <h2 className="flex items-center gap-2 text-base font-semibold"><Gauge size={16} />模型调用统计</h2>
- <span className="text-xs text-[#718183]">本轮尝试累计</span>
- </div>
- <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
- {[['输入 Token', formatTokens(metrics.prompt_tokens)], ['输出 Token', formatTokens(metrics.completion_tokens)], ['请求失败', String(metrics.failed_requests ?? 0)], ['估算成本', metrics.cost_configured && metrics.estimated_cost !== null && metrics.estimated_cost !== undefined ? `${metrics.estimated_cost} ${metrics.cost_currency || 'CNY'}` : '未配置单价']].map(([label, value]) => (
- <div key={label} className="rounded-md bg-[#f7f9f9] p-3">
- <p className="text-[11px] text-[#718183]">{label}</p>
- <p className="mt-1 text-lg font-semibold text-[#172426]">{value}</p>
- </div>
- ))}
- </div>
- <p className="mt-3 text-[11px] leading-5 text-[#819092]">Token 以模型接口返回的 usage 为准；部分中转站不返回 usage 时只展示请求次数和耗时。成本需要在本地配置输入/输出单价后计算。</p>
- </section>
+      {/* Hero Header: Bold, Editorial, Confident */}
+      <header className="mt-4 flex flex-col justify-between gap-6 border-b border-[#e2e8e8] pb-6 lg:flex-row lg:items-end">
+        <div className="max-w-3xl">
+          <div className="flex items-center gap-2 text-xs font-medium">
+            <span className="flex items-center gap-1 text-[#147d86]">
+              <BookOpen size={14} /> 课程教辅
+            </span>
+            <span className="text-[#a4b2b4]">·</span>
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${statusBadgeClass(run.status)}`}>
+              {statusLabel(run.status)}
+            </span>
+          </div>
 
- {/* ── Per-resource transparency ─────────────────────────────── */}
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <div className="flex items-center justify-between">
- <h2 className="text-base font-semibold flex items-center gap-2"><FileText size={16} />资料与描述</h2>
- <span className="text-xs text-[#718183]">{run.resources.length} 份</span>
- </div>
- <p className="mt-1 text-xs text-[#718183]">每份资料的描述生成状态、与章节 Tag 的关联。</p>
- <div className="mt-4 divide-y divide-[#edf0f0]">
- {run.resources.length === 0 && <div className="py-10 text-center text-sm text-[#718183]">尚未解析任何资料</div>}
- {run.resources.map((r) => (
- <div key={r.revision_id} className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_100px_160px] md:gap-4">
- <div>
- <p className="text-sm font-medium truncate">{r.title || r.revision_id}</p>
- <p className="mt-1 text-[10px] text-[#819092]">{r.kind}/{r.provider} · rev={r.revision_id.slice(-8)}</p>
- {r.description_text && <p className="mt-2 text-xs leading-5 text-[#657678]">{r.description_text}</p>}
- {r.description_topic && <p className="mt-1 text-[10px] text-[#879496]">主题：{r.description_topic} · 范围：{r.description_scope} · 角色：{r.description_suggested_role}</p>}
- </div>
- <span className={`inline-flex h-7 items-center justify-center rounded-full px-3 text-[10px] ${describeStatusTone(r.description_status)}`}>{describeStatusLabel(r.description_status)}</span>
- <div>
- <span className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[10px] ${tagTone[r.tag_kind]}`}>
- <Tag size={11} />{r.tag_kind === 'chapter' ? `章节 (${r.tag_chapter_ids.join(', ')})` : r.tag_kind === 'global' ? '全局资料' : '未参与本次生成'}
- </span>
- </div>
- </div>
- ))}
- </div>
- </section>
+          <h1 className="mt-3 text-2xl font-bold tracking-tight text-[#172b2d] sm:text-3xl">
+            {displayTitle}
+          </h1>
 
- {/* Per-chapter agents — gated until assemble step */}
- {run.progress >= 28 && (
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <h2 className="text-base font-semibold flex items-center gap-2"><Layers size={16} />章节 Agent</h2>
- <p className="mt-1 text-xs text-[#718183]">结构化任务状态</p>
- <div className="mt-4 divide-y divide-[#edf0f0]">
- {run.agents.length === 0 && <div className="py-10 text-center text-sm text-[#718183]">任务将在装上下文后出现</div>}
- {run.agents.map((agent) => (
- <div key={agent.agent_id} className="flex items-center gap-3 py-3">
- <span className="grid size-9 place-items-center rounded-md bg-[#eef4f4] text-[#147d86]"><Bot size={16} /></span>
- <div className="min-w-0 flex-1">
- <p className="text-sm font-medium truncate">{agent.label}</p>
- <p className="mt-1 truncate text-[11px] text-[#718183]">{agent.message}</p>
- </div>
- <span className={`rounded-full px-2 py-1 text-[10px] font-medium ${agentTone[agent.status]}`}>{agentLabel[agent.status]}</span>
- </div>
- ))}
- </div>
- </section>
- )}
+          {positioning ? (
+            <p className="mt-2.5 text-sm leading-relaxed text-[#54686a] italic">
+              “{positioning}”
+            </p>
+          ) : (
+            <p className="mt-2 text-sm text-[#728385]">
+              基于课程资料，由 AI 主编统筹规划章节架构并逐章执笔
+            </p>
+          )}
+        </div>
 
- {/* Quality report */}
- {run.quality.length > 0 && (
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <h2 className="text-base font-semibold flex items-center gap-2"><ShieldAlert size={16} />质量检测</h2>
- <p className="mt-1 text-xs text-[#718183]">{run.quality.length} 章质量扫描 · {run.quality.filter((q) => q.warnings.length > 0).length} 章有警告</p>
- <div className="mt-4 divide-y divide-[#edf0f0]">
- {run.quality.map((q: QualityReport) => (
- <div key={q.chapter_id} className="py-3">
- <div className="flex items-center gap-3">
- <p className="text-sm font-medium truncate">{q.title || q.chapter_id}</p>
- <span className={`rounded-full px-2 py-0.5 text-[10px] ${q.warnings.length === 0 ? 'bg-[#e9f5ee] text-[#27774a]' : 'bg-amber-50 text-amber-700'}`}>{q.warnings.length === 0 ? '通过' : `${q.warnings.length} 警告`}</span>
- </div>
- <p className="mt-1 text-[11px] text-[#718183]">{q.section_count} 个小节 · {q.component_count} 个组件 · 来源 {q.source_revision_ids.length} 处（未在范围内 {q.missing_source_count}）</p>
- {q.warning_groups.length > 0 ? (
- <div className="mt-3 space-y-3">
- {q.warning_groups.map((g) => (
- <div key={g.category}>
- <p className={`text-[11px] font-semibold ${warningTone[g.category] ?? 'text-slate-600'}`}>
- {g.label} · {g.items.length}
- </p>
- <ul className="mt-1 space-y-1 text-[11px] text-amber-800/90">
- {g.items.map((w, i) => <li key={i}>· {w}</li>)}
- </ul>
- </div>
- ))}
- </div>
- ) : q.warnings.length > 0 ? (
- <ul className="mt-2 space-y-1 text-[11px] text-amber-700">
- {q.warnings.map((w, i) => <li key={i}>· {w}</li>)}
- </ul>
- ) : null}
- </div>
- ))}
- </div>
- </section>
- )}
- </main>
+        {/* Action Controls */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2.5">
+          {['failed', 'partial', 'interrupted'].includes(run.status) && (
+            <Button
+              variant="outline"
+              onClick={() => void action('retry')}
+              className="border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+            >
+              <RefreshCw size={14} className="mr-1.5" /> 恢复并继续
+            </Button>
+          )}
 
- <aside className="space-y-5">
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <h2 className="text-sm font-semibold">运行信息</h2>
- <dl className="mt-4 space-y-3 text-xs">
- {[
- ['状态', run.status],
- ['工作流', run.preset_id],
- ...(run.course_id ? [['课程 ID', run.course_id]] : []),
- ['更新时间', run.updated_at ? new Date(run.updated_at).toLocaleString() : '—'],
- ['资料集 ID', run.dataset_id.slice(-12)],
- ['运行 ID', run.run_id],
-].map(([label, value]) => (
- <div key={String(label)} className="flex justify-between gap-4">
- <dt className="text-[#718183]">{label}</dt>
- <dd className="text-right font-mono text-[11px]">{value}</dd>
- </div>
- ))}
- </dl>
- </section>
+          {['queued', 'running'].includes(run.status) && (
+            <Button variant="outline" onClick={() => void action('cancel')}>
+              <Pause size={14} className="mr-1.5" /> 暂停
+            </Button>
+          )}
 
- {run.failed_agents > 0 && (
- <section className="rounded-lg border border-red-200 bg-red-50 p-5">
- <div className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertTriangle size={16} />存在失败任务</div>
- <p className="mt-2 text-xs leading-5 text-red-700/80">任务结束后，可保留有效章节并重试失败或未完成的章节。</p>
- <Button variant="outline" disabled={run.status === 'running' || run.status === 'queued'} className="mt-4 border-red-300 bg-white text-red-700" onClick={() => void action('retry')}><RefreshCw size={14} />重试失败任务</Button>
- </section>
- )}
+          {run.artifact_available && (
+            <>
+              <Button
+                render={<a href={`/api/runs/${run.run_id}/download.html`} download />}
+                variant="outline"
+                className="hover:border-[#147d86] hover:text-[#147d86]"
+              >
+                <Download size={14} className="mr-1.5" /> 纸书 HTML
+              </Button>
+              <Button
+                render={<Link to={`/artifacts/${run.run_id}`} />}
+                className="bg-[#147d86] text-white hover:bg-[#116a72]"
+              >
+                <BookOpen size={14} className="mr-1.5" /> 打开书稿
+              </Button>
+            </>
+          )}
+        </div>
+      </header>
 
- <section className="rounded-lg border border-[#dfe6e6] bg-white p-5">
- <div className="flex items-center justify-between">
- <h2 className="text-sm font-semibold">运行轨迹</h2>
- <span className="text-[10px] text-[#819092]">自动刷新</span>
- </div>
- <div className="mt-4 max-h-72 space-y-0 overflow-auto pr-1">
- {run.events.length === 0 ? <p className="py-5 text-xs text-[#819092]">暂无状态事件</p> : [...run.events].reverse().map((event, index) => (
- <div key={`${event.at}-${index}`} className="relative flex gap-3 pb-4 last:pb-0">
- <div className="flex w-3 shrink-0 justify-center">
- <span className={`mt-1.5 size-2 rounded-full ${eventTone(event.status)}`} />
- {index < run.events.length - 1 && <span className="absolute top-4 bottom-0 w-px bg-[#e3eaea]" />}
- </div>
- <div className="min-w-0 flex-1">
- <div className="flex items-start justify-between gap-2">
- <p className="text-xs font-medium text-[#334547]">{eventLabel(event)}</p>
- <time className="shrink-0 text-[10px] text-[#9aa7a8]">{event.at ? new Date(event.at).toLocaleTimeString() : '—'}</time>
- </div>
- <p className="mt-1 text-[11px] leading-5 text-[#718183]">{event.message || '状态已更新'}{event.error_code ? ` · ${errorLabel[event.error_code] || event.error_code}` : ''}{event.attempt && event.attempt > 1 ? ` · 第 ${event.attempt} 次运行` : ''}</p>
- </div>
- </div>
- ))}
- </div>
- </section>
+      {/* Slim Progress Bar */}
+      <div className="mt-4 flex items-center justify-between text-xs">
+        <span className="flex items-center gap-2 text-[#687a7c]">
+          {run.status === 'running' && <span className="size-2 animate-ping rounded-full bg-[#147d86]" />}
+          {liveNarrative}
+        </span>
+        <span className="font-semibold text-[#172b2d]">
+          {totalChapters > 0 ? `${completedChapters} / ${totalChapters} 章` : `${run.progress}%`}
+        </span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#e7eeee]">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${
+            run.status === 'running' ? 'flow-progress' : 'bg-[#147d86]'
+          }`}
+          style={{ width: `${Math.max(2, run.progress)}%` }}
+        />
+      </div>
 
- <section className="rounded-lg bg-[#eef6f6] p-4 text-xs leading-5 text-[#657678]">
- <Clock3 size={15} className="mb-2 text-[#147d86]" />
- 运行状态每 1.2 秒刷新一次；事件轨迹最多保留最近 80 条。异常会保留错误类型、重试次数和恢复入口。
- </section>
- </aside>
- </div>
- </div>
- )
+      {error && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">
+          {error}
+        </div>
+      )}
+
+      {/* Main Studio Canvas: Left Outline vs Right Knowledge Showcase */}
+      <div className="mt-8 grid gap-8 lg:grid-cols-[380px_1fr]">
+        {/* Left Column: The Living Outline */}
+        <aside className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold tracking-tight text-[#172b2d]">全书目录与进度</h2>
+            <button
+              type="button"
+              onClick={() => setSelectedChapterId(null)}
+              className={`text-xs transition-colors ${
+                selectedChapterId === null ? 'font-semibold text-[#147d86]' : 'text-[#718183] hover:text-[#172b2d]'
+              }`}
+            >
+              查看全书大纲
+            </button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-[#e2e8e8] bg-white shadow-xs">
+            {plannedChapters.length === 0 && agents.length === 0 ? (
+              <div className="p-8 text-center text-xs text-[#718183]">
+                <Clock3 size={20} className="mx-auto mb-2 text-[#9bb0b2]" />
+                正在通读资料并规划目录结构…
+              </div>
+            ) : (
+              <div className="divide-y divide-[#f0f3f3]">
+                {/* Modules & Chapters */}
+                {modules.length > 0
+                  ? modules.map((mod, mIdx) => {
+                      const modChapters = plannedChapters.filter(
+                        (ch, idx) =>
+                          ch.module_name === mod.name ||
+                          mod.chapter_indices?.includes(idx + 1)
+                      )
+                      return (
+                        <div key={mod.name || mIdx} className="p-3">
+                          <p className="px-2 py-1 text-[11px] font-semibold tracking-wider text-[#819294] uppercase">
+                            {mod.name}
+                          </p>
+                          <div className="mt-1 space-y-1">
+                            {modChapters.map((ch) => {
+                              const agent = agentByChapterId.get(ch.chapter_id)
+                              const status = agent?.status || 'pending'
+                              const isSelected = selectedChapterId === ch.chapter_id
+                              return (
+                                <button
+                                  key={ch.chapter_id}
+                                  type="button"
+                                  onClick={() => setSelectedChapterId(ch.chapter_id)}
+                                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-xs transition-all ${
+                                    isSelected
+                                      ? 'bg-[#e7f3f3] font-medium text-[#116a72]'
+                                      : 'text-[#334648] hover:bg-[#f6f9f9]'
+                                  }`}
+                                >
+                                  <span className="flex items-center gap-2 truncate">
+                                    <ChapterStatusDot status={status} />
+                                    <span className="truncate">{ch.title}</span>
+                                  </span>
+                                  <ChevronRight
+                                    size={14}
+                                    className={`shrink-0 transition-transform ${
+                                      isSelected ? 'text-[#147d86]' : 'text-[#a4b4b5]'
+                                    }`}
+                                  />
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })
+                  : (plannedChapters.length > 0 ? plannedChapters : agents).map((item, idx) => {
+                      const cid = String(('chapter_id' in item ? item.chapter_id : item.agent_id) || `item-${idx}`)
+                      const title = ('title' in item ? item.title : item.label) || `第 ${idx + 1} 章`
+                      const agent = agentByChapterId.get(cid)
+                      const status = agent?.status || ('status' in item ? item.status : 'pending')
+                      const isSelected = selectedChapterId === cid
+                      return (
+                        <button
+                          key={cid}
+                          type="button"
+                          onClick={() => setSelectedChapterId(cid)}
+                          className={`flex w-full items-center justify-between px-4 py-3 text-left text-xs transition-all ${
+                            isSelected
+                              ? 'bg-[#e7f3f3] font-medium text-[#116a72]'
+                              : 'text-[#334648] hover:bg-[#fafcfc]'
+                          }`}
+                        >
+                          <span className="flex items-center gap-2 truncate">
+                            <ChapterStatusDot status={status} />
+                            <span className="truncate">{title}</span>
+                          </span>
+                          <ChevronRight
+                            size={14}
+                            className={`shrink-0 ${
+                              isSelected ? 'text-[#147d86]' : 'text-[#a4b4b5]'
+                            }`}
+                          />
+                        </button>
+                      )
+                    })}
+              </div>
+            )}
+          </div>
+
+          {/* Quick source material overview */}
+          <div className="rounded-xl border border-[#e2e8e8] bg-white p-4">
+            <h3 className="flex items-center gap-2 text-xs font-semibold text-[#172b2d]">
+              <FileText size={14} className="text-[#147d86]" /> 输入资料概况
+            </h3>
+            <p className="mt-1 text-[11px] text-[#788a8c]">
+              共纳入 {run.resources.length} 份课堂资料，作为各章节的内容源
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {run.resources.slice(0, 6).map((res) => (
+                <span
+                  key={res.revision_id}
+                  className="rounded-md bg-[#f2f6f6] px-2 py-1 text-[10px] text-[#4d6163]"
+                >
+                  {res.title}
+                </span>
+              ))}
+              {run.resources.length > 6 && (
+                <span className="rounded-md bg-[#f2f6f6] px-2 py-1 text-[10px] text-[#788a8c]">
+                  +{run.resources.length - 6} 份
+                </span>
+              )}
+            </div>
+          </div>
+        </aside>
+
+        {/* Right Column: Stage Showcase (Chapter Detail OR Book Blueprint) */}
+        <main className="min-w-0">
+          {selectedChapterId && (selectedAgent || selectedPlannedChapter) ? (
+            /* Chapter Focus Card */
+            <div className="rounded-2xl border border-[#e2e8e8] bg-white p-6 shadow-xs sm:p-8">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#f0f3f3] pb-5">
+                <div>
+                  <span className="text-[11px] font-medium tracking-wide text-[#147d86] uppercase">
+                    {selectedAgent?.module_name || selectedPlannedChapter?.module_name || '章节审阅'}
+                  </span>
+                  <h2 className="mt-1 text-xl font-bold text-[#172b2d]">
+                    {selectedAgent?.label || selectedPlannedChapter?.title}
+                  </h2>
+                </div>
+                <span
+                  className={`rounded-full px-3 py-1 text-xs font-medium ${statusBadgeClass(
+                    selectedAgent?.status || 'pending'
+                  )}`}
+                >
+                  {statusLabel(selectedAgent?.status || 'pending')}
+                </span>
+              </div>
+
+              {/* Narrative purpose */}
+              {(selectedAgent?.narrative_purpose || selectedPlannedChapter?.narrative_purpose) && (
+                <div className="mt-5">
+                  <h4 className="text-xs font-semibold text-[#485d5f]">本章教学目标</h4>
+                  <p className="mt-1.5 text-sm leading-relaxed text-[#233537]">
+                    {selectedAgent?.narrative_purpose || selectedPlannedChapter?.narrative_purpose}
+                  </p>
+                </div>
+              )}
+
+              {/* Section Outlines */}
+              {selectedAgent?.section_headings && selectedAgent.section_headings.length > 0 ? (
+                <div className="mt-6">
+                  <h4 className="text-xs font-semibold text-[#485d5f]">已完成小节</h4>
+                  <div className="mt-3 space-y-2">
+                    {selectedAgent.section_headings.map((heading, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-2.5 rounded-lg border border-[#edf2f2] bg-[#f9fbfb] px-3.5 py-2.5 text-xs text-[#25393b]"
+                      >
+                        <span className="font-mono text-[11px] font-semibold text-[#147d86]">
+                          § {idx + 1}
+                        </span>
+                        <span>{heading}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : selectedPlannedChapter?.section_plan && selectedPlannedChapter.section_plan.length > 0 ? (
+                <div className="mt-6">
+                  <h4 className="text-xs font-semibold text-[#485d5f]">规划小节</h4>
+                  <div className="mt-3 space-y-2">
+                    {selectedPlannedChapter.section_plan.map((sec, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-2.5 rounded-lg border border-[#edf2f2] bg-[#fafcfc] px-3.5 py-2.5 text-xs text-[#526668]"
+                      >
+                        <span className="font-mono text-[11px] font-semibold text-[#90a2a4]">
+                          § {idx + 1}
+                        </span>
+                        <span>{sec}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Core coverage concepts */}
+              {(selectedAgent?.key_points?.length || selectedPlannedChapter?.must_cover?.length) ? (
+                <div className="mt-6">
+                  <h4 className="text-xs font-semibold text-[#485d5f]">核心覆盖要点</h4>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    {(selectedAgent?.key_points?.length ? selectedAgent.key_points : selectedPlannedChapter?.must_cover || []).map(
+                      (point, i) => (
+                        <span
+                          key={i}
+                          className="rounded-md border border-[#d6e7e8] bg-[#eef6f6] px-2.5 py-1 text-xs text-[#17545b]"
+                        >
+                          {point}
+                        </span>
+                      )
+                    )}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Error prompt if failed */}
+              {selectedAgent?.status === 'failed' && (
+                <div className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+                  <p className="font-semibold">此章节撰写中断</p>
+                  <p className="mt-1 text-[11px] text-red-700/80">
+                    {selectedAgent.error || '模型生成超时或返回异常，可通过顶部的“恢复并继续”重新尝试本章。'}
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* The Whole Book Blueprint */
+            <div className="space-y-6">
+              <div className="rounded-2xl border border-[#e2e8e8] bg-white p-6 shadow-xs sm:p-8">
+                <div className="flex items-center gap-2 text-xs font-semibold tracking-wide text-[#147d86]">
+                  <Compass size={16} /> 全书知识架构
+                </div>
+                <h3 className="mt-2 text-lg font-bold text-[#172b2d]">研读脉络与学习路径</h3>
+                <p className="mt-1 text-xs text-[#6e8082]">
+                  由 AI 主编基于全部课程资料归纳提炼的知识主线与学习逻辑
+                </p>
+
+                {learningPath.length > 0 ? (
+                  <div className="mt-6 space-y-3">
+                    {learningPath.map((step, idx) => (
+                      <div key={idx} className="flex items-start gap-3">
+                        <span className="grid size-6 shrink-0 place-items-center rounded-full bg-[#e6f3f3] text-xs font-bold text-[#147d86]">
+                          {idx + 1}
+                        </span>
+                        <p className="mt-0.5 text-sm leading-relaxed text-[#25393b]">{step}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-4 text-xs text-[#718183]">暂无学习路径明细</p>
+                )}
+              </div>
+
+              {globalEmphasis.length > 0 && (
+                <div className="rounded-2xl border border-[#b9dedf] bg-[#f2f8f8] p-6 shadow-xs sm:p-8">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-[#147d86]">
+                    <Sparkles size={16} /> 全书贯穿原则
+                  </div>
+                  <h3 className="mt-2 text-lg font-bold text-[#172b2d]">核心学科方法论</h3>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    {globalEmphasis.map((quote, idx) => (
+                      <div
+                        key={idx}
+                        className="rounded-xl border border-white/80 bg-white/70 p-4 text-xs leading-relaxed text-[#264548] shadow-2xs"
+                      >
+                        “{quote}”
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Finished banner if artifact ready */}
+              {run.artifact_available && (
+                <div className="flex flex-col justify-between gap-4 rounded-2xl bg-[#173c40] p-6 text-white sm:flex-row sm:items-center sm:p-7">
+                  <div>
+                    <h3 className="text-lg font-bold">教辅书已完稿，随时阅读</h3>
+                    <p className="mt-1 text-xs text-[#b8d8d7]">
+                      包含完整的知识章节、导读前言、课堂例题与排版，支持离线 HTML 和 Markdown 导出。
+                    </p>
+                  </div>
+                  <Button
+                    render={<Link to={`/artifacts/${run.run_id}`} />}
+                    className="shrink-0 bg-white text-[#173c40] hover:bg-[#e6f3f3]"
+                  >
+                    <BookOpen size={14} className="mr-1.5" /> 立即开始阅读
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  )
 }
 
-function describeStatusLabel(s: ResourceProjection['description_status']) {
- switch (s) {
- case 'done': return '已完成'
- case 'running': return '生成中'
- case 'failed': return '失败'
- default: return '等待中'
- }
+function ChapterStatusDot({ status }: { status: string }) {
+  if (status === 'succeeded') {
+    return <CheckCircle2 size={14} className="shrink-0 text-[#27774a]" />
+  }
+  if (status === 'running') {
+    return <span className="size-2 shrink-0 animate-ping rounded-full bg-[#147d86]" />
+  }
+  if (status === 'failed') {
+    return <AlertTriangle size={14} className="shrink-0 text-amber-600" />
+  }
+  return <span className="size-2 shrink-0 rounded-full bg-[#cbd6d6]" />
 }

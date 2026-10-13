@@ -135,6 +135,11 @@ class AgentProjection(BaseModel):
     retryable: bool = False
     error: str | None = None
     output_available: bool = False
+    chapter_id: str = ""
+    module_name: str = ""
+    narrative_purpose: str = ""
+    section_headings: list[str] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
 
 
 class ResourceProjection(BaseModel):
