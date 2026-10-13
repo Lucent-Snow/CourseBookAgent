@@ -78,43 +78,7 @@ class TimedChunk(BaseModel):
         return f"字幕 {format_timestamp(self.start_sec)}–{format_timestamp(self.end_sec)}"
 
 
-# ── 第1层：压缩摘要（给主编看的） ─────────────────────────────────────────
-
-class KnowledgePoint(BaseModel):
-    """A single knowledge point extracted from a lecture, for the smart editor."""
-
-    name: str  # e.g. "α错误"
-    description: str  # dense, one-liner for editor
-    category: str = ""  # concept | formula | example | procedure | fact
-    chunk_refs: list[str] = Field(default_factory=list)  # which chunks contain this
-    time_refs: list[str] = Field(default_factory=list)  # e.g. ["05:30-12:40"]
-    sufficiency: str = "sufficient"  # sufficient | partial | insufficient
-    sufficiency_note: str = ""  # 充分性评估说明，如"只有口头描述，缺少具体数值"
-    teaching_signals_summary: str = ""  # e.g. "emphasis, example"
-
-
-class LectureDigest(BaseModel):
-    """Dense knowledge-point map of one lecture, targeted at a smart editor.
-
-    The editor understands what "假设检验" means. It just needs to know:
-    "this lecture teaches it via X, Y, Z, with examples A and B."
-    """
-
-    lecture_id: str
-    index: int
-    raw_title: str
-    teacher_flow: str  # 2-4 sentences: how the teacher structured this lecture
-    knowledge_points: list[KnowledgePoint] = Field(default_factory=list)
-    key_examples: list[str] = Field(default_factory=list)  # brief refs with time
-    administrative_content: list[str] = Field(default_factory=list)  # announcements, etc.
-    transitions: list[str] = Field(default_factory=list)  # what the teacher said connecting topics
-    duration_estimate: str = ""  # e.g. "01:45:00"
-    chunk_count: int = 0
-    total_chars: int = 0
-    asr_quality_notes: list[str] = Field(default_factory=list)
-
-
-# ── 第2层：主编统筹 ────────────────────────────────────────────────────────
+# ── 主编统筹 ────────────────────────────────────────────────────────────────
 
 class ComponentSpec(BaseModel):
     """A reusable UI/content component the editor defines for the book."""

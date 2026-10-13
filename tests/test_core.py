@@ -6,9 +6,7 @@ from coursebook_agent.models import (
     ChapterComponent,
     ChapterSection,
     Course,
-    KnowledgePoint,
     Lecture,
-    LectureDigest,
     LectureDraft,
     TimedChunk,
     TranscriptSegment,
@@ -258,18 +256,6 @@ class BookWorkflowTests(unittest.TestCase):
         self.assertIn("如何使用本书", text)
         self.assertIn("要点速记", text)
         self.assertIn("全课术语表", text)
-
-    def test_digest_model(self):
-        kp = KnowledgePoint(name="α错误", description="拒真错误", category="concept", chunk_refs=["c001"], time_refs=["05:00-10:00"])
-        digest = LectureDigest(
-            lecture_id="l1", index=1, raw_title="假设检验",
-            teacher_flow="先讲H0/H1，再讲两类错误",
-            knowledge_points=[kp],
-            key_examples=["z检验例题"],
-            chunk_count=20, total_chars=15000,
-        )
-        self.assertEqual(len(digest.knowledge_points), 1)
-        self.assertEqual(digest.knowledge_points[0].name, "α错误")
 
 
 if __name__ == "__main__":

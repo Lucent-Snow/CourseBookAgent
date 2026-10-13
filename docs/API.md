@@ -2,8 +2,6 @@
 
 > 2026-10-09：HTTP 生成必须提供 snapshot_id，旧课程入口已删除。接口存在与行为可靠性分别验证，最新状态见 CURRENT_STATUS.md。
 
-新增可靠性与来源接口、字段及离线验证命令见 [OFFLINE_ACCEPTANCE.md](OFFLINE_ACCEPTANCE.md)。
-
 > 前端（React）与后端（FastAPI）的对接契约。产品工作台使用 `/api/product/*`；触发生成、运行生命周期和共享设置由 `app.py` 提供。下面表格里的端点与代码完全对应；真实外部链路与浏览器流程仍按 `docs/DEVELOPMENT.md` 验证。
 
 ## 共享基础接口

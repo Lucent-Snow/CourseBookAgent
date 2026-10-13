@@ -2,7 +2,7 @@
 
 The description is the unit that the main Agent actually reads before
 planning chapters and assigning resource Tags.  Design (agreed 2026-09-26,
-see docs/DECOMPOSITION.md):
+see docs/WORKFLOW.md):
 
 1. Every material type goes through the LLM.  The description is a lossy
    compression optimised for planning decisions — transcripts are the
