@@ -32,6 +32,7 @@ import os
 from coursebook_agent.pipeline import CourseBookPipeline
 from coursebook_agent.storage import atomic_write_text
 from coursebook_agent.renderer.markdown import render_coursebook
+from coursebook_agent.renderer.book_html import render_coursebook_html
 from coursebook_agent.sources.zhiyun import ZhiyunError, ZhiyunSource
 from coursebook_agent.product.api import router as product_router
 
@@ -362,6 +363,19 @@ async def cancel_run(run_id: str):
     state.status, state.step, state.message = "interrupted", "中断", "用户停止任务，可手动恢复"
     _persist_job(state)
     return state.model_dump()
+
+
+@app.get("/api/runs/{run_id}/download.html")
+async def download_run_html(run_id: str):
+    state = _get_job(run_id)
+    if state.status not in {"completed", "partial"} or not state.book:
+        raise HTTPException(status_code=409, detail="教辅尚未完成")
+    course_id = state.book.course.course_id or run_id
+    return Response(
+        render_coursebook_html(state.book),
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(f'coursebook-{course_id}.html', safe='')},
+    )
 
 
 @app.get("/api/runs/{run_id}/download.md")

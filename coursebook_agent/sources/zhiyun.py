@@ -14,11 +14,31 @@ from typing import Any
 from coursebook_agent.config import config
 from coursebook_agent.models import Course, Lecture, TranscriptSegment
 from coursebook_agent.vendor.zhiyun import ZhiyunApi
+from coursebook_agent.vendor.zhiyun.client import DEFAULT_TENANT_CODE
 from coursebook_agent.vendor.zhiyun.auth import ZjuAuth
 
 
 class ZhiyunError(RuntimeError):
     pass
+
+
+def _first_playback_url(row: dict[str, Any]) -> str | None:
+    """The videos API returns playback urls as a str or list; keep the first."""
+    value = row.get("playback_url") or row.get("playback") or ""
+    if isinstance(value, dict):
+        value = value.get("url") or ""
+    if isinstance(value, (list, tuple)):
+        value = next((str(item) for item in value if item), "")
+    return str(value) or None
+
+
+def _replay_page_url(course_id: str, sub_id: Any) -> str | None:
+    if not sub_id:
+        return None
+    return (
+        "https://interactivemeta.cmc.zju.edu.cn/#/replay"
+        f"?course_id={course_id}&sub_id={sub_id}&tenant_code={DEFAULT_TENANT_CODE}"
+    )
 
 
 class ZhiyunSource:
@@ -139,6 +159,8 @@ class ZhiyunSource:
                 lecture_id=str(row.get("sub_id", "")), course_id=str(course_id),
                 title=row.get("title") or f"第 {index} 讲", index=index,
                 duration=row.get("duration") or None, lecturer_name=row.get("lecturer_name"),
+                video_url=_first_playback_url(row),
+                replay_url=_replay_page_url(course_id, row.get("sub_id")),
             )
             for index, row in enumerate(rows, start=1)
         ]

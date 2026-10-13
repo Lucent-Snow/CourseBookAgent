@@ -16,11 +16,16 @@ def reader_text(text: str) -> str:
     return ''.join(part for part in re.findall(r'[^。！？\n]+[。！？\n]*|[。！？\n]+', text) if not _UNRESOLVED.search(part)).strip()
 
 
-def reader_projection(value):
+def reader_projection(value, keep_internal: tuple = ()):
     if isinstance(value, str):
         return reader_text(value)
     if isinstance(value, list):
-        return [item for original in value if (item := reader_projection(original)) not in ('', None)]
+        return [item for original in value if (item := reader_projection(original, keep_internal)) not in ('', None)]
     if isinstance(value, dict):
-        return {key: reader_projection(item) for key, item in value.items() if key not in _INTERNAL_KEYS and not re.search(r"来源|核对状态|^source_|^evidence_", key)}
+        return {
+            key: reader_projection(item, keep_internal)
+            for key, item in value.items()
+            if key in keep_internal
+            or (key not in _INTERNAL_KEYS and not re.search(r"来源|核对状态|^source_|^evidence_", key))
+        }
     return value

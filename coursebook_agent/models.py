@@ -40,6 +40,10 @@ class Lecture(BaseModel):
     date: str | None = None
     duration: int | None = None
     lecturer_name: str | None = None
+    # Playback references for the published HTML: direct video file and the
+    # zhiyun replay page (used for time-node jumps and as a fallback).
+    video_url: str | None = None
+    replay_url: str | None = None
 
 
 class TranscriptSegment(BaseModel):

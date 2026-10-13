@@ -45,6 +45,7 @@ from coursebook_agent.product.snapshot_loader import (
     load_snapshot,
 )
 from coursebook_agent.renderer.markdown import render_coursebook
+from coursebook_agent.renderer.book_html import render_coursebook_html, resolve_video_index
 from coursebook_agent.sources.zhiyun import ZhiyunSource
 from coursebook_agent.storage import atomic_write_text
 
@@ -283,12 +284,16 @@ class CourseBookPipeline:
         )
         book.warnings.extend(failures)
         book.components = plan.components
-        book.render_config = plan.render_config
+        book.render_config = dict(plan.render_config)
+        video_index = resolve_video_index(book, parsed)
+        if video_index:
+            book.render_config["video_index"] = video_index
         book.snapshot_id = snapshot_id
 
         book_path = self.intermediate_dir / f"coursebook-{course.course_id or snapshot_id}.json"
         atomic_write_text(book_path, book.model_dump_json(indent=2))
         atomic_write_text(config.output_dir / f"coursebook-{course.course_id or snapshot_id}.md", render_coursebook(book))
+        atomic_write_text(config.output_dir / f"coursebook-{course.course_id or snapshot_id}.html", render_coursebook_html(book))
 
         # Stage 7: render complete.
         if progress:

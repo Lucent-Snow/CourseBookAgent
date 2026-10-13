@@ -29,6 +29,7 @@ from coursebook_agent.agent.llm import LLMClient
 from coursebook_agent.agent.synthesize import synthesize_book
 from coursebook_agent.assembly.assemble import assemble_chapter_contexts
 from coursebook_agent.config import config
+from coursebook_agent.renderer.book_html import resolve_video_index
 from coursebook_agent.models import (
     BookPlan,
     ChapterContext,
@@ -383,7 +384,10 @@ class LabService:
         llm = LLMClient(max_retries=2, timeout=900)
         book = await synthesize_book(course, chapters, plan=plan, client=llm)
         book.components = plan.components
-        book.render_config = plan.render_config
+        book.render_config = dict(plan.render_config)
+        video_index = resolve_video_index(book, getattr(loaded, "resources", None))
+        if video_index:
+            book.render_config["video_index"] = video_index
         book.snapshot_id = self.snapshot_id
         atomic_write_text(cache_path, book.model_dump_json(indent=2))
         return book

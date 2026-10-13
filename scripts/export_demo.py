@@ -5,6 +5,7 @@ from pathlib import Path
 from coursebook_agent.models import CourseBook
 from coursebook_agent.renderer.presentation import reader_projection
 from coursebook_agent.renderer.markdown import render_coursebook
+from coursebook_agent.renderer.book_html import render_coursebook_html, resolve_video_index
 
 
 def main():
@@ -15,6 +16,9 @@ def main():
     if str(original.course.course_id) != '74397':
         parser.error('This demo manifest is for course 74397 only; prepare a matching manifest for another book.')
     book = CourseBook.model_validate(reader_projection(original.model_dump()))
+    video_index = resolve_video_index(book)
+    if video_index:
+        book.render_config = {**book.render_config, "video_index": video_index}
     resources = [
         {'title': '课堂资料一 · 随机现象与事件', 'summary': '介绍随机试验、样本空间、事件关系及概率公理，建立用集合语言表示概率问题的基础。', 'topics': ['随机试验', '样本空间', '事件运算', '概率公理']},
         {'title': '课堂资料二 · 概率模型与条件推理', 'summary': '从古典概型与计数方法进入条件概率，通过完整例题讨论全概率公式和贝叶斯公式。', 'topics': ['古典概型', '条件概率', '全概率', '贝叶斯公式']},
@@ -26,6 +30,7 @@ def main():
     # No raw resources, account settings, events or credentials enter the bundle.
     (target / 'demo.json').write_text(json.dumps(data, ensure_ascii=False))
     (target / 'coursebook.md').write_text(render_coursebook(book))
+    (target / 'coursebook.html').write_text(render_coursebook_html(book), encoding='utf-8')
     print(f'Exported {len(book.chapters)} chapters to {target}')
 
 

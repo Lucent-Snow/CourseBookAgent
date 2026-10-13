@@ -81,8 +81,9 @@ def _render_component(comp: ChapterComponent) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_chapter(chapter: LectureDraft) -> str:
-    chapter = LectureDraft.model_validate(reader_projection(chapter.model_dump()))
+def render_chapter(chapter: LectureDraft, *, include_time_links: bool = False) -> str:
+    keep = ("time_links",) if include_time_links else ()
+    chapter = LectureDraft.model_validate(reader_projection(chapter.model_dump(), keep))
     role_label = {
         "core": "核心方法", "review": "复习整合", "guest": "专题/嘉宾",
         "admin": "课程说明", "mixed": "综合",
@@ -156,8 +157,9 @@ def render_chapter(chapter: LectureDraft) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def render_coursebook(book: CourseBook) -> str:
-    book = CourseBook.model_validate(reader_projection(book.model_dump()))
+def render_coursebook(book: CourseBook, *, include_time_links: bool = False) -> str:
+    keep = ("time_links",) if include_time_links else ()
+    book = CourseBook.model_validate(reader_projection(book.model_dump(), keep))
     lines = [
         f"# {book.title}",
         "",
@@ -195,7 +197,7 @@ def render_coursebook(book: CourseBook) -> str:
         if _is_empty_chapter(chapter):
             lines.extend(["---", "", f"# {chapter.title}", "", f"> **本讲内容待生成**", ""])
             continue
-        lines.extend(["---", "", render_chapter(chapter).strip(), ""])
+        lines.extend(["---", "", render_chapter(chapter, include_time_links=include_time_links).strip(), ""])
 
     if book.key_point_index:
         lines.extend(["---", "", "# 要点速记", ""])

@@ -263,7 +263,8 @@ def load_course_resources_from_zhiyun(
                     units=units,
                     raw_text=raw_text,
                     page_count=None,
-                    meta={"lecture_id": lecture.lecture_id, "index": lecture.index},
+                    meta={"lecture_id": lecture.lecture_id, "index": lecture.index,
+                          "video_url": lecture.video_url, "replay_url": lecture.replay_url},
                 ))
             except (OSError, ValueError) as exc:
                 logger.warning("transcript cache unreadable for %s: %s", lecture.lecture_id, exc)
