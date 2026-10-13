@@ -14,3 +14,8 @@ test('reader omits unresolved claims and internal evidence without mutating save
   assert.deepEqual(projected.chapters[0].sections[0].source_labels, [])
   assert.deepEqual(original.warnings, ['待核'])
 })
+
+test('reader keeps subtitle time links so chapters can jump back to the video', () => {
+  const book = { chapters: [{ sections: [{ time_links: ['01:09:01-01:12:28'] }] }] }
+  assert.deepEqual(readerBook(book).chapters[0].sections[0].time_links, ['01:09:01-01:12:28'])
+})

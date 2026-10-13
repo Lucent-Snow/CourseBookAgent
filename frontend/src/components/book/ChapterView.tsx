@@ -1,9 +1,11 @@
-import { type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { ComponentBlock } from './ComponentBlock'
 import { MathText } from '@/components/math/MathText'
 import { sanitizeList } from '@/lib/sanitize'
 import type { LectureDraft } from '@/types'
+import { timeRangeStart, type VideoRef } from '@/lib/time-node'
+import { VideoNodePlayer } from './VideoNodePlayer'
 
 const ROLE_LABELS: Record<string, string> = {
   core: '核心方法',
@@ -55,7 +57,8 @@ function ConceptList({ items }: { items: string[] }) {
   )
 }
 
-export function ChapterView({ chapter }: { chapter: LectureDraft }) {
+export function ChapterView({ chapter, video }: { chapter: LectureDraft; video?: VideoRef }) {
+  const [jump, setJump] = useState<number | null>(null)
   const role = ROLE_LABELS[chapter.chapter_role] ?? chapter.chapter_role ?? ''
 
   return (
@@ -126,7 +129,24 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
           ))}
           {section.time_links.length > 0 && (
             <p className="mt-2 text-xs text-muted-foreground">
-              字幕时间段：{section.time_links.join(' · ')}
+              <span>字幕时间段：</span>
+              {section.time_links.map((link, k) => (
+                <span key={k}>
+                  {k > 0 && <span className="mx-1 opacity-50">·</span>}
+                  {video ? (
+                    <button
+                      type="button"
+                      onClick={() => setJump(timeRangeStart(link))}
+                      title="跳到原视频对应时间"
+                      className="text-primary underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                    >
+                      {link}
+                    </button>
+                  ) : (
+                    link
+                  )}
+                </span>
+              ))}
             </p>
           )}
         </section>
@@ -164,6 +184,14 @@ export function ChapterView({ chapter }: { chapter: LectureDraft }) {
           <List items={chapter.source_ranges} className="text-xs text-muted-foreground" />
         </>
       )}
+
+      <VideoNodePlayer
+        open={jump !== null}
+        chapterTitle={chapter.title}
+        video={video}
+        startSec={jump ?? 0}
+        onClose={() => setJump(null)}
+      />
     </article>
   )
 }

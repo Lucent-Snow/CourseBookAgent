@@ -352,6 +352,22 @@ def delete_run(run_id: str):
     return None
 
 
+def _with_video_index(book):
+    """Attach lecture video references so the reader can jump to time nodes."""
+    if book is None:
+        return book
+    config = dict(book.render_config or {})
+    if config.get("video_index"):
+        return book
+    from coursebook_agent.renderer.book_html import resolve_video_index
+
+    index = resolve_video_index(book)
+    if not index:
+        return book
+    config["video_index"] = index
+    return book.model_copy(update={"render_config": config})
+
+
 @router.get("/artifacts")
 def list_artifacts():
     from coursebook_agent.app import persisted_jobs
@@ -368,7 +384,7 @@ def get_artifact(artifact_id: str):
         artifact = project_artifact(state)
         if not artifact:
             raise KeyError("产物不存在")
-        return {"artifact": artifact, "book": state.book}
+        return {"artifact": artifact, "book": _with_video_index(state.book)}
 
     return _call(resolve)
 

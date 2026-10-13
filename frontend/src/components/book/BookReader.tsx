@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { ChapterView } from './ChapterView'
 import { readerBook } from '@/lib/book-presentation'
+import { videoIndexFrom } from '@/lib/time-node'
 import { MathText } from '@/components/math/MathText'
 import type { CourseBook } from '@/types'
 
@@ -57,6 +58,7 @@ export function BookReader({ book: originalBook, onRegenerate }: { book: CourseB
   const [active, setActive] = useState(-1)
   const [tocOpen, setTocOpen] = useState(false)
   const chapter = active >= 0 ? book.chapters[active] : null
+  const videoIndex = videoIndexFrom(book.render_config)
 
   const tocItems = [
     { label: '前言 · 知识地图', index: -1 },
@@ -114,7 +116,7 @@ export function BookReader({ book: originalBook, onRegenerate }: { book: CourseB
                 </Button>
               </div>
             )}
-            <ChapterView chapter={chapter} />
+            <ChapterView chapter={chapter} video={videoIndex[chapter.title]} />
           </>
         ) : (
           <FrontMatter book={book} />

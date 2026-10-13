@@ -50,7 +50,7 @@
 | F2 | `ReviewPage` 重生成用 `run_id.split('-')[0]` 推断 course_id | 脆弱，run_id 格式变化即错 | 后端应在 report 里返回 course_id |
 | F3 | `WorkspacePage` 的 courseId 从 query 读，课程不在下拉列表时无对应 option | 选课状态可能错配 | 待校验 |
 | F4 | 设置页保存 LLM 后 `api_key_set` 未刷新 | 显示状态不准确 | ✅ 已修（后端返回并回显状态） |
-| F5 | 阅读器时间戳仍是纯文本，未接播放器跳转 | 「来源可追溯」卖点未完全落地 | 需接智云播放器 |
+| F5 | 时间戳跳转已接入网页阅读器与导出 HTML | 「来源可追溯」卖点落地 | 直链失效时用回放页 ts 兜底 |
 | F6 | V1 产物 `examples` 含 Python dict 残留（`{'example': ...}`） | 前端直接展示会暴露机器残留 | ✅ 已修（前端 sanitize + 后端 sanitize_examples） |
 | F7 | 工作流预设当前只有内置 `coursebook`，产品配置页不能选其他 profile | 资料形态变化时无法切换 | 待 ADR 009 决议落地 |
 | F8 | 资料集删除会级联删除快照、资源、blob | 没有"软删除"或回收站 | 行为当前可接受，待后续看 |
@@ -83,7 +83,7 @@
 - [ ] F1 资料库多维度筛选
 - [ ] F2 质量报告不要从 `run_id` 推断 `course_id`
 - [ ] F3 选课状态校验
-- [ ] F5 时间戳接智云播放器跳转
+- [x] F5 时间戳跳转（网页阅读器 + 导出 HTML：页面内 mp4 播放器精确定位到节点，回放页 ts 兜底）
 - [ ] F7 工作流 profile 切换（ADR 009）
 - [ ] P1 首次使用引导
 
