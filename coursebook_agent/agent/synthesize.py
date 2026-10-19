@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from coursebook_agent.agent.llm import LLMClient
 from coursebook_agent.models import BookPlan, ChapterInstruction, Course, CourseBook, LectureDraft
@@ -304,7 +305,7 @@ async def synthesize_book(
 
 返回 JSON：
 {{
-  "title": "书名",
+  "title": "整本书书名（必须是完整书籍名称，如《实验心理学：方法与测量》《微积分学习指引》，严禁填写单章标题如「第X章...」）",
   "preface": "800-1200字前言",
   "how_to_use": ["使用建议"],
   "knowledge_map": ["模块/主线说明"],
@@ -362,9 +363,28 @@ async def synthesize_book(
 
     source_index = [f"{ch.title}：{r}" for ch in ordered for r in ch.source_ranges]
 
+    raw_title = str(data.get("title") or "").strip()
+    def _is_bad_book_title(t: str) -> bool:
+        if not t:
+            return True
+        if re.match(r"^第\s*[\d一二三四五六七八九十百]+[章讲节]", t):
+            return True
+        for c in ordered:
+            if c.title and (t == c.title.strip() or (len(t) > 6 and t in c.title)):
+                return True
+        return False
+
+    final_title = raw_title
+    if _is_bad_book_title(final_title):
+        plan_t = str(plan.book_title or "").strip() if plan else ""
+        if plan_t and not _is_bad_book_title(plan_t):
+            final_title = plan_t
+        else:
+            final_title = fallback.title
+
     return CourseBook(
         course=course,
-        title=str(data.get("title") or fallback.title),
+        title=final_title,
         chapters=ordered,
         glossary=glossary[:80],
         source_index=source_index,

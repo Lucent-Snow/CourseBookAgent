@@ -26,7 +26,7 @@ const kindLabel = (kind: Resource['kind']) => {
   if (kind === 'pptx') return 'PPT 课件'
   if (kind === 'pdf') return 'PDF 讲义'
   if (kind === 'docx') return 'Word 文档'
-  if (kind === 'courseware') return '智云板书'
+  if (kind === 'courseware') return '课堂板书'
   return '文本资料'
 }
 

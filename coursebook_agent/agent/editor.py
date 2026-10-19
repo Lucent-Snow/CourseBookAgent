@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 from coursebook_agent.agent.llm import LLMClient, LLMError, extract_json_object
@@ -101,7 +102,7 @@ MAIN_AGENT_USER_TEMPLATE = """课程信息：{course}
 
 请输出严格 JSON：
 {{
-  "book_title": "书名（主题型，不要含「第 X 讲」）",
+  "book_title": "整本书书名（主题型完整书名，如《实验心理学：方法与测量》，严禁写成单章标题如「第X章...」或「第X讲...」）",
   "audience": "目标读者",
   "book_positioning": "本书解决什么问题，2-4 句",
   "learning_path": ["复习路径"],
@@ -357,9 +358,13 @@ def _coerce_plan_from_descriptions(
     if not isinstance(data, dict) or not data.get("chapters"):
         warnings.append("主 Agent 未产出章节，已按资料自动分章")
 
+    raw_book_title = str(data.get("book_title") or "").strip()
+    if not raw_book_title or re.match(r"^第\s*[\d一二三四五六七八九十百]+[章讲节]", raw_book_title):
+        raw_book_title = f"{course.name}：课堂精讲与复习教辅"
+
     return BookPlan(
         course_id=course.course_id,
-        book_title=str(data.get("book_title") or f"{course.name}：课堂精讲与复习教辅"),
+        book_title=raw_book_title,
         audience=str(data.get("audience") or ""),
         book_positioning=str(data.get("book_positioning") or ""),
         learning_path=_str_list(data.get("learning_path")),

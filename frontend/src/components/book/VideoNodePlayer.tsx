@@ -81,7 +81,7 @@ export function VideoNodePlayer({ open, chapterTitle, video, startSec, onClose }
           />
         ) : (
           <p className="px-5 py-9 text-center text-sm leading-7 text-neutral-300">
-            本章没有可直连的视频文件，可用右上角“回放页”打开智云回放。
+            本章没有可直连的视频文件，可用右上角“回放页”打开课堂回放。
           </p>
         )}
         {failed && (

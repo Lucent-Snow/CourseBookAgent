@@ -34,7 +34,7 @@
       else if (t.indexOf('【步骤】') !== -1) bq.classList.add('cq-procedure');
       else if (t.indexOf('【易错】') !== -1 || t.indexOf('⚠️') !== -1 || t.indexOf('⚠') !== -1) bq.classList.add('cq-warning');
       else if (t.indexOf('旁注') !== -1) bq.classList.add('cq-note');
-      else if (/^模块：/.test(t.trim()) || t.indexOf('根据智云课堂字幕') !== -1 || t.indexOf('本讲内容待生成') !== -1) bq.classList.add('cq-meta');
+      else if (/^模块：/.test(t.trim()) || t.indexOf('根据智云课堂字幕') !== -1 || t.indexOf('根据课堂字幕') !== -1 || t.indexOf('本讲内容待生成') !== -1) bq.classList.add('cq-meta');
       // mark source-ref italics inside callout
       bq.querySelectorAll('em').forEach(function (em) { if ((em.textContent||'').indexOf('来源') !== -1) em.classList.add('cq-source'); });
     });
@@ -240,7 +240,7 @@
     }
     video.addEventListener('loadedmetadata', jump, { once: true });
     video.addEventListener('error', function () {
-      msg.textContent = '视频直链加载失败（可能需校园网/登录）。可点右上角“回放页”打开智云回放，或稍后重试。';
+      msg.textContent = '视频直链加载失败（可能需校园网/登录）。可点右上角“回放页”打开课堂回放，或稍后重试。';
       msg.style.display = '';
       box.style.display = 'none';
     }, { once: true });
